@@ -1,8 +1,24 @@
 # Changelog
 
-All notable changes to `@datadog/electron-sdk` are documented here.
+All notable changes to `@flashcatcloud/electron-sdk` are documented here.
 
-## [0.3.0] - 2026-05-27
+## [0.1.0]
+
+First FlashCat release. Forked from `@datadog/electron-sdk` v0.3.0 and rebranded to report to the FlashCat platform.
+
+### ✨ Features
+
+- Report RUM events to the FlashCat intake. `site` is now the intake host directly (`browser.flashcat.cloud` for production, `jira.flashcat.cloud` for staging); the intake URL is `https://${site}/api/v2/${track}`.
+- Renderer integration uses the `@flashcatcloud/browser-rum` fork; the SDK's build-time core utilities come from `@flashcatcloud/browser-core`.
+
+### ⚠️ Breaking Changes / Notes
+
+- Package renamed to `@flashcatcloud/electron-sdk` (internal `dd-`/`Datadog` names and the `DatadogEventBridge` global are kept per the fork convention).
+- `site` only accepts FlashCat hosts (`browser.flashcat.cloud`, `jira.flashcat.cloud`).
+- The main-process transport now sends `Content-Type: text/plain;charset=UTF-8` with a newline-delimited-JSON body, as required by the FlashCat intake.
+- APM/trace (`spans`) is not uploaded — FlashCat has no `/api/v2/spans` ingest. Main-process HTTP activity is still reported as RUM `resource` events. Native APM tracing is pending product support.
+
+## [0.3.0] - 2026-05-27 (upstream Datadog)
 
 ### ✨ Features
 

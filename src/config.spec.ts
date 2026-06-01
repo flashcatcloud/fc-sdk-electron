@@ -149,17 +149,20 @@ describe('buildConfiguration', () => {
       );
     });
 
-    it.each([{ site: 'browser.flashcat.cloud' }, { site: 'jira.flashcat.cloud' }])('accepts valid site: $site', ({ site }) => {
-      const config = {
-        ...DEFAULT_CONFIG,
-        site,
-      };
+    it.each([{ site: 'browser.flashcat.cloud' }, { site: 'jira.flashcat.cloud' }])(
+      'accepts valid site: $site',
+      ({ site }) => {
+        const config = {
+          ...DEFAULT_CONFIG,
+          site,
+        };
 
-      const result = buildConfiguration(config);
+        const result = buildConfiguration(config);
 
-      expect(result).toBeDefined();
-      expect(result?.site).toBe(site);
-    });
+        expect(result).toBeDefined();
+        expect(result?.site).toBe(site);
+      }
+    );
   });
 
   describe('error logging', () => {

@@ -208,16 +208,16 @@ interface FeatureOperationOptions {
 
 ### Configuration Options
 
-| Option                | Type                                     | Required | Default  | Description                                                                                                                        |
-| --------------------- | ---------------------------------------- | -------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `clientToken`         | `string`                                 | Yes      | —        | FlashCat client token                                                                                                              |
-| `applicationId`       | `string`                                 | Yes      | —        | RUM application ID                                                                                                                 |
-| `site`                | `string`                                 | Yes      | —        | FlashCat site — the intake host, used verbatim. One of `browser.flashcat.cloud` (production) or `jira.flashcat.cloud` (staging)    |
-| `service`             | `string`                                 | Yes      | —        | Service name                                                                                                                       |
-| `env`                 | `string`                                 | No       | —        | Application environment                                                                                                            |
-| `version`             | `string`                                 | No       | —        | Application version                                                                                                                |
-| `telemetrySampleRate` | `number`                                 | No       | `20`     | Telemetry sample rate (0–100)                                                                                                      |
-| `batchSize`           | `'SMALL' \| 'MEDIUM' \| 'LARGE'`         | No       | —        | Batch size for event uploads                                                                                                       |
-| `uploadFrequency`     | `'RARE' \| 'NORMAL' \| 'FREQUENT'`       | No       | —        | Upload frequency for event batches                                                                                                 |
-| `defaultPrivacyLevel` | `'mask' \| 'allow' \| 'mask-user-input'` | No       | `'mask'` | Default privacy level for renderer session replay                                                                                  |
-| `allowedWebViewHosts` | `string[]`                               | No       | `[]`     | Hostnames allowed for the renderer bridge                                                                                          |
+| Option                | Type                                     | Required | Default  | Description                                                                                                                     |
+| --------------------- | ---------------------------------------- | -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `clientToken`         | `string`                                 | Yes      | —        | FlashCat client token                                                                                                           |
+| `applicationId`       | `string`                                 | Yes      | —        | RUM application ID                                                                                                              |
+| `site`                | `string`                                 | Yes      | —        | FlashCat site — the intake host, used verbatim. One of `browser.flashcat.cloud` (production) or `jira.flashcat.cloud` (staging) |
+| `service`             | `string`                                 | Yes      | —        | Service name                                                                                                                    |
+| `env`                 | `string`                                 | No       | —        | Application environment                                                                                                         |
+| `version`             | `string`                                 | No       | —        | Application version                                                                                                             |
+| `telemetrySampleRate` | `number`                                 | No       | `20`     | Telemetry sample rate (0–100)                                                                                                   |
+| `batchSize`           | `'SMALL' \| 'MEDIUM' \| 'LARGE'`         | No       | —        | Batch size for event uploads                                                                                                    |
+| `uploadFrequency`     | `'RARE' \| 'NORMAL' \| 'FREQUENT'`       | No       | —        | Upload frequency for event batches                                                                                              |
+| `defaultPrivacyLevel` | `'mask' \| 'allow' \| 'mask-user-input'` | No       | `'mask'` | Default privacy level for renderer session replay                                                                               |
+| `allowedWebViewHosts` | `string[]`                               | No       | `[]`     | Hostnames allowed for the renderer bridge                                                                                       |

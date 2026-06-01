@@ -63,11 +63,7 @@ function validateRequiredString(value: unknown, fieldName: string): string | und
 }
 
 function validateSite(value: unknown): string | undefined {
-  if (
-    typeof value !== 'string' ||
-    value.length === 0 ||
-    !(VALID_FLASHCAT_SITES as readonly string[]).includes(value)
-  ) {
+  if (typeof value !== 'string' || value.length === 0 || !(VALID_FLASHCAT_SITES as readonly string[]).includes(value)) {
     displayError(`Configuration error: 'site' must be one of: ${VALID_FLASHCAT_SITES.join(', ')}`);
     return undefined;
   }

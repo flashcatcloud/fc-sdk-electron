@@ -1,5 +1,11 @@
 name: Publish
 
+# Release flow:
+#   1. Merge the release into `publish` (package.json version is the source of truth).
+#   2. Tag the merge commit `vX.Y.Z` (must match package.json version).
+#   3. Run this workflow from that tag (Actions → Publish → select the tag).
+# Use the `dry_run` input first to validate auth/build without publishing.
+
 on:
   workflow_dispatch:
     inputs:
@@ -10,14 +16,13 @@ on:
 
 permissions:
   contents: write # create GitHub release
-  id-token: write # npm Trusted Publishers OIDC
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@v4
 
       - name: Read version from package.json
         id: version
@@ -44,9 +49,10 @@ jobs:
           echo "✅ Release tag validated: $TAG"
 
       - name: Setup Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        uses: actions/setup-node@v4
         with:
-          node-version: '25'
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org/'
 
       - name: Enable Corepack
         run: corepack enable
@@ -54,72 +60,30 @@ jobs:
       - name: Install dependencies
         run: yarn install --immutable
 
-      - name: Verify npm OIDC auth — dry run
+      # Quality gate — fail the release before publishing if anything is broken.
+      - name: Typecheck
+        run: yarn typecheck
+
+      - name: Build
+        run: yarn build
+
+      - name: Unit tests
+        run: yarn test:unit
+
+      - name: Publish to npm (dry run)
         if: ${{ inputs.dry_run }}
-        run: |
-          FAILED=0
-          ESCAPED_PACKAGE="@datadog%2felectron-sdk"
-
-          # Check 1: ACTIONS_ID_TOKEN_REQUEST_URL is set (pre-condition for GitHub OIDC)
-          if [ -z "$ACTIONS_ID_TOKEN_REQUEST_URL" ] || [ -z "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ]; then
-            echo "❌ ACTIONS_ID_TOKEN_REQUEST_URL or TOKEN not set — id-token: write permission may be missing"
-            FAILED=1
-          else
-            echo "✅ GitHub OIDC pre-conditions met (ACTIONS_ID_TOKEN_REQUEST_URL is set)"
-          fi
-
-          # Check 2: OIDC token exchange with npm registry (proves Trusted Publishers is configured)
-          OIDC_TOKEN=$(curl -sf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=npm:registry.npmjs.org" | jq -r '.value')
-          if [ -z "$OIDC_TOKEN" ] || [ "$OIDC_TOKEN" = "null" ]; then
-            echo "❌ Failed to obtain GitHub OIDC token"
-            FAILED=1
-          else
-            # Decode JWT claims to help diagnose Trusted Publishers mismatches
-            echo "--- OIDC token claims ---"
-            echo "$OIDC_TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq '{sub, iss, repository, repository_owner, workflow, job_workflow_ref, ref}'
-            EXCHANGE_URL="https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/${ESCAPED_PACKAGE}"
-            echo "Exchanging with: $EXCHANGE_URL"
-            RESPONSE=$(curl -s -X POST "$EXCHANGE_URL" \
-              -H "Authorization: Bearer $OIDC_TOKEN" \
-              -H "Content-Type: application/json" \
-              -d '{}')
-            NPM_TOKEN=$(echo "$RESPONSE" | jq -r '.token // empty')
-            if [ -z "$NPM_TOKEN" ]; then
-              echo "❌ npm OIDC exchange failed — check Trusted Publishers config on npmjs.com"
-              echo "Response: $RESPONSE"
-              FAILED=1
-            else
-              echo "✅ npm OIDC token obtained — Trusted Publishers auth is working"
-            fi
-          fi
-
-          # Check 3: dry-run pack to verify build artifacts
-          # --tag dry-run avoids "latest" tag conflict when testing with a lower version
-          if npm publish --dry-run --access public --tag dry-run; then
-            echo "✅ dry-run pack succeeded"
-          else
-            echo "❌ dry-run pack failed"
-            FAILED=1
-          fi
-
-          exit $FAILED
-
-      - name: Verify GitHub token — dry run
-        if: ${{ inputs.dry_run }}
-        run: |
-          echo "--- gh auth status ---"
-          gh auth status
-          echo "--- repo permissions ---"
-          gh api "repos/$GITHUB_REPOSITORY" --jq '.permissions'
+        run: npm publish --access public --dry-run
         env:
-          GH_TOKEN: ${{ github.token }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Publish to npm (OIDC Trusted Publishers)
+      - name: Publish to npm
         if: ${{ !inputs.dry_run }}
-        run: npm publish --access public --provenance
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Extract release notes from CHANGELOG.md
+        if: ${{ !inputs.dry_run }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           awk "/^## \[${VERSION}\]/{found=1} found && /^## / && !/^## \[${VERSION}\]/{exit} found{print}" CHANGELOG.md > release-notes.md
