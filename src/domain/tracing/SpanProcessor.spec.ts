@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as DiagnosticsChannel from 'node:diagnostics_channel';
-import { DISCARDED, SKIPPED } from '@datadog/browser-core';
+import { DISCARDED, SKIPPED } from '@flashcatcloud/browser-core';
 import { EventFormat, EventKind, EventManager, EventSource, EventTrack } from '../../event';
 import type { Event, RawRumEvent, ServerSpansEvent } from '../../event';
 import { createFormatHooks, type FormatHooks } from '../../assembly';
@@ -63,7 +63,7 @@ describe('SpanProcessor', () => {
     processor = new SpanProcessor(eventManager, hooks, {
       env: 'test',
       service: 'test-service',
-      site: 'datadoghq.com',
+      site: 'browser.flashcat.cloud',
     } as Configuration);
   });
 
@@ -151,24 +151,24 @@ describe('SpanProcessor', () => {
   describe('SDK request filtering', () => {
     it('should filter out requests to the intake hostname', () => {
       const span = createSpan({
-        meta: { 'http.url': 'https://browser-intake-datadoghq.com/api/v2/rum', 'http.method': 'POST' },
+        meta: { 'http.url': 'https://browser.flashcat.cloud/api/v2/rum', 'http.method': 'POST' },
       });
       publish([[span]]);
 
       expect(collected).toHaveLength(0);
     });
 
-    it('should filter out requests to subdomain intake hostnames (e.g. us3.datadoghq.com)', () => {
+    it('should filter out requests to the configured staging intake host', () => {
       processor.stop();
       processor = new SpanProcessor(eventManager, hooks, {
         env: 'test',
         service: 'test-service',
-        site: 'us3.datadoghq.com',
+        site: 'jira.flashcat.cloud',
       } as Configuration);
       publish([
         [
           createSpan({
-            meta: { 'http.url': 'https://browser-intake-us3-datadoghq.com/api/v2/rum', 'http.method': 'POST' },
+            meta: { 'http.url': 'https://jira.flashcat.cloud/api/v2/rum', 'http.method': 'POST' },
           }),
         ],
       ]);
@@ -181,7 +181,7 @@ describe('SpanProcessor', () => {
       processor = new SpanProcessor(eventManager, hooks, {
         env: 'test',
         service: 'test-service',
-        site: 'datadoghq.com',
+        site: 'browser.flashcat.cloud',
         proxy: 'http://localhost:9999/api/v2/rum',
       } as Configuration);
       publish([[createSpan({ meta: { 'http.url': 'http://localhost:9999/api/v2/rum', 'http.method': 'POST' } })]]);
@@ -199,7 +199,7 @@ describe('SpanProcessor', () => {
     it('should filter spans whose resource contains the intake hostname', () => {
       const span = createSpan({
         type: 'dns',
-        resource: 'browser-intake-datadoghq.com',
+        resource: 'browser.flashcat.cloud',
         meta: {},
       });
       publish([[span]]);
@@ -212,7 +212,7 @@ describe('SpanProcessor', () => {
       processor = new SpanProcessor(eventManager, hooks, {
         env: 'test',
         service: 'test-service',
-        site: 'datadoghq.com',
+        site: 'browser.flashcat.cloud',
         proxy: 'http://localhost:9999/api/v2/rum',
       } as Configuration);
       const span = createSpan({
@@ -264,7 +264,7 @@ describe('SpanProcessor', () => {
 
     it('should not emit an envelope when all spans in a trace are filtered', () => {
       const span = createSpan({
-        meta: { 'http.url': 'https://browser-intake-datadoghq.com/api/v2/rum', 'http.method': 'POST' },
+        meta: { 'http.url': 'https://browser.flashcat.cloud/api/v2/rum', 'http.method': 'POST' },
       });
       publish([[span]]);
 

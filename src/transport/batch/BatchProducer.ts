@@ -1,4 +1,4 @@
-import { dateNow } from '@datadog/browser-core';
+import { dateNow } from '@flashcatcloud/browser-core';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 

@@ -1,5 +1,5 @@
 // Must be imported before 'electron' — instruments electron for tracing and preload injection.
-import '@datadog/electron-sdk/instrument';
+import '@flashcatcloud/electron-sdk/instrument';
 
 import { app, BrowserWindow, ipcMain, net } from 'electron';
 import * as path from 'node:path';
@@ -14,7 +14,7 @@ import {
   failOperation,
   type FailureReason,
   type FeatureOperationOptions,
-} from '@datadog/electron-sdk';
+} from '@flashcatcloud/electron-sdk';
 import { loadWindowState, saveWindowState } from './main/windowState';
 import { setupHotReload } from './main/hotReload';
 
@@ -142,14 +142,14 @@ void app.whenReady().then(async () => {
   console.log('Initializing SDK from main process...');
   const CONF = {
     staging: {
-      applicationId: '6efd3722-af0a-4070-994c-0e87076d4814',
-      clientToken: 'pub2a7307cdec74934cacb411a193f632f8',
-      site: 'datad0g.com',
+      applicationId: 'mKESnRV4wGs5nwcbTwotmW',
+      clientToken: '6d12421358ed581683d6593ca6492068131',
+      site: 'jira.flashcat.cloud',
     },
     prod: {
-      applicationId: '0f574f27-317e-4223-b5b6-c935b4c83700',
-      clientToken: 'pub09a54e493460355ef58c0c617d577e19',
-      site: 'datadoghq.com',
+      applicationId: 'mKESnRV4wGs5nwcbTwotmW',
+      clientToken: '6d12421358ed581683d6593ca6492068131',
+      site: 'browser.flashcat.cloud',
     },
   };
   const result = await init({

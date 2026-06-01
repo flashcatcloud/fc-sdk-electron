@@ -21,7 +21,7 @@ export class Tracing {
     try {
       const tracer = (_require('dd-trace') as { default: typeof import('dd-trace').default }).default;
 
-      // dd-trace is initialized early via @datadog/electron-sdk/instrument (before require('electron')).
+      // dd-trace is initialized early via @flashcatcloud/electron-sdk/instrument (before require('electron')).
       // tracer.init() is a no-op if already initialized, so we only configure plugins here.
       // Service/env/version are set by SpanProcessor on each span payload,
       // overriding dd-trace's defaults with the SDK config values.

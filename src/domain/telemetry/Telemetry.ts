@@ -1,4 +1,4 @@
-import { performDraw, type Subscription } from '@datadog/browser-core';
+import { performDraw, type Subscription } from '@flashcatcloud/browser-core';
 // These are internal browser-core exports, not part of the public API
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore TODO(RUM-14336) expose those APIs from browser-core
@@ -7,7 +7,7 @@ import {
   resetMonitor,
   monitor,
   callMonitored,
-} from '@datadog/browser-core/cjs/tools/monitor';
+} from '@flashcatcloud/browser-core/cjs/tools/monitor';
 import type { Configuration } from '../../config';
 import { EventKind, EventSource, EventManager, SessionRenewEvent, LifecycleKind, EventFormat } from '../../event';
 import { RawTelemetryError } from './rawTelemetryData.types';

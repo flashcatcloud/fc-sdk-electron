@@ -1,4 +1,4 @@
-import { combine, DISCARDED, generateUUID, type ServerDuration, type TimeStamp } from '@datadog/browser-core';
+import { combine, DISCARDED, generateUUID, type ServerDuration, type TimeStamp } from '@flashcatcloud/browser-core';
 import * as DiagnosticsChannel from 'node:diagnostics_channel';
 import { type FormatHooks } from '../../assembly';
 import { type Configuration } from '../../config';

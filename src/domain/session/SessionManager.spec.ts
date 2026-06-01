@@ -12,7 +12,7 @@ vi.mock('../../tools/display', () => ({
 }));
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { type TimeStamp } from '@datadog/browser-core';
+import { type TimeStamp } from '@flashcatcloud/browser-core';
 import { SessionManager, SESSION_EXPIRATION_DELAY, SESSION_FILE_NAME } from './SessionManager';
 import { SESSION_TIME_OUT_DELAY } from './session.constants';
 

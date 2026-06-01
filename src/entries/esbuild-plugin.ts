@@ -16,7 +16,7 @@
  * result using dd-trace's preload script.
  *
  * Usage:
- *   import { datadogEsbuildPlugin } from '@datadog/electron-sdk/esbuild-plugin';
+ *   import { datadogEsbuildPlugin } from '@flashcatcloud/electron-sdk/esbuild-plugin';
  *
  *   await esbuild.build({
  *     plugins: [datadogEsbuildPlugin()],
@@ -36,7 +36,7 @@ interface EsbuildPlugin {
 
 const DD_TRACE_PRELOAD = 'dd-trace/packages/datadog-instrumentations/src/electron/preload.js';
 
-const CJS_BANNER = 'try{require("@datadog/electron-sdk/instrument")}catch{}';
+const CJS_BANNER = 'try{require("@flashcatcloud/electron-sdk/instrument")}catch{}';
 
 // ESM banner: initialize dd-trace and register the preload script directly.
 // IITM cannot wrap BrowserWindow in ESM because static imports are loaded
@@ -45,7 +45,7 @@ const ESM_BANNER = `
 import { createRequire as __ddCR } from "module";
 try {
   const __ddR = __ddCR(import.meta.url);
-  __ddR("@datadog/electron-sdk/instrument");
+  __ddR("@flashcatcloud/electron-sdk/instrument");
   const __ddP = __ddR.resolve("${DD_TRACE_PRELOAD}");
   const { app: __ddApp, session: __ddSes } = __ddR("electron");
   const __ddReg = () => {
@@ -72,9 +72,9 @@ export function datadogEsbuildPlugin(): EsbuildPlugin {
         js: existingBanner ? `${existingBanner}\n${ddBanner}` : ddBanner,
       };
 
-      // Externalize dd-trace and @datadog/electron-sdk
+      // Externalize dd-trace and @flashcatcloud/electron-sdk
       const external = build.initialOptions.external ?? [];
-      for (const pkg of ['dd-trace', '@datadog/electron-sdk']) {
+      for (const pkg of ['dd-trace', '@flashcatcloud/electron-sdk']) {
         if (!external.includes(pkg)) {
           external.push(pkg);
         }

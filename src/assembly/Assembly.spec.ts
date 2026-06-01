@@ -1,5 +1,5 @@
 import { beforeEach, describe, it, expect } from 'vitest';
-import { DISCARDED, SKIPPED, type TimeStamp } from '@datadog/browser-core';
+import { DISCARDED, SKIPPED, type TimeStamp } from '@flashcatcloud/browser-core';
 import { Assembly } from './Assembly';
 import { createFormatHooks, type FormatHooks } from './hooks';
 import { registerCommonContext } from './commonContext';

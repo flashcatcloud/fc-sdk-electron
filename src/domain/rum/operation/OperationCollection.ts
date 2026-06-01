@@ -1,7 +1,15 @@
-import { type Context, generateUUID, isIndexableObject, timeStampNow } from '@datadog/browser-core';
+import { type Context, generateUUID, timeStampNow } from '@flashcatcloud/browser-core';
 import { EventFormat, EventKind, EventManager, EventSource } from '../../../event';
 import { displayError, displayWarn } from '../../../tools/display';
 import type { RawRumVital } from '../rawRumData.types';
+
+// Local equivalent of `@datadog/browser-core`'s `isIndexableObject`. The FlashCat
+// browser-core fork does not re-export this helper, so it is inlined here to keep
+// the SDK's only build-time dependency on the fork's public API surface. Like the
+// upstream helper, arrays are NOT treated as indexable option objects.
+function isIndexableObject(value: unknown): value is { [key: string]: unknown } {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 type OperationMethod = 'startOperation' | 'succeedOperation' | 'failOperation';
 

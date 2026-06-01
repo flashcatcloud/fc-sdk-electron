@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { DISCARDED, SKIPPED, type TimeStamp } from '@datadog/browser-core';
+import { DISCARDED, SKIPPED, type TimeStamp } from '@flashcatcloud/browser-core';
 import { createFormatHooks } from './hooks';
 
 const T0 = 0 as TimeStamp;

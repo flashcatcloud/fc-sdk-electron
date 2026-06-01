@@ -1,13 +1,13 @@
-import { datadogRum } from '@datadog/browser-rum';
+import { flashcatRum } from '@flashcatcloud/browser-rum';
 
 // Initialize the browser RUM SDK in the renderer process.
 // It auto-detects the DatadogEventBridge exposed by the electron-sdk preload
 // and sends all collected events (fetch, XHR, DOM, errors, views) through it
 // to the main process instead of directly to the Datadog intake.
-datadogRum.init({
-  applicationId: '6efd3722-af0a-4070-994c-0e87076d4814',
-  clientToken: 'pub2a7307cdec74934cacb411a193f632f8',
-  site: 'datad0g.com',
+flashcatRum.init({
+  applicationId: 'mKESnRV4wGs5nwcbTwotmW',
+  clientToken: '6d12421358ed581683d6593ca6492068131',
+  site: 'jira.flashcat.cloud',
   service: 'electron-playground',
   env: 'dev',
   sessionSampleRate: 100,

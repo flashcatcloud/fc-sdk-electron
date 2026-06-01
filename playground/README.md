@@ -1,6 +1,6 @@
 # Electron SDK Playground
 
-A simple Electron application to test and demonstrate the `@datadog/electron-sdk`.
+A simple Electron application to test and demonstrate the `@flashcatcloud/electron-sdk`.
 
 ## Features
 

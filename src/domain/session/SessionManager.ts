@@ -1,7 +1,7 @@
 import { app } from 'electron';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { deepClone, generateUUID, ONE_MINUTE, type Subscription } from '@datadog/browser-core';
+import { deepClone, generateUUID, ONE_MINUTE, type Subscription } from '@flashcatcloud/browser-core';
 import { type EndUserActivityEvent, EventKind, EventManager, LifecycleKind } from '../../event';
 import type { FormatHooks } from '../../assembly';
 import { addError, setTimeout } from '../telemetry';

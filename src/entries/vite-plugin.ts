@@ -4,19 +4,19 @@
  * Vite hoists all top-level `require()` calls to the start of the bundle,
  * regardless of their source module order. This breaks dd-trace's module
  * hooking because `require('electron')` runs before dd-trace can register
- * its hooks via `import '@datadog/electron-sdk/instrument'`.
+ * its hooks via `import '@flashcatcloud/electron-sdk/instrument'`.
  *
  * This plugin:
  * 1. Externalizes dd-trace and the electron-sdk so they remain as runtime
  *    requires (not bundled), preserving module hook mechanics.
- * 2. Prepends dd-trace initialization (via @datadog/electron-sdk/instrument)
+ * 2. Prepends dd-trace initialization (via @flashcatcloud/electron-sdk/instrument)
  *    to the very top of the main process entry chunk, ensuring hooks are
  *    registered before any hoisted requires. No manual import needed.
- * 3. Copies dd-trace and @datadog/electron-sdk into the build output's
+ * 3. Copies dd-trace and @flashcatcloud/electron-sdk into the build output's
  *    node_modules so they are available at runtime in packaged apps.
  *
  * Usage:
- *   import { datadogVitePlugin } from '@datadog/electron-sdk/vite-plugin';
+ *   import { datadogVitePlugin } from '@flashcatcloud/electron-sdk/vite-plugin';
  *
  *   export default defineConfig({
  *     plugins: [datadogVitePlugin()],
@@ -47,7 +47,7 @@ const DD_TRACE_PRELOAD = 'dd-trace/packages/datadog-instrumentations/src/electro
 const DD_TRACE_PRELOAD_PATH = 'electron/preload.js';
 
 const CJS_BANNER =
-  'try { require("node:module").createRequire(__filename)("@datadog/electron-sdk/instrument"); } catch {}';
+  'try { require("node:module").createRequire(__filename)("@flashcatcloud/electron-sdk/instrument"); } catch {}';
 
 // ESM banner: initialize dd-trace and register the preload script directly.
 // In ESM, static imports are loaded before module code evaluates, so dd-trace's
@@ -57,7 +57,7 @@ const ESM_BANNER = `
 import { createRequire as __ddCR } from "module";
 try {
   const __ddR = __ddCR(import.meta.url);
-  __ddR("@datadog/electron-sdk/instrument");
+  __ddR("@flashcatcloud/electron-sdk/instrument");
   const __ddP = __ddR.resolve("${DD_TRACE_PRELOAD}");
   const { app: __ddApp, session: __ddSes } = __ddR("electron");
   const __ddReg = () => {
@@ -151,7 +151,7 @@ export function datadogVitePlugin(): VitePlugin {
       }
 
       copyPackageTree('dd-trace');
-      copyPackageTree('@datadog/electron-sdk');
+      copyPackageTree('@flashcatcloud/electron-sdk');
     },
   };
 }

@@ -14,7 +14,7 @@ const TEST_USER_AGENT = 'TestApp/1.0.0 (test) Electron/0 Chrome/0 Node/0';
 describe('BatchConsumer', () => {
   const config: ConsumerConfig = {
     trackPath: 'rum',
-    intakeUrl: 'https://intake.datadoghq.com/api/v2/rum',
+    intakeUrl: 'https://browser.flashcat.cloud/api/v2/rum',
     clientToken: 'test-client-token',
   };
 
@@ -40,6 +40,17 @@ describe('BatchConsumer', () => {
       const headers = fetchMock.mock.calls[0][1]?.headers as Record<string, string>;
       expect(headers['User-Agent']).toBe(TEST_USER_AGENT);
       expect(headers['DD-API-KEY']).toBe(config.clientToken);
+    });
+
+    it('should send a text/plain content type (required by the FlashCat intake)', async () => {
+      fsMocks.readdir.mockResolvedValue(['test.log']);
+      fsMocks.readFile.mockResolvedValue('{"event":"data"}');
+
+      await consumer.upload();
+
+      const fetchMock = vi.mocked(fetch);
+      const headers = fetchMock.mock.calls[0][1]?.headers as Record<string, string>;
+      expect(headers['Content-Type']).toBe('text/plain;charset=UTF-8');
     });
 
     it('should call getUserAgent only once across multiple uploads', async () => {
@@ -98,7 +109,7 @@ describe('BatchConsumer', () => {
   });
 
   describe('data parsing', () => {
-    it('should filter out invalid JSON and empty lines', async () => {
+    it('should filter out invalid JSON and empty lines and send newline-delimited JSON', async () => {
       fsMocks.readdir.mockResolvedValue(['test.log']);
       const rawContent = ['{"valid": 1}', '   ', 'invalid-json', '{"valid": 2}'].join('\n');
 
@@ -110,10 +121,11 @@ describe('BatchConsumer', () => {
       const call = fetchMock.mock.calls[0];
 
       const body = call[1]?.body;
-      if (typeof body === 'string') {
-        const sentBody = JSON.parse(body) as unknown[];
-        expect(sentBody).toEqual([{ valid: 1 }, { valid: 2 }]);
-      }
+      expect(typeof body).toBe('string');
+      // Body must be NDJSON (one event per line), not a JSON array.
+      expect(body).toBe('{"valid":1}\n{"valid":2}');
+      const sentEvents = (body as string).split('\n').map((line) => JSON.parse(line) as unknown);
+      expect(sentEvents).toEqual([{ valid: 1 }, { valid: 2 }]);
     });
 
     it('should delete empty log files without calling fetch', async () => {

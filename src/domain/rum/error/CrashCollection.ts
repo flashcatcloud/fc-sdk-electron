@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
-import { generateUUID, type TimeStamp } from '@datadog/browser-core';
+import { generateUUID, type TimeStamp } from '@flashcatcloud/browser-core';
 import { app, crashReporter } from 'electron';
 import { EventFormat, EventKind, EventManager, EventSource } from '../../../event';
 import type { CrashReport } from '../../../wasm';

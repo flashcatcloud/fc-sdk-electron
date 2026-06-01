@@ -69,51 +69,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@datadog/browser-core@npm:6.26.0":
-  version: 6.26.0
-  resolution: "@datadog/browser-core@npm:6.26.0"
-  checksum: 10c0/4fa9f83073198f5f61a32c0e6fa424b442f8bd0cab8ae3817a4ff65c84e9650530c3befa4604ff244a8d42cde5fe74dd7d425774b6469acadfcbd659e3d46264
-  languageName: node
-  linkType: hard
-
-"@datadog/electron-sdk@workspace:.":
-  version: 0.0.0-use.local
-  resolution: "@datadog/electron-sdk@workspace:."
-  dependencies:
-    "@datadog/browser-core": "npm:6.26.0"
-    "@eslint/js": "npm:10.0.0"
-    "@playwright/test": "npm:1.58.2"
-    "@rollup/plugin-commonjs": "npm:29.0.0"
-    "@rollup/plugin-json": "npm:6.1.0"
-    "@rollup/plugin-node-resolve": "npm:16.0.3"
-    "@rollup/plugin-replace": "npm:6.0.3"
-    "@rollup/plugin-typescript": "npm:12.1.2"
-    "@types/node": "npm:24.10.11"
-    "@vitest/coverage-v8": "npm:4.0.18"
-    "@vitest/ui": "npm:4.0.18"
-    concurrently: "npm:9.2.1"
-    dd-trace: "npm:5.103.0"
-    electron: "npm:41.1.0"
-    eslint: "npm:10.0.2"
-    eslint-config-prettier: "npm:10.1.8"
-    eslint-plugin-prettier: "npm:5.5.5"
-    eslint-plugin-unicorn: "npm:64.0.0"
-    husky: "npm:9.1.7"
-    json-schema-to-typescript: "bcaudan/json-schema-to-typescript#bcaudan/add-readonly-support"
-    lint-staged: "npm:16.3.1"
-    playwright: "npm:1.58.2"
-    prettier: "npm:3.8.1"
-    rollup: "npm:4.59.0"
-    rollup-plugin-dts: "npm:6.3.0"
-    tslib: "npm:2.8.1"
-    typescript: "npm:5.9.3"
-    typescript-eslint: "npm:8.57.0"
-    vitest: "npm:4.0.18"
-  peerDependencies:
-    electron: ">=39"
-  languageName: unknown
-  linkType: soft
-
 "@datadog/flagging-core@npm:0.3.3":
   version: 0.3.3
   resolution: "@datadog/flagging-core@npm:0.3.3"
@@ -495,6 +450,51 @@ __metadata:
   checksum: 10c0/f8354a7b92cc41e7a55d51986d192134be84f9dc0c91b5e649d075d733b56981c4ca8bf4460d54120c4c87b47984167bad2cb9bceb303f11b0a3bad22b3ed06a
   languageName: node
   linkType: hard
+
+"@flashcatcloud/browser-core@npm:0.0.4-alpha.2":
+  version: 0.0.4-alpha.2
+  resolution: "@flashcatcloud/browser-core@npm:0.0.4-alpha.2"
+  checksum: 10c0/b832a4e8b6b1af7702f20ad4e00aca9bc78c680886aceb466a16f5459976ed03a2dbe34b14d05a2df05b5bbbe70becce82cb6da3b65040b29ed0b19b551332a8
+  languageName: node
+  linkType: hard
+
+"@flashcatcloud/electron-sdk@workspace:.":
+  version: 0.0.0-use.local
+  resolution: "@flashcatcloud/electron-sdk@workspace:."
+  dependencies:
+    "@eslint/js": "npm:10.0.0"
+    "@flashcatcloud/browser-core": "npm:0.0.4-alpha.2"
+    "@playwright/test": "npm:1.58.2"
+    "@rollup/plugin-commonjs": "npm:29.0.0"
+    "@rollup/plugin-json": "npm:6.1.0"
+    "@rollup/plugin-node-resolve": "npm:16.0.3"
+    "@rollup/plugin-replace": "npm:6.0.3"
+    "@rollup/plugin-typescript": "npm:12.1.2"
+    "@types/node": "npm:24.10.11"
+    "@vitest/coverage-v8": "npm:4.0.18"
+    "@vitest/ui": "npm:4.0.18"
+    concurrently: "npm:9.2.1"
+    dd-trace: "npm:5.103.0"
+    electron: "npm:41.1.0"
+    eslint: "npm:10.0.2"
+    eslint-config-prettier: "npm:10.1.8"
+    eslint-plugin-prettier: "npm:5.5.5"
+    eslint-plugin-unicorn: "npm:64.0.0"
+    husky: "npm:9.1.7"
+    json-schema-to-typescript: "bcaudan/json-schema-to-typescript#bcaudan/add-readonly-support"
+    lint-staged: "npm:16.3.1"
+    playwright: "npm:1.58.2"
+    prettier: "npm:3.8.1"
+    rollup: "npm:4.59.0"
+    rollup-plugin-dts: "npm:6.3.0"
+    tslib: "npm:2.8.1"
+    typescript: "npm:5.9.3"
+    typescript-eslint: "npm:8.57.0"
+    vitest: "npm:4.0.18"
+  peerDependencies:
+    electron: ">=39"
+  languageName: unknown
+  linkType: soft
 
 "@humanfs/core@npm:^0.19.1":
   version: 0.19.1
