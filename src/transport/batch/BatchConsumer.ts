@@ -10,7 +10,7 @@ export interface ConsumerConfig {
 
 /**
  * Reads rotated `.log` batch files from disk, parses their newline-delimited JSON
- * content, and uploads the events to the Datadog intake endpoint.
+ * content, and uploads the events to the FlashCat intake endpoint.
  * Successfully uploaded files are deleted from disk.
  */
 export class BatchConsumer {
@@ -85,13 +85,16 @@ export class BatchConsumer {
       })
       .filter((item) => item !== null);
 
-    const body = JSON.stringify(events);
+    // FlashCat intake expects newline-delimited JSON (one event per line) with a
+    // `text/plain` content type — NOT a JSON array. Sending `application/json` or a
+    // JSON-array body is rejected with HTTP 400 by the intake.
+    const body = events.map((event) => JSON.stringify(event)).join('\n');
 
     try {
       const response = await fetch(this.intakeUrl, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
+          'Content-Type': 'text/plain;charset=UTF-8',
           'DD-API-KEY': this.clientToken,
           'User-Agent': this.userAgent!,
         },

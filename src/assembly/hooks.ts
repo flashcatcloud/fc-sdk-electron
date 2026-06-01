@@ -1,4 +1,5 @@
-import { combine, DISCARDED, SKIPPED, type RecursivePartial, type TimeStamp } from '@datadog/browser-core';
+import { combine, DISCARDED, SKIPPED, type TimeStamp } from '@flashcatcloud/browser-core';
+import type { RecursivePartial } from '../tools/coreCompat';
 import type { RumEvent } from '../domain/rum';
 import type { TelemetryEvent } from '../domain/telemetry';
 import { RawSpanData } from '../domain/tracing/rawTracingData.types';

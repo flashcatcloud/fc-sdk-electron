@@ -7,7 +7,7 @@ import {
   TimeStamp,
   timeStampNow,
   toServerDuration,
-} from '@datadog/browser-core';
+} from '@flashcatcloud/browser-core';
 import {
   EventFormat,
   EventKind,

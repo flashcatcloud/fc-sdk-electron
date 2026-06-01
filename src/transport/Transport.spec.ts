@@ -97,7 +97,8 @@ describe('Transport', () => {
       const transport = await Transport.create(config, eventManager);
       await transport.flush();
 
-      expect(mockBatchFlush).toHaveBeenCalledTimes(2);
+      // FlashCat only has the RUM track (no spans intake), so exactly one batch manager.
+      expect(mockBatchFlush).toHaveBeenCalledTimes(1);
     });
   });
 

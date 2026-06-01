@@ -1,15 +1,12 @@
-import { ONE_KIBI_BYTE, ONE_MEBI_BYTE, ONE_SECOND, DefaultPrivacyLevel } from '@datadog/browser-core';
+import { ONE_KIBI_BYTE, ONE_MEBI_BYTE, ONE_SECOND, DefaultPrivacyLevel } from '@flashcatcloud/browser-core';
 import { displayError } from './tools/display';
 
-const VALID_DATADOG_SITES = [
-  'datadoghq.com',
-  'datadoghq.eu',
-  'us3.datadoghq.com',
-  'us5.datadoghq.com',
-  'ap1.datadoghq.com',
-  'ap2.datadoghq.com',
-  'ddog-gov.com',
-  'datad0g.com', // Internal staging site
+// FlashCat intake hosts. The `site` value is used verbatim as the intake host
+// (see transport/utils.ts), mirroring the FlashCat browser-sdk fork. Aligned with
+// the iOS / Android forks: production CN vs. internal staging.
+const VALID_FLASHCAT_SITES = [
+  'browser.flashcat.cloud', // Production (CN)
+  'jira.flashcat.cloud', // Internal staging
 ] as const;
 
 export const BatchSizes = {
@@ -66,8 +63,12 @@ function validateRequiredString(value: unknown, fieldName: string): string | und
 }
 
 function validateSite(value: unknown): string | undefined {
-  if (typeof value !== 'string' || value.length === 0 || !(VALID_DATADOG_SITES as readonly string[]).includes(value)) {
-    displayError(`Configuration error: 'site' must be one of: ${VALID_DATADOG_SITES.join(', ')}`);
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    !(VALID_FLASHCAT_SITES as readonly string[]).includes(value)
+  ) {
+    displayError(`Configuration error: 'site' must be one of: ${VALID_FLASHCAT_SITES.join(', ')}`);
     return undefined;
   }
   return value;

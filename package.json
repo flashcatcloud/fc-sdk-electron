@@ -1,7 +1,7 @@
 {
-  "name": "@datadog/electron-sdk",
+  "name": "@flashcatcloud/electron-sdk",
   "version": "0.3.0",
-  "description": "DataDog SDK for Electron applications",
+  "description": "FlashCat SDK for Electron applications",
   "packageManager": "yarn@4.12.0",
   "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",
@@ -108,8 +108,8 @@
     "release": "node scripts/prepare-release.ts"
   },
   "devDependencies": {
-    "@datadog/browser-core": "6.26.0",
     "@eslint/js": "10.0.0",
+    "@flashcatcloud/browser-core": "0.0.4-alpha.2",
     "@playwright/test": "1.58.2",
     "@rollup/plugin-commonjs": "29.0.0",
     "@rollup/plugin-json": "6.1.0",
@@ -145,7 +145,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/DataDog/electron-sdk.git"
+    "url": "git+https://github.com/flashcatcloud/fc-sdk-electron.git"
   },
   "volta": {
     "node": "25.3.0",

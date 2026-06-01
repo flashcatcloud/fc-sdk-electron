@@ -1,5 +1,5 @@
 import { ipcMain } from 'electron';
-import { DefaultPrivacyLevel } from '@datadog/browser-core';
+import { DefaultPrivacyLevel } from '@flashcatcloud/browser-core';
 import { EventKind, EventSource, EventFormat } from '../event';
 import type { EventManager, RawRumEvent } from '../event';
 import { monitor, addError as addTelemetryError } from '../domain/telemetry';

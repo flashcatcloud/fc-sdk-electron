@@ -60,7 +60,7 @@ export function setupHotReload(): void {
       reloadTimeout = setTimeout(() => {
         // Clear require cache for SDK modules
         Object.keys(require.cache).forEach((key) => {
-          if (key.includes('@datadog/electron-sdk')) {
+          if (key.includes('@flashcatcloud/electron-sdk')) {
             console.log('Clearing cache for:', key);
             delete require.cache[key];
           }

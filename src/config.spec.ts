@@ -10,7 +10,7 @@ vi.mock('./tools/display', () => ({
 describe('buildConfiguration', () => {
   // Default valid config used as base for all tests
   const DEFAULT_CONFIG: InitConfiguration = {
-    site: 'datadoghq.com',
+    site: 'browser.flashcat.cloud',
     service: 'test-service',
     clientToken: 'test-token',
     applicationId: 'test-app-id',
@@ -128,16 +128,7 @@ describe('buildConfiguration', () => {
   });
 
   describe('site validation', () => {
-    const VALID_DATADOG_SITES = [
-      'datadoghq.com',
-      'datadoghq.eu',
-      'us3.datadoghq.com',
-      'us5.datadoghq.com',
-      'ap1.datadoghq.com',
-      'ap2.datadoghq.com',
-      'ddog-gov.com',
-      'datad0g.com',
-    ];
+    const VALID_FLASHCAT_SITES = ['browser.flashcat.cloud', 'jira.flashcat.cloud'];
 
     it.each([
       { value: undefined, description: 'undefined' },
@@ -145,6 +136,7 @@ describe('buildConfiguration', () => {
       { value: 123, description: 'number' },
       { value: null, description: 'null' },
       { value: 'invalid-site.com', description: 'invalid site' },
+      { value: 'datadoghq.com', description: 'a Datadog site' },
     ])('returns undefined and logs error when site is $description', ({ value }) => {
       const config = {
         ...DEFAULT_CONFIG,
@@ -153,20 +145,11 @@ describe('buildConfiguration', () => {
 
       expect(buildConfiguration(config)).toBeUndefined();
       expect(display.displayError).toHaveBeenCalledWith(
-        `Configuration error: 'site' must be one of: ${VALID_DATADOG_SITES.join(', ')}`
+        `Configuration error: 'site' must be one of: ${VALID_FLASHCAT_SITES.join(', ')}`
       );
     });
 
-    it.each([
-      { site: 'datadoghq.com', expectedUrl: 'https://browser-intake-datadoghq.com/api/v2/rum' },
-      { site: 'datadoghq.eu', expectedUrl: 'https://browser-intake-datadoghq.eu/api/v2/rum' },
-      { site: 'us3.datadoghq.com', expectedUrl: 'https://browser-intake-us3-datadoghq.com/api/v2/rum' },
-      { site: 'us5.datadoghq.com', expectedUrl: 'https://browser-intake-us5-datadoghq.com/api/v2/rum' },
-      { site: 'ap1.datadoghq.com', expectedUrl: 'https://browser-intake-ap1-datadoghq.com/api/v2/rum' },
-      { site: 'ap2.datadoghq.com', expectedUrl: 'https://browser-intake-ap2-datadoghq.com/api/v2/rum' },
-      { site: 'ddog-gov.com', expectedUrl: 'https://browser-intake-ddog-gov.com/api/v2/rum' },
-      { site: 'datad0g.com', expectedUrl: 'https://browser-intake-datad0g.com/api/v2/rum' },
-    ])('accepts valid site: $site', ({ site }) => {
+    it.each([{ site: 'browser.flashcat.cloud' }, { site: 'jira.flashcat.cloud' }])('accepts valid site: $site', ({ site }) => {
       const config = {
         ...DEFAULT_CONFIG,
         site,

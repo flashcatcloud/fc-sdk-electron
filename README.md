@@ -1,4 +1,6 @@
-# Datadog SDK for Electron
+# FlashCat SDK for Electron
+
+> Forked from [Datadog's Electron SDK](https://github.com/DataDog/electron-sdk) and rebranded to report to the FlashCat platform. Internal module/type names keep the `dd-`/`Datadog` prefix per the fork convention; the published package is `@flashcatcloud/electron-sdk` and events are sent to FlashCat RUM ingest.
 
 Real User Monitoring for Electron applications.
 
@@ -13,9 +15,9 @@ Real User Monitoring for Electron applications.
 ### Install
 
 ```bash
-yarn add @datadog/electron-sdk
+yarn add @flashcatcloud/electron-sdk
 # or
-npm install @datadog/electron-sdk
+npm install @flashcatcloud/electron-sdk
 ```
 
 ### Setup
@@ -58,7 +60,7 @@ Import the instrumentation entry point **before** `electron` in your main proces
 
 ```ts
 // src/main.ts
-import '@datadog/electron-sdk/instrument';
+import '@flashcatcloud/electron-sdk/instrument';
 import { app, BrowserWindow } from 'electron';
 ```
 
@@ -67,13 +69,13 @@ This initializes dd-trace and automatically instruments the needed APIs.
 Then initialize the Electron SDK by calling `init` before creating any browser windows:
 
 ```ts
-import { init } from '@datadog/electron-sdk';
+import { init } from '@flashcatcloud/electron-sdk';
 
 await init({
   clientToken: '<CLIENT_TOKEN>',
   applicationId: '<APPLICATION_ID>',
   service: 'my-electron-app',
-  site: 'datadoghq.com',
+  site: 'browser.flashcat.cloud',
 });
 ```
 
@@ -89,7 +91,7 @@ dd-trace instruments `require('electron')` at runtime, which requires correct mo
 
 ```ts
 // vite config
-import { datadogVitePlugin } from '@datadog/electron-sdk/vite-plugin';
+import { datadogVitePlugin } from '@flashcatcloud/electron-sdk/vite-plugin';
 
 export default defineConfig({
   plugins: [datadogVitePlugin()],
@@ -100,7 +102,7 @@ export default defineConfig({
 
 ```ts
 // webpack config
-const { DatadogWebpackPlugin } = require('@datadog/electron-sdk/webpack-plugin');
+const { DatadogWebpackPlugin } = require('@flashcatcloud/electron-sdk/webpack-plugin');
 
 module.exports = {
   plugins: [new DatadogWebpackPlugin()],
@@ -111,7 +113,7 @@ module.exports = {
 
 ```ts
 // esbuild config
-import { datadogEsbuildPlugin } from '@datadog/electron-sdk/esbuild-plugin';
+import { datadogEsbuildPlugin } from '@flashcatcloud/electron-sdk/esbuild-plugin';
 
 await esbuild.build({
   plugins: [datadogEsbuildPlugin()],
@@ -135,7 +137,7 @@ Operation Monitoring lets you track the lifecycle of critical user-facing workfl
 > ⚗️ This API is in preview and the signatures may change before stable release.
 
 ```ts
-import { startOperation, succeedOperation, failOperation } from '@datadog/electron-sdk';
+import { startOperation, succeedOperation, failOperation } from '@flashcatcloud/electron-sdk';
 
 // Simple operation
 startOperation('checkout');
@@ -153,7 +155,7 @@ succeedOperation('upload', { operationKey: 'profile_pic' });
 failOperation('upload', 'abandoned', { operationKey: 'cover_photo' });
 ```
 
-The renderer process keeps using `@datadog/browser-rum` directly (with the `feature_operation_vital` experimental flag enabled on its init). API signatures match exactly, so you can start an operation in one process and complete it in the other — the backend correlates steps by `name` + `operationKey`.
+The renderer process keeps using `@flashcatcloud/browser-rum` directly (with the `feature_operation_vital` experimental flag enabled on its init). API signatures match exactly, so you can start an operation in one process and complete it in the other — the backend correlates steps by `name` + `operationKey`.
 
 ## API
 
@@ -166,7 +168,7 @@ Initialize the SDK. Returns `true` on success, `false` if configuration is inval
 Report a manually handled error.
 
 ```ts
-import { addError } from '@datadog/electron-sdk';
+import { addError } from '@flashcatcloud/electron-sdk';
 
 try {
   riskyOperation();
@@ -208,9 +210,9 @@ interface FeatureOperationOptions {
 
 | Option                | Type                                     | Required | Default  | Description                                                                                                                        |
 | --------------------- | ---------------------------------------- | -------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `clientToken`         | `string`                                 | Yes      | —        | Datadog client token                                                                                                               |
+| `clientToken`         | `string`                                 | Yes      | —        | FlashCat client token                                                                                                              |
 | `applicationId`       | `string`                                 | Yes      | —        | RUM application ID                                                                                                                 |
-| `site`                | `string`                                 | Yes      | —        | Datadog site (e.g. `datadoghq.com`, `datadoghq.eu`, `us3.datadoghq.com`, `us5.datadoghq.com`, `ap1.datadoghq.com`, `ddog-gov.com`) |
+| `site`                | `string`                                 | Yes      | —        | FlashCat site — the intake host, used verbatim. One of `browser.flashcat.cloud` (production) or `jira.flashcat.cloud` (staging)    |
 | `service`             | `string`                                 | Yes      | —        | Service name                                                                                                                       |
 | `env`                 | `string`                                 | No       | —        | Application environment                                                                                                            |
 | `version`             | `string`                                 | No       | —        | Application version                                                                                                                |

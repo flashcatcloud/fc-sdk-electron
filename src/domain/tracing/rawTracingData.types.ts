@@ -1,4 +1,4 @@
-import { ServerDuration } from '@datadog/browser-core';
+import { ServerDuration } from '@flashcatcloud/browser-core';
 
 export interface RawTraceData {
   env: string;

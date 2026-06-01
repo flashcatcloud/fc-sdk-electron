@@ -1,21 +1,15 @@
-// For sites with subdomains (e.g., us3.datadoghq.com), replace the first dot with a dash
-function computeIntakeSite(site: string): string {
-  const parts = site.split('.');
-
-  if (parts.length > 2) {
-    // Has subdomain (e.g., us3.datadoghq.com -> us3-datadoghq.com)
-    return `${parts[0]}-${parts.slice(1).join('.')}`;
-  }
-
-  return site;
-}
+// FlashCat intake: the configured `site` is already the full intake host
+// (e.g. browser.flashcat.cloud). Unlike Datadog, there is no `browser-intake-`
+// prefix and no subdomain-to-dash rewriting — the host is used verbatim.
+// This mirrors the FlashCat browser-sdk fork's `buildEndpointHost`, which simply
+// returns `site`.
 
 export function computeIntakeHostname(site: string, proxy?: string): string {
   if (proxy) {
     return new URL(proxy).hostname;
   }
 
-  return `browser-intake-${computeIntakeSite(site)}`;
+  return site;
 }
 
 export function computeIntakeUrlForTrack(site: string, trackType: string, proxy?: string): string {
@@ -23,5 +17,5 @@ export function computeIntakeUrlForTrack(site: string, trackType: string, proxy?
     return `${proxy}?ddforward=${encodeURIComponent(`/api/v2/${trackType}`)}`;
   }
 
-  return `https://browser-intake-${computeIntakeSite(site)}/api/v2/${trackType}`;
+  return `https://${site}/api/v2/${trackType}`;
 }

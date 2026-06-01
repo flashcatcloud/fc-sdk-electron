@@ -1,4 +1,5 @@
-import { combine, DISCARDED, timeStampNow, type RecursivePartial, TimeStamp } from '@datadog/browser-core';
+import { combine, DISCARDED, timeStampNow, TimeStamp } from '@flashcatcloud/browser-core';
+import type { RecursivePartial } from '../tools/coreCompat';
 import { EventFormat, EventKind, EventManager, EventSource, EventTrack, type RawEvent, ServerEvent } from '../event';
 import type { RawRumEvent } from '../event';
 import type { FormatHooks } from './hooks';
@@ -12,7 +13,7 @@ import { TelemetryEvent } from '../domain/telemetry';
  * Handles two sources differently:
  * - **Main-process events**: fully assembled by combining raw data with all
  *   registered hook results (commonContext, session, view).
- * - **Renderer events**: arrive pre-assembled by `@datadog/browser-rum` in
+ * - **Renderer events**: arrive pre-assembled by `@flashcatcloud/browser-rum` in
  *   the renderer process. Only `session.id` and `application.id` are
  *   overridden from the main process; the renderer's own view, source,
  *   service, and other attributes are preserved.
@@ -43,7 +44,7 @@ export class Assembly {
   }
 
   /**
-   * Renderer RUM events arrive already assembled by `@datadog/browser-rum`.
+   * Renderer RUM events arrive already assembled by `@flashcatcloud/browser-rum`.
    * Only `session.id` and `application.id` are overridden from the main
    * process hooks, preserving the renderer's own view, source, and other
    * attributes.

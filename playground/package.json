@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "packageManager": "yarn@4.12.0",
-  "description": "Playground for testing @datadog/electron-sdk",
+  "description": "Playground for testing @flashcatcloud/electron-sdk",
   "main": "./dist/main.js",
   "scripts": {
     "build": "tsc && yarn build:renderer && cp src/index.html dist/index.html",
@@ -13,8 +13,8 @@
     "dev": "yarn build && concurrently \"yarn build:watch\" \"electron .\""
   },
   "dependencies": {
-    "@datadog/browser-rum": "6.30.1",
-    "@datadog/electron-sdk": "portal:.."
+    "@flashcatcloud/browser-rum": "6.30.1",
+    "@flashcatcloud/electron-sdk": "portal:.."
   },
   "devDependencies": {
     "@types/node": "25.5.0",

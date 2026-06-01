@@ -1,4 +1,5 @@
-import { RecursivePartial, ServerDuration, TimeStamp } from '@datadog/browser-core';
+import { ServerDuration, TimeStamp } from '@flashcatcloud/browser-core';
+import type { RecursivePartial } from '../../tools/coreCompat';
 import { RumErrorEvent, RumResourceEvent, RumViewEvent, RumVitalOperationStepEvent } from './rumEvent.types';
 
 export type RawRumData = RawRumView | RawRumError | RawRumVital | RawRumResource;

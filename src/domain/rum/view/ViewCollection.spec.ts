@@ -11,7 +11,7 @@ vi.mock('../../../tools/display', () => ({
 }));
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { type TimeStamp } from '@datadog/browser-core';
+import { type TimeStamp } from '@flashcatcloud/browser-core';
 import { ViewCollection, SESSION_KEEP_ALIVE_INTERVAL, VIEW_UPDATE_THROTTLE_DELAY } from './ViewCollection';
 import {
   EventManager,

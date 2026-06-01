@@ -1,6 +1,6 @@
 import { app } from 'electron';
 import * as path from 'node:path';
-import { DISCARDED, SKIPPED, timeStampNow } from '@datadog/browser-core';
+import { DISCARDED, SKIPPED, timeStampNow } from '@flashcatcloud/browser-core';
 import type { FormatHooks } from '../../assembly';
 import { DiskValueHistory } from '../../tools/DiskValueHistory';
 import { SESSION_TIME_OUT_DELAY } from './session.constants';

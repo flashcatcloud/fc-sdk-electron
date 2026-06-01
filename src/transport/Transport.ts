@@ -9,7 +9,12 @@ import { BatchManager } from './batch';
  * through dedicated {@link BatchManager} instances for disk-buffered delivery.
  */
 export class Transport {
-  private tracks: EventTrack[] = [EventTrack.RUM, EventTrack.SPANS];
+  // FlashCat ingest only exposes the RUM track (POST /api/v2/rum). It has no
+  // APM/trace (`spans`) intake, so the SPANS track is intentionally omitted to
+  // avoid uploading to a non-existent endpoint. Main-process HTTP spans are still
+  // observable: SpanProcessor converts them into RUM `resource` events on the RUM
+  // track. Native APM tracing remains pending product support.
+  private tracks: EventTrack[] = [EventTrack.RUM];
   private batchManagers: BatchManager[] = [];
   private basePath: string;
 

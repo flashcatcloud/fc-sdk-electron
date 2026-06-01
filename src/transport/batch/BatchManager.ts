@@ -1,4 +1,4 @@
-import { setTimeout } from '@datadog/browser-core';
+import { setTimeout } from '@flashcatcloud/browser-core';
 import path from 'node:path';
 import type { Configuration } from '../../config';
 import { addError } from '../../domain/telemetry';

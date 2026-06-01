@@ -2,7 +2,8 @@ import { type MockInstance } from 'vitest';
 import * as fs from 'node:fs/promises';
 import type { Configuration } from './config';
 import { RawRumView, RumActionEvent, RumErrorEvent, RumEvent, RumResourceEvent, RumViewEvent } from './domain/rum';
-import { combine, mergeInto, RecursivePartial, ServerDuration } from '@datadog/browser-core';
+import { combine, mergeInto, ServerDuration } from '@flashcatcloud/browser-core';
+import { RecursivePartial } from './tools/coreCompat';
 
 export function mockFs() {
   const mocks = {
@@ -31,7 +32,7 @@ export function mockFs() {
 }
 export function createTestConfiguration(overrides: Partial<Configuration> = {}): Configuration {
   return {
-    site: 'datadoghq.com',
+    site: 'browser.flashcat.cloud',
     service: 'test-service',
     clientToken: 'test-token',
     applicationId: 'test-app-id',

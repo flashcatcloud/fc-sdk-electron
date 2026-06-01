@@ -3,24 +3,24 @@
  *
  * This plugin handles four concerns for packaged Electron apps:
  *
- * 1. Prepends dd-trace initialization (via @datadog/electron-sdk/instrument)
+ * 1. Prepends dd-trace initialization (via @flashcatcloud/electron-sdk/instrument)
  *    as a banner to the main entry, so the user doesn't need to manually
- *    import '@datadog/electron-sdk/instrument'.
+ *    import '@flashcatcloud/electron-sdk/instrument'.
  *
- * 2. Externalizes dd-trace and @datadog/electron-sdk so they remain as runtime
+ * 2. Externalizes dd-trace and @flashcatcloud/electron-sdk so they remain as runtime
  *    requires (not bundled), avoiding issues with dd-trace's dynamic requires,
  *    native modules, and optional peer dependencies.
  *
- * 3. Excludes dd-trace and @datadog/electron-sdk from @vercel/webpack-asset-
+ * 3. Excludes dd-trace and @flashcatcloud/electron-sdk from @vercel/webpack-asset-
  *    relocator-loader, which would otherwise break dd-trace's internal module
  *    resolution (createRequire, dynamic _require.resolve).
  *
- * 4. Copies dd-trace, @datadog/electron-sdk, and their transitive dependencies
+ * 4. Copies dd-trace, @flashcatcloud/electron-sdk, and their transitive dependencies
  *    into the webpack output's node_modules so they are available at runtime
  *    in packaged apps where the project's node_modules is absent.
  *
  * Usage:
- *   const { DatadogWebpackPlugin } = require('@datadog/electron-sdk/webpack-plugin');
+ *   const { DatadogWebpackPlugin } = require('@flashcatcloud/electron-sdk/webpack-plugin');
  *
  *   module.exports = {
  *     plugins: [new DatadogWebpackPlugin()],
@@ -111,7 +111,7 @@ function copyPackageTree(pkg: string, destModules: string, visited: Set<string>)
 
 export class DatadogWebpackPlugin {
   apply(compiler: Compiler): void {
-    // Externalize dd-trace and @datadog/electron-sdk so webpack doesn't bundle them
+    // Externalize dd-trace and @flashcatcloud/electron-sdk so webpack doesn't bundle them
     const ddTraceExternals = [/^dd-trace(\/.*)?$/, /^@datadog\/electron-sdk(\/.*)?$/];
     const existing = compiler.options.externals;
     if (!existing) {
@@ -123,14 +123,14 @@ export class DatadogWebpackPlugin {
     }
 
     // Prepend dd-trace initialization banner so the user doesn't need to
-    // manually import '@datadog/electron-sdk/instrument'
+    // manually import '@flashcatcloud/electron-sdk/instrument'
     new compiler.webpack.BannerPlugin({
-      banner: 'try{require("@datadog/electron-sdk/instrument")}catch{}',
+      banner: 'try{require("@flashcatcloud/electron-sdk/instrument")}catch{}',
       raw: true,
       entryOnly: true,
     }).apply(compiler);
 
-    // Exclude dd-trace and @datadog/electron-sdk from the asset-relocator-loader
+    // Exclude dd-trace and @flashcatcloud/electron-sdk from the asset-relocator-loader
     for (const rule of compiler.options.module.rules) {
       if ('oneOf' in rule && rule.oneOf) {
         for (const oneOfRule of rule.oneOf) {
@@ -162,7 +162,7 @@ export class DatadogWebpackPlugin {
       const destModules = join(outputPath, 'node_modules');
       const visited = new Set<string>();
       copyPackageTree('dd-trace', destModules, visited);
-      copyPackageTree('@datadog/electron-sdk', destModules, visited);
+      copyPackageTree('@flashcatcloud/electron-sdk', destModules, visited);
     });
   }
 }
