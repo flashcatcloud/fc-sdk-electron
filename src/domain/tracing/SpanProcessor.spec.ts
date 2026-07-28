@@ -7,6 +7,22 @@ import { createFormatHooks, type FormatHooks } from '../../assembly';
 import type { Configuration } from '../../config';
 import { ExportedSpan, SpanProcessor } from './SpanProcessor';
 
+// SpanProcessor reaches `electron` transitively through the `../../transport` and
+// `../rum` barrels. Requiring the real module executes `node_modules/electron/index.js`,
+// which throws unless the Electron binary was downloaded at install time. Mocking keeps
+// this suite hermetic so it runs without the binary (as in CI).
+vi.mock('electron', () => ({
+  app: {
+    getPath: vi.fn(() => '/mock/user/data'),
+    getVersion: vi.fn(() => '1.0.0'),
+    getName: vi.fn(() => 'test-app'),
+    on: vi.fn(),
+    once: vi.fn(),
+  },
+  crashReporter: { start: vi.fn(), addExtraParameter: vi.fn() },
+  ipcMain: { on: vi.fn(), handle: vi.fn() },
+}));
+
 vi.mock('../telemetry', () => ({
   monitor:
     (fn: (...args: unknown[]) => unknown) =>

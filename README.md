@@ -37,10 +37,10 @@ graph TB
         end
     end
 
-    DD[(Datadog)]
-    BP --> SDK
+    DD[(FlashCat RUM)]
+    BP -->|DatadogEventBridge| SDK
     DDT --> SDK
-    SDK --> DD
+    SDK -->|https://SITE/api/v2/rum| DD
 
     %% Styling
     classDef sdk fill:#fce8e6,stroke:#d93025
@@ -81,7 +81,50 @@ await init({
 
 #### Renderer process setup
 
-In order to monitor the renderer process, you must [set up the Browser SDK](https://docs.datadoghq.com/real_user_monitoring/application_monitoring/browser/setup/) in pages loaded by the renderer.
+Renderer processes are monitored by the FlashCat Browser SDK. Install it in the pages loaded by
+your renderer:
+
+```bash
+yarn add @flashcatcloud/browser-rum
+```
+
+```ts
+// src/renderer.ts
+import { flashcatRum } from '@flashcatcloud/browser-rum';
+
+flashcatRum.init({
+  applicationId: '<APPLICATION_ID>',
+  clientToken: '<CLIENT_TOKEN>',
+  site: 'browser.flashcat.cloud',
+  service: 'my-electron-app',
+  sessionSampleRate: 100,
+  trackResources: true,
+  trackLongTasks: true,
+  trackUserInteractions: true,
+});
+```
+
+No extra wiring is needed. The main-process SDK injects a preload script that exposes a
+`DatadogEventBridge` global to every `BrowserWindow`; the Browser SDK auto-detects it and routes
+its events through the main process instead of uploading them itself. Use the **same
+`applicationId`** in both processes so the events land in one application.
+
+> This works for pages loaded over `file://` as well as `http(s)://` — the injected bridge always
+> allows the window's own host. Set `allowedWebViewHosts` only when you also want to accept events
+> from **third-party** pages loaded in a `<webview>`/`BrowserView`.
+
+##### How to find your events
+
+Main-process and renderer-process events carry different `source` values — this matters when
+querying or filtering in the console:
+
+| Origin          | `source`   | `container.source` | `view.url`                |
+| --------------- | ---------- | ------------------ | ------------------------- |
+| Main process    | `electron` | _(absent)_         | `electron://main-process` |
+| Renderer window | `browser`  | `electron`         | the page URL              |
+
+To select everything produced by an Electron app, match `source:electron OR container.source:electron`.
+Filtering on `source:electron` alone returns main-process events only.
 
 #### Bundler plugins
 
@@ -220,4 +263,25 @@ interface FeatureOperationOptions {
 | `batchSize`           | `'SMALL' \| 'MEDIUM' \| 'LARGE'`         | No       | —        | Batch size for event uploads                                                                                                    |
 | `uploadFrequency`     | `'RARE' \| 'NORMAL' \| 'FREQUENT'`       | No       | —        | Upload frequency for event batches                                                                                              |
 | `defaultPrivacyLevel` | `'mask' \| 'allow' \| 'mask-user-input'` | No       | `'mask'` | Default privacy level for renderer session replay                                                                               |
-| `allowedWebViewHosts` | `string[]`                               | No       | `[]`     | Hostnames allowed for the renderer bridge                                                                                       |
+| `allowedWebViewHosts` | `string[]`                               | No       | `[]`     | Extra hostnames allowed for the renderer bridge (the window's own host is always allowed)                                       |
+| `proxy`               | `string`                                 | No       | —        | Proxy URL to upload through instead of `site`. See [Self-hosted deployments](#self-hosted-deployments)                          |
+
+### Self-hosted deployments
+
+`site` accepts only FlashCat SaaS hosts. To upload to a self-hosted FlashCat deployment, keep a
+valid `site` value and set `proxy` to your own endpoint — when `proxy` is set, `site` is not used
+to build the upload URL:
+
+```ts
+await init({
+  clientToken: '<CLIENT_TOKEN>',
+  applicationId: '<APPLICATION_ID>',
+  service: 'my-electron-app',
+  site: 'browser.flashcat.cloud', // required, but unused when `proxy` is set
+  proxy: 'https://rum.example.internal/forward',
+});
+```
+
+The SDK then POSTs to `<proxy>?ddforward=%2Fapi%2Fv2%2Frum`. Your endpoint must forward the request
+body to `/api/v2/rum` on your FlashCat instance, preserving the `DD-API-KEY` and `Content-Type`
+headers.

@@ -57,8 +57,11 @@ jobs:
       - name: Enable Corepack
         run: corepack enable
 
+      # Unit tests mock `electron`; the binary is never executed here.
       - name: Install dependencies
         run: yarn install --immutable
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 
       # Quality gate — fail the release before publishing if anything is broken.
       - name: Typecheck

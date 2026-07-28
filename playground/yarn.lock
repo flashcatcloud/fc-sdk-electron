@@ -5,47 +5,6 @@ __metadata:
   version: 8
   cacheKey: 10c0
 
-"@datadog/browser-core@npm:6.30.1":
-  version: 6.30.1
-  resolution: "@datadog/browser-core@npm:6.30.1"
-  checksum: 10c0/3a17ddcfbc1d8321941f8119958e8e050f83eb9f7bc7895c30e6e73d33f66fd50e1194756e0dc10830e59721a1fd7829e57e236c73588471d413596566e1f2c4
-  languageName: node
-  linkType: hard
-
-"@datadog/browser-rum-core@npm:6.30.1":
-  version: 6.30.1
-  resolution: "@datadog/browser-rum-core@npm:6.30.1"
-  dependencies:
-    "@datadog/browser-core": "npm:6.30.1"
-  checksum: 10c0/c26fec4859856b287c90ce3eb631f6b2703869d2fdf2119df5b33a3a3abf4016147de3ba7a95fa0973bd322b2b0655e4ca7310ff91461583536d8665186d37b7
-  languageName: node
-  linkType: hard
-
-"@datadog/browser-rum@npm:6.30.1":
-  version: 6.30.1
-  resolution: "@datadog/browser-rum@npm:6.30.1"
-  dependencies:
-    "@datadog/browser-core": "npm:6.30.1"
-    "@datadog/browser-rum-core": "npm:6.30.1"
-  peerDependencies:
-    "@datadog/browser-logs": 6.30.1
-  peerDependenciesMeta:
-    "@datadog/browser-logs":
-      optional: true
-  checksum: 10c0/f07f55c1ccd8ae535d7216e41d3a8244999d68c678115f0f9df8a9407b9ce7b5924c687a91a3100c63569a55443b54cd4d2861dbd3560148a5f2285e68f93f5d
-  languageName: node
-  linkType: hard
-
-"@datadog/electron-sdk@portal:..::locator=electron-sdk-playground%40workspace%3A.":
-  version: 0.0.0-use.local
-  resolution: "@datadog/electron-sdk@portal:..::locator=electron-sdk-playground%40workspace%3A."
-  dependencies:
-    dd-trace: "npm:5.103.0"
-  peerDependencies:
-    electron: ">=39"
-  languageName: node
-  linkType: soft
-
 "@datadog/flagging-core@npm:0.3.3":
   version: 0.3.3
   resolution: "@datadog/flagging-core@npm:0.3.3"
@@ -356,6 +315,47 @@ __metadata:
   conditions: os=win32 & cpu=x64
   languageName: node
   linkType: hard
+
+"@flashcatcloud/browser-core@npm:0.0.6":
+  version: 0.0.6
+  resolution: "@flashcatcloud/browser-core@npm:0.0.6"
+  checksum: 10c0/cd4005b5ae79c7f760cd148f97e5c8ac8277e19585866cca3f2d81270d7824c589d3823ec1f3c63cc3311e5e0cf58597ef8537d50ef22128fe6f36df2dc1856a
+  languageName: node
+  linkType: hard
+
+"@flashcatcloud/browser-rum-core@npm:0.0.6":
+  version: 0.0.6
+  resolution: "@flashcatcloud/browser-rum-core@npm:0.0.6"
+  dependencies:
+    "@flashcatcloud/browser-core": "npm:0.0.6"
+  checksum: 10c0/fe5fb95337948e5a106021680c4eb1bfec7706c086c57eb7ce81daf8405be30dad3e8f787c5b8d0229fb25af48457248c0a26966526fe6a45d6d44b39cbf8393
+  languageName: node
+  linkType: hard
+
+"@flashcatcloud/browser-rum@npm:0.0.6":
+  version: 0.0.6
+  resolution: "@flashcatcloud/browser-rum@npm:0.0.6"
+  dependencies:
+    "@flashcatcloud/browser-core": "npm:0.0.6"
+    "@flashcatcloud/browser-rum-core": "npm:0.0.6"
+  peerDependencies:
+    "@flashcatcloud/browser-logs": 0.0.6
+  peerDependenciesMeta:
+    "@flashcatcloud/browser-logs":
+      optional: true
+  checksum: 10c0/9c6833e5a797d295fd93c19f3198800ec667868d99a13c7188dbab4802da174dcef8a51ed5e0885f304c32db487e10c8f1a56fa131713bcf0dd92f8dfdc91b3a
+  languageName: node
+  linkType: hard
+
+"@flashcatcloud/electron-sdk@portal:..::locator=electron-sdk-playground%40workspace%3A.":
+  version: 0.0.0-use.local
+  resolution: "@flashcatcloud/electron-sdk@portal:..::locator=electron-sdk-playground%40workspace%3A."
+  dependencies:
+    dd-trace: "npm:5.103.0"
+  peerDependencies:
+    electron: ">=39"
+  languageName: node
+  linkType: soft
 
 "@isaacs/fs-minipass@npm:^4.0.0":
   version: 4.0.1
@@ -1060,8 +1060,8 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "electron-sdk-playground@workspace:."
   dependencies:
-    "@datadog/browser-rum": "npm:6.30.1"
-    "@datadog/electron-sdk": "portal:.."
+    "@flashcatcloud/browser-rum": "npm:0.0.6"
+    "@flashcatcloud/electron-sdk": "portal:.."
     "@types/node": "npm:25.5.0"
     chokidar: "npm:5.0.0"
     concurrently: "npm:9.2.1"
