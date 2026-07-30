@@ -4,6 +4,7 @@ import type { RawRumEvent } from '../event';
 import { BridgeHandler } from './BridgeHandler';
 import type { BridgeOptions } from './BridgeHandler';
 import { BRIDGE_CHANNEL, CONFIG_CHANNEL } from '../common';
+import { RendererRegistry } from '../domain/RendererRegistry';
 
 const { mockIpcMainOn, mockAddError } = vi.hoisted(() => {
   const mockIpcMainOn = vi.fn();
@@ -28,21 +29,27 @@ const DEFAULT_BRIDGE_OPTIONS: BridgeOptions = {
   allowedWebViewHosts: [],
 };
 
+const SENDER_ID = 7;
+
 describe('BridgeHandler', () => {
   let eventManager: EventManager;
-  let simulateIpcMessage: (msg: string) => void;
+  let rendererRegistry: RendererRegistry;
+  /** `senderId: null` simulates an IPC event without a `sender` (e.g. a destroyed webContents). */
+  let simulateIpcMessage: (msg: string, senderId?: number | null) => void;
 
   beforeEach(() => {
     vi.clearAllMocks();
     eventManager = new EventManager();
+    rendererRegistry = new RendererRegistry();
 
     mockIpcMainOn.mockImplementation((channel: string, callback: (_event: unknown, msg: string) => void) => {
       if (channel === BRIDGE_CHANNEL) {
-        simulateIpcMessage = (msg: string) => callback({}, msg);
+        simulateIpcMessage = (msg: string, senderId: number | null = SENDER_ID) =>
+          callback(senderId === null ? {} : { sender: { id: senderId } }, msg);
       }
     });
 
-    new BridgeHandler(eventManager, DEFAULT_BRIDGE_OPTIONS);
+    new BridgeHandler(eventManager, DEFAULT_BRIDGE_OPTIONS, rendererRegistry);
   });
 
   it('should register an IPC listener on the bridge channel', () => {
@@ -62,7 +69,7 @@ describe('BridgeHandler', () => {
       handlers[channel] = callback;
     });
 
-    new BridgeHandler(eventManager, options);
+    new BridgeHandler(eventManager, options, rendererRegistry);
 
     const event = { returnValue: undefined as unknown };
     handlers[CONFIG_CHANNEL](event);
@@ -88,6 +95,45 @@ describe('BridgeHandler', () => {
         format: EventFormat.RUM,
         data: rumData,
       });
+    });
+  });
+
+  describe('renderer tracking', () => {
+    it('should record the view of the sending webContents', () => {
+      simulateIpcMessage(
+        JSON.stringify({ eventType: 'rum', event: { type: 'view', view: { id: 'abc', url: 'file:///index.html' } } })
+      );
+
+      expect(rendererRegistry.get(SENDER_ID)).toEqual({ viewId: 'abc', url: 'file:///index.html' });
+    });
+
+    it('should keep previously known fields when a later event omits them', () => {
+      simulateIpcMessage(
+        JSON.stringify({ eventType: 'rum', event: { type: 'view', view: { id: 'abc', url: 'file:///index.html' } } })
+      );
+      simulateIpcMessage(JSON.stringify({ eventType: 'rum', event: { type: 'error', view: { id: 'def' } } }));
+
+      expect(rendererRegistry.get(SENDER_ID)).toEqual({ viewId: 'def', url: 'file:///index.html' });
+    });
+
+    it('should track each webContents separately', () => {
+      simulateIpcMessage(JSON.stringify({ eventType: 'rum', event: { view: { id: 'abc' } } }), 1);
+      simulateIpcMessage(JSON.stringify({ eventType: 'rum', event: { view: { id: 'def' } } }), 2);
+
+      expect(rendererRegistry.get(1)?.viewId).toBe('abc');
+      expect(rendererRegistry.get(2)?.viewId).toBe('def');
+    });
+
+    it('should ignore events without a view', () => {
+      simulateIpcMessage(JSON.stringify({ eventType: 'rum', event: { type: 'view' } }));
+
+      expect(rendererRegistry.get(SENDER_ID)).toBeUndefined();
+    });
+
+    it('should ignore events without a sender', () => {
+      expect(() =>
+        simulateIpcMessage(JSON.stringify({ eventType: 'rum', event: { view: { id: 'abc' } } }), null)
+      ).not.toThrow();
     });
   });
 

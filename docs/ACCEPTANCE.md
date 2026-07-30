@@ -70,6 +70,25 @@ Click each playground button, then wait for a batch flush (~10 s at the default
       path, e.g. `at Timeout._onTimeout @ /…/playground/dist/main.js:97:15`
 - [ ] **vital** — operation buttons (`op-start` / `op-succeed`) produce vital events
 - [ ] **crash** — `Crash` button (kills the app; the crash is reported on next launch)
+- [ ] **error** — `Kill Renderer` button (`webContents.forcefullyCrashRenderer()`) produces an
+      error event **in the same run**, with:
+      `error.message: "Renderer process gone: killed"` (macOS; other platforms may report
+      `crashed`, which is deliberately **not** reported here — see below),
+      `error.type: "RenderProcessGone"`, `error.is_crash: false`,
+      `error.meta.exit_reason` / `error.meta.exit_code` / `error.meta.url` set, and
+      `container.view.id` equal to the `view.id` of the renderer events that preceded it
+
+> `render-process-gone` and `child-process-gone` only report terminations that produce **no**
+> minidump. `crashed` / `oom` are left to `CrashCollection` (reported on the next launch) and
+> `clean-exit` is not reported at all, so the two paths never double-report one incident.
+> `killed` is the one overlap: on macOS `forcefullyCrashRenderer()` reports `killed` _and_ writes
+> a dump, so that specific trigger can yield two events. Reporting it is deliberate — every other
+> way a renderer gets killed writes no dump at all.
+
+> These events carry **no stacktrace** — the main process cannot unwind a process that is already
+> gone. They are queryable, but the backend does not group stackless errors into an Issue
+> (`fc-rum` `logic/issue/group.go`), so they will **not** show up in Error Tracking or raise
+> alerts until that is addressed separately.
 
 ### Renderer — expect `source: "browser"`, `container.source: "electron"`
 

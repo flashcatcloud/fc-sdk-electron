@@ -24,6 +24,7 @@ interface ElectronAPI {
   generateUncaughtException: () => Promise<void>;
   generateUnhandledRejection: () => Promise<void>;
   crash: () => Promise<void>;
+  killRenderer: () => Promise<void>;
   mainFetchApi: () => Promise<unknown>;
   startOperation: (name: string, options?: { operationKey?: string }) => Promise<void>;
   succeedOperation: (name: string, options?: { operationKey?: string }) => Promise<void>;
@@ -127,6 +128,12 @@ unhandledRejectionButton.addEventListener('click', () => {
 const crashBtn = document.getElementById('crash-btn') as HTMLButtonElement;
 crashBtn.addEventListener('click', () => {
   void window.electronAPI.crash();
+});
+
+// Handle kill-renderer button click — the page dies, reload the window to continue
+const killRendererBtn = document.getElementById('kill-renderer-btn') as HTMLButtonElement;
+killRendererBtn.addEventListener('click', () => {
+  void window.electronAPI.killRenderer();
 });
 // --- IPC Activity Log ---
 
