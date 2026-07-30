@@ -4,6 +4,7 @@ import { buildConfiguration } from './config';
 import { RumCollection } from './domain/rum';
 import { SessionManager } from './domain/session';
 import { UserActivityTracker } from './domain/UserActivityTracker';
+import { RendererRegistry } from './domain/RendererRegistry';
 import type { ErrorOptions, FailureReason, FeatureOperationOptions } from './domain/rum';
 import { callMonitored, startTelemetry } from './domain/telemetry';
 import { EventManager } from './event';
@@ -37,8 +38,10 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
   startTelemetry(eventManager, config);
   sessionManager = await SessionManager.start(eventManager, hooks);
 
+  const rendererRegistry = new RendererRegistry();
+
   new Assembly(eventManager, hooks);
-  new BridgeHandler(eventManager, config);
+  new BridgeHandler(eventManager, config, rendererRegistry);
   new UserActivityTracker(eventManager);
 
   if (tracing.enabled) {
@@ -46,7 +49,7 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
   }
 
   transport = await Transport.create(config, eventManager);
-  const rum = await RumCollection.start(eventManager, hooks);
+  const rum = await RumCollection.start(eventManager, hooks, rendererRegistry);
   rumApi = rum.getApi();
 
   return true;

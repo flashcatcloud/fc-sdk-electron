@@ -1,15 +1,22 @@
 import { ipcMain } from 'electron';
+import type { IpcMainEvent } from 'electron';
 import { DefaultPrivacyLevel } from '@flashcatcloud/browser-core';
 import { EventKind, EventSource, EventFormat } from '../event';
 import type { EventManager, RawRumEvent } from '../event';
 import { monitor, addError as addTelemetryError } from '../domain/telemetry';
 import { BRIDGE_CHANNEL, CONFIG_CHANNEL } from '../common';
+import type { RendererRegistry } from '../domain/RendererRegistry';
 
 type BridgeEventType = 'rum' | 'log' | 'internal_telemetry';
 
 interface BridgeEvent {
   eventType: BridgeEventType;
   event: unknown;
+}
+
+/** Subset of an assembled browser RUM event the main process reads for renderer attribution. */
+interface BridgedRumEvent {
+  view?: { id?: string; url?: string };
 }
 
 export interface BridgeOptions {
@@ -30,12 +37,13 @@ export interface BridgeOptions {
 export class BridgeHandler {
   constructor(
     private readonly eventManager: EventManager,
-    private readonly bridgeOptions: BridgeOptions
+    private readonly bridgeOptions: BridgeOptions,
+    private readonly rendererRegistry: RendererRegistry
   ) {
     ipcMain.on(
       BRIDGE_CHANNEL,
-      monitor((_ipcEvent: unknown, msg: string) => {
-        this.onBridgeMessage(msg);
+      monitor((ipcEvent: IpcMainEvent, msg: string) => {
+        this.onBridgeMessage(msg, ipcEvent?.sender?.id);
       })
     );
 
@@ -47,7 +55,7 @@ export class BridgeHandler {
     );
   }
 
-  private onBridgeMessage(msg: string): void {
+  private onBridgeMessage(msg: string, webContentsId: number | undefined): void {
     let bridgeEvent: BridgeEvent;
     try {
       bridgeEvent = JSON.parse(msg) as BridgeEvent;
@@ -58,6 +66,7 @@ export class BridgeHandler {
 
     switch (bridgeEvent.eventType) {
       case 'rum':
+        this.trackRenderer(bridgeEvent.event, webContentsId);
         this.eventManager.notify({
           kind: EventKind.RAW,
           source: EventSource.RENDERER,
@@ -74,5 +83,21 @@ export class BridgeHandler {
       default:
         addTelemetryError(new Error(`Unhandled bridge event type: ${String(bridgeEvent.eventType)}`));
     }
+  }
+
+  /**
+   * Remember which RUM view each renderer is on, keyed by the `webContents` that sent the event.
+   * `ProcessGoneCollection` reads it back to attribute a renderer termination to the page that was
+   * running, which is otherwise unknowable from the main process.
+   */
+  private trackRenderer(event: unknown, webContentsId: number | undefined): void {
+    if (webContentsId === undefined) {
+      return;
+    }
+    const view = (event as BridgedRumEvent | undefined)?.view;
+    if (!view) {
+      return;
+    }
+    this.rendererRegistry.set(webContentsId, { viewId: view.id, url: view.url });
   }
 }

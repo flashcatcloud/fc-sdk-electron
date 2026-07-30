@@ -27,7 +27,7 @@ export interface RawRumError extends RecursivePartial<RumErrorEvent> {
     handling: 'unhandled' | 'handled';
     stack?: string;
     type?: string;
-    is_crash?: true;
+    is_crash?: boolean;
     was_truncated?: boolean;
     category?: 'Exception';
     source_type?: RumErrorEvent['error']['source_type'];
@@ -36,6 +36,12 @@ export interface RawRumError extends RecursivePartial<RumErrorEvent> {
       process?: string;
       exception_type?: string;
       path?: string;
+      /** Electron exit reason of a terminated renderer / child process. */
+      exit_reason?: string;
+      /** Exit code of a terminated renderer / child process, as a string. */
+      exit_code?: string;
+      /** Url the renderer was displaying when it was terminated. */
+      url?: string;
     };
     threads?: {
       name: string;

@@ -120,6 +120,12 @@ ipcMain.handle('crash', () => {
   process.crash();
 });
 
+// IPC handler to forcefully terminate the calling renderer process.
+// Exercises `render-process-gone`: macOS reports this as `killed`, other platforms as `crashed`.
+ipcMain.handle('kill-renderer', (event) => {
+  event.sender.forcefullyCrashRenderer();
+});
+
 // --- Operation Monitoring demo handlers ---
 
 ipcMain.handle('main:start-operation', (_event, name: string, options?: FeatureOperationOptions) => {
