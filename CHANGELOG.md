@@ -10,12 +10,13 @@ First FlashCat release. Forked from `@datadog/electron-sdk` v0.3.0 and rebranded
 
 - Report RUM events to the FlashCat intake. `site` is now the intake host directly (`browser.flashcat.cloud` for production, `jira.flashcat.cloud` for staging); the intake URL is `https://${site}/api/v2/${track}`.
 - Renderer integration uses the `@flashcatcloud/browser-rum` fork; the SDK's build-time core utilities come from `@flashcatcloud/browser-core`.
-- `proxy` can be used to upload to a self-hosted deployment instead of `site`. See the README.
+- `site` is optional and accepts any host, so self-hosted deployments can point at their own intake. It defaults to `browser.flashcat.cloud`. `proxy` remains available for intakes that `site` cannot express. See the README.
+- dd-trace's instrumentation telemetry, which reports to a Datadog agent and is unrelated to FlashCat RUM, is disabled by default. Set `DD_INSTRUMENTATION_TELEMETRY_ENABLED=true` to opt back in.
 
 ### ⚠️ Breaking Changes / Notes
 
 - Package renamed to `@flashcatcloud/electron-sdk` (internal `dd-`/`Datadog` names and the `DatadogEventBridge` global are kept per the fork convention).
-- `site` only accepts FlashCat SaaS hosts (`browser.flashcat.cloud`, `jira.flashcat.cloud`). Self-hosted deployments must use `proxy`.
+- The intake URL template hardcodes `https://`, so an intake served over plain HTTP is only reachable through `proxy`, not `site`.
 - Main-process events are tagged `source: electron`; renderer events bridged from `@flashcatcloud/browser-rum` keep `source: browser` and are tagged `container.source: electron`. Query both to see all of an app's events.
 - The main-process transport now sends `Content-Type: text/plain;charset=UTF-8` with a newline-delimited-JSON body, as required by the FlashCat intake.
 - APM/trace (`spans`) is not uploaded — FlashCat has no `/api/v2/spans` ingest. Main-process HTTP activity is still reported as RUM `resource` events. Native APM tracing is pending product support.

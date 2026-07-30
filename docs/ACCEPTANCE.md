@@ -91,6 +91,23 @@ Click each playground button, then wait for a batch flush (~10 s at the default
 - [ ] Request headers are `Content-Type: text/plain;charset=UTF-8` and `DD-API-KEY: <clientToken>`
 - [ ] Body is newline-delimited JSON — one event per line, **not** a JSON array
 - [ ] No request is made to `/api/v2/spans` (that track is intentionally not supported)
+- [ ] dd-trace's instrumentation telemetry is off: no request to `/telemetry/proxy/...` and no
+      connection attempt to `127.0.0.1:8126`
+
+## 3b. `site` and `proxy` resolution
+
+`site` accepts any host and is optional — there is no whitelist. Verify by editing the `init()` call
+in `playground/src/main.ts`:
+
+- [ ] Omitting `site` entirely still initialises, and uploads go to `browser.flashcat.cloud`
+- [ ] A self-hosted-style host (e.g. `rum.example.internal`) is accepted and used verbatim in the
+      upload URL — no error is logged
+- [ ] `site: ''` (or a non-string) fails init with
+      `Configuration error: 'site' must be a non-empty string`
+- [ ] With `proxy` set, uploads go to `<proxy>?ddforward=%2Fapi%2Fv2%2Frum` and `site` is ignored
+
+> Reminder: `https://` is hardcoded in the URL template. An intake on plain HTTP, or one not at the
+> root of its host, must be reached through `proxy` — `site` cannot express it.
 
 ## 4. Console verification
 

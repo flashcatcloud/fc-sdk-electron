@@ -14,9 +14,13 @@
  * - Webpack: DatadogWebpackPlugin from '@flashcatcloud/electron-sdk/webpack-plugin'
  */
 import { createRequire } from 'node:module';
+import { disableTracerTelemetryByDefault } from '../domain/tracing/tracerTelemetry';
 
 // Support both CJS (__filename) and ESM (import.meta.url) contexts
 const _require = typeof __filename !== 'undefined' ? require : createRequire(import.meta.url);
+
+// Must run before dd-trace is required — see the function's documentation.
+disableTracerTelemetryByDefault();
 
 try {
   const tracer = (_require('dd-trace') as { default: typeof import('dd-trace').default }).default;

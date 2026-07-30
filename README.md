@@ -66,6 +66,10 @@ import { app, BrowserWindow } from 'electron';
 
 This initializes dd-trace and automatically instruments the needed APIs.
 
+> dd-trace's own instrumentation telemetry — which reports to a Datadog agent, and unrelated to
+> FlashCat RUM — is **disabled by default** by this entry point. Set
+> `DD_INSTRUMENTATION_TELEMETRY_ENABLED=true` before startup if you specifically want it.
+
 Then initialize the Electron SDK by calling `init` before creating any browser windows:
 
 ```ts
@@ -251,34 +255,50 @@ interface FeatureOperationOptions {
 
 ### Configuration Options
 
-| Option                | Type                                     | Required | Default  | Description                                                                                                                     |
-| --------------------- | ---------------------------------------- | -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `clientToken`         | `string`                                 | Yes      | —        | FlashCat client token                                                                                                           |
-| `applicationId`       | `string`                                 | Yes      | —        | RUM application ID                                                                                                              |
-| `site`                | `string`                                 | Yes      | —        | FlashCat site — the intake host, used verbatim. One of `browser.flashcat.cloud` (production) or `jira.flashcat.cloud` (staging) |
-| `service`             | `string`                                 | Yes      | —        | Service name                                                                                                                    |
-| `env`                 | `string`                                 | No       | —        | Application environment                                                                                                         |
-| `version`             | `string`                                 | No       | —        | Application version                                                                                                             |
-| `telemetrySampleRate` | `number`                                 | No       | `20`     | Telemetry sample rate (0–100)                                                                                                   |
-| `batchSize`           | `'SMALL' \| 'MEDIUM' \| 'LARGE'`         | No       | —        | Batch size for event uploads                                                                                                    |
-| `uploadFrequency`     | `'RARE' \| 'NORMAL' \| 'FREQUENT'`       | No       | —        | Upload frequency for event batches                                                                                              |
-| `defaultPrivacyLevel` | `'mask' \| 'allow' \| 'mask-user-input'` | No       | `'mask'` | Default privacy level for renderer session replay                                                                               |
-| `allowedWebViewHosts` | `string[]`                               | No       | `[]`     | Extra hostnames allowed for the renderer bridge (the window's own host is always allowed)                                       |
-| `proxy`               | `string`                                 | No       | —        | Proxy URL to upload through instead of `site`. See [Self-hosted deployments](#self-hosted-deployments)                          |
+| Option                | Type                                     | Required | Default                  | Description                                                                                                                |
+| --------------------- | ---------------------------------------- | -------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `clientToken`         | `string`                                 | Yes      | —                        | FlashCat client token                                                                                                      |
+| `applicationId`       | `string`                                 | Yes      | —                        | RUM application ID                                                                                                         |
+| `site`                | `string`                                 | No       | `browser.flashcat.cloud` | Intake host, used verbatim — e.g. `browser.flashcat.cloud` (production), `jira.flashcat.cloud` (staging), or your own host |
+| `service`             | `string`                                 | Yes      | —                        | Service name                                                                                                               |
+| `env`                 | `string`                                 | No       | —                        | Application environment                                                                                                    |
+| `version`             | `string`                                 | No       | —                        | Application version                                                                                                        |
+| `telemetrySampleRate` | `number`                                 | No       | `20`                     | Telemetry sample rate (0–100)                                                                                              |
+| `batchSize`           | `'SMALL' \| 'MEDIUM' \| 'LARGE'`         | No       | —                        | Batch size for event uploads                                                                                               |
+| `uploadFrequency`     | `'RARE' \| 'NORMAL' \| 'FREQUENT'`       | No       | —                        | Upload frequency for event batches                                                                                         |
+| `defaultPrivacyLevel` | `'mask' \| 'allow' \| 'mask-user-input'` | No       | `'mask'`                 | Default privacy level for renderer session replay                                                                          |
+| `allowedWebViewHosts` | `string[]`                               | No       | `[]`                     | Extra hostnames allowed for the renderer bridge (the window's own host is always allowed)                                  |
+| `proxy`               | `string`                                 | No       | —                        | Proxy URL to upload through instead of `site`. See [Self-hosted deployments](#self-hosted-deployments)                     |
 
 ### Self-hosted deployments
 
-`site` accepts only FlashCat SaaS hosts. To upload to a self-hosted FlashCat deployment, keep a
-valid `site` value and set `proxy` to your own endpoint — when `proxy` is set, `site` is not used
-to build the upload URL:
+`site` is the intake host, used verbatim — there is no list of accepted hosts. Point it at your own
+FlashCat instance:
 
 ```ts
 await init({
   clientToken: '<CLIENT_TOKEN>',
   applicationId: '<APPLICATION_ID>',
   service: 'my-electron-app',
-  site: 'browser.flashcat.cloud', // required, but unused when `proxy` is set
-  proxy: 'https://rum.example.internal/forward',
+  site: 'rum.example.internal',
+});
+```
+
+Events are then uploaded to `https://rum.example.internal/api/v2/rum`.
+
+> **The scheme is always `https://`.** It is hardcoded in the URL template, so an intake served over
+> plain **HTTP**, or one that is not at the root of its host, cannot be reached through `site` — use
+> `proxy` for those.
+
+Set `proxy` to upload through an endpoint of your own instead. When `proxy` is set, `site` no longer
+takes part in building the upload URL:
+
+```ts
+await init({
+  clientToken: '<CLIENT_TOKEN>',
+  applicationId: '<APPLICATION_ID>',
+  service: 'my-electron-app',
+  proxy: 'http://rum.example.internal:8080/forward',
 });
 ```
 
