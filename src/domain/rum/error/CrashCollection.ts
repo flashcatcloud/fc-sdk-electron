@@ -55,14 +55,31 @@ export class CrashCollection {
           data: buildCrashErrorEvent(crashReport, crashTime),
           startTime: crashTime,
         });
-
-        await fs.unlink(filePath);
       } catch (error) {
         addError(error);
         displayError('Failed to process crash dump:', filePath, error);
+      } finally {
+        await discardCrashFile(filePath);
       }
     }
     displayInfo(`Crash dump processing done.`);
+  }
+}
+
+/**
+ * Delete a crash dump once it has been handled.
+ *
+ * This runs whether or not the dump could be processed: a dump kept on disk is
+ * picked up again on every startup, so a permanently failing dump would be
+ * retried forever, let the crash dump directory grow without bound, and make
+ * each startup slower since every dump loads the WASM processor.
+ */
+async function discardCrashFile(filePath: string): Promise<void> {
+  try {
+    await fs.unlink(filePath);
+  } catch (error) {
+    addError(error);
+    displayError('Failed to delete crash dump:', filePath, error);
   }
 }
 
@@ -90,9 +107,18 @@ function calculateMaxAddress(baseAddress: string | undefined, size: number | und
   return formatAddress64(`0x${maxAddressBigInt.toString(16)}`);
 }
 
+/**
+ * Build a RUM error event out of a processed minidump.
+ *
+ * `crash_info` is absent for dumps taken from a process that was terminated
+ * without raising an exception. The event is still worth reporting: threads,
+ * binary images and system info are all available, only the exception type and
+ * the crashed thread are unknown.
+ */
 function buildCrashErrorEvent(crashReport: CrashReport, crashTime: TimeStamp): RawRumError {
   const threads = formatThreads(crashReport);
   const crashedThread = threads.find((t) => t.crashed);
+  const exceptionType = crashReport.crash_info?.type;
 
   return {
     date: crashTime,
@@ -104,12 +130,12 @@ function buildCrashErrorEvent(crashReport: CrashReport, crashTime: TimeStamp): R
       handling: 'unhandled',
       is_crash: true,
       category: 'Exception',
-      type: crashReport.crash_info.type,
+      type: exceptionType,
       was_truncated: false,
       meta: {
         code_type: crashReport.system_info.cpu,
         process: app.getName(),
-        exception_type: crashReport.crash_info.type,
+        exception_type: exceptionType,
       },
       source_type: mapOsToSourceType(crashReport.system_info.os),
       stack: crashedThread?.stack,
@@ -170,9 +196,13 @@ function formatFrameStack(
 }
 
 function formatThreads(crashReport: CrashReport): NonNullable<RawRumError['error']['threads']> {
+  // Undefined when `crash_info` is missing, null when the processor could not
+  // identify the crashing thread. Both compare false against every index.
+  const crashingThread = crashReport.crash_info?.crashing_thread;
+
   return crashReport.threads.map((thread, threadId) => ({
     name: `Thread ${thread.thread_index}`,
-    crashed: thread.thread_index === crashReport.crash_info.crashing_thread,
+    crashed: thread.thread_index === crashingThread,
     stack: formatFrameStack(thread.frames, threadId, crashReport.modules),
   }));
 }

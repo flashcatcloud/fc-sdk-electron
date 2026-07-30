@@ -421,6 +421,62 @@ describe('CrashCollection', () => {
     expect(mfs.unlink).toHaveBeenCalledWith('/mock/crash/dumps/crash.dmp');
   });
 
+  it('emits an event without exception details when the report has no crash_info', async () => {
+    mockDmpFile();
+    const report = createMinidumpResult();
+    delete report.crash_info;
+    delete report.crashing_thread;
+    vi.mocked(processMinidump).mockResolvedValue(report);
+
+    await startAndFlush(eventManager);
+
+    expect(rawRumEvents).toHaveLength(1);
+    const data = rawRumEvents[0].data as RawRumError;
+    expect(data.error.message).toBe('Application crashed');
+    expect(data.error.is_crash).toBe(true);
+    expect(data.error.type).toBeUndefined();
+    expect(data.error.meta).toEqual({ code_type: 'amd64', process: 'TestApp' });
+    // No thread can be flagged as crashed, so no stack is promoted to error.stack,
+    // but every thread stack and binary image is still reported.
+    expect(data.error.stack).toBeUndefined();
+    expect(data.error.threads).toHaveLength(1);
+    expect(data.error.threads![0].crashed).toBe(false);
+    expect(data.error.threads![0].stack).toContain('app');
+    expect(data.error.binary_images).toHaveLength(1);
+    expect(displayError).not.toHaveBeenCalled();
+  });
+
+  it('deletes the .dmp file when processing fails', async () => {
+    mockDmpFile('bad.dmp');
+    vi.mocked(processMinidump).mockRejectedValue(new Error('invalid minidump'));
+
+    await startAndFlush(eventManager);
+
+    expect(rawRumEvents).toHaveLength(0);
+    expect(mfs.unlink).toHaveBeenCalledWith('/mock/crash/dumps/bad.dmp');
+    expect(displayError).toHaveBeenCalledWith(
+      'Failed to process crash dump:',
+      '/mock/crash/dumps/bad.dmp',
+      expect.any(Error)
+    );
+  });
+
+  it('reports an error but keeps going when a .dmp file cannot be deleted', async () => {
+    mockDmpFile();
+    mfs.unlink.mockRejectedValue(new Error('EPERM'));
+    vi.mocked(processMinidump).mockResolvedValue(createMinidumpResult());
+
+    await startAndFlush(eventManager);
+
+    expect(rawRumEvents).toHaveLength(1);
+    expect(displayError).toHaveBeenCalledWith(
+      'Failed to delete crash dump:',
+      '/mock/crash/dumps/crash.dmp',
+      expect.any(Error)
+    );
+    expect(vi.mocked(addError)).toHaveBeenCalledWith(expect.any(Error));
+  });
+
   it('skips non-.dmp files', async () => {
     mfs.readdir.mockResolvedValue([
       { name: 'crash.dmp', isFile: () => true, isDirectory: () => false },
@@ -454,6 +510,8 @@ describe('CrashCollection', () => {
       '/mock/crash/dumps/bad.dmp',
       expect.any(Error)
     );
+    expect(mfs.unlink).toHaveBeenCalledWith('/mock/crash/dumps/bad.dmp');
+    expect(mfs.unlink).toHaveBeenCalledWith('/mock/crash/dumps/good.dmp');
   });
 
   it('uses ??? for unknown module names', async () => {
