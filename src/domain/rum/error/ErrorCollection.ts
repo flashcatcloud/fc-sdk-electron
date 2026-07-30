@@ -1,4 +1,12 @@
-import { Context, generateUUID, jsonStringify, type TimeStamp, timeStampNow } from '@flashcatcloud/browser-core';
+import {
+  computeStackTrace,
+  Context,
+  generateUUID,
+  jsonStringify,
+  type TimeStamp,
+  timeStampNow,
+  toStackTraceString,
+} from '@flashcatcloud/browser-core';
 import { EventFormat, EventKind, EventManager, EventSource } from '../../../event';
 import type { RawRumError } from '../rawRumData.types';
 import { monitor } from '../../telemetry';
@@ -88,9 +96,22 @@ export class ErrorCollection {
   }
 }
 
+/**
+ * Normalizes the stack to the `at ${func} @ ${url}:${line}:${column}` shape the FlashCat
+ * backend parses, instead of forwarding V8's native `at ${func} (${url}:${line}:${column})`.
+ * Frame URLs are the absolute paths of the main-process bundle, which is what the sourcemap
+ * upload keys on — so main-process stacks can be un-minified like renderer ones.
+ *
+ * The same helpers are used by the browser SDK, keeping both processes on one stack format.
+ *
+ * Note that Node's internal frames (`node:internal/...`) carry no usable URL and end up
+ * wholly in the URL position as `at <anonymous> @ Module._compile (node:internal/...)`.
+ * They are left in place: they are meaningless to symbolicate but valuable to read, and the
+ * backend is responsible for skipping frames whose URL it cannot parse.
+ */
 function formatError(error: unknown, nonErrorPrefix: string): { message: string; stack?: string; kind?: string } {
   if (error instanceof Error) {
-    return { message: error.message, stack: error.stack, kind: error.name };
+    return { message: error.message, stack: toStackTraceString(computeStackTrace(error)), kind: error.name };
   }
   return { message: `${nonErrorPrefix} ${jsonStringify(error)}` };
 }

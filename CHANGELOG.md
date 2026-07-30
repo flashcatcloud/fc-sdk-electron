@@ -12,6 +12,9 @@ First FlashCat release. Forked from `@datadog/electron-sdk` v0.3.0 and rebranded
 - Renderer integration uses the `@flashcatcloud/browser-rum` fork; the SDK's build-time core utilities come from `@flashcatcloud/browser-core`.
 - `site` is optional and accepts any host, so self-hosted deployments can point at their own intake. It defaults to `browser.flashcat.cloud`. `proxy` remains available for intakes that `site` cannot express. See the README.
 - dd-trace's instrumentation telemetry, which reports to a Datadog agent and is unrelated to FlashCat RUM, is disabled by default. Set `DD_INSTRUMENTATION_TELEMETRY_ENABLED=true` to opt back in.
+- Main-process error stacks are normalized to the `at ${func} @ ${url}:${line}:${column}` shape the FlashCat backend parses, using the same helpers as the browser SDK. Frame URLs are the absolute paths of the main-process bundle, so main-process stacks can now be un-minified from uploaded sourcemaps. Native crash stacks are unaffected.
+
+  > **Release ordering:** this requires the fc-rum fix for frame-index misalignment when a frame URL fails to parse. Node's internal frames (`node:internal/...`) produce exactly such URLs. Publishing this SDK before that backend fix is deployed will misalign — or crash — sourcemap enrichment for main-process errors.
 
 ### ⚠️ Breaking Changes / Notes
 

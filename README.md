@@ -171,11 +171,33 @@ await esbuild.build({
 
 - **Sessions** — Session-based event grouping
 - **RUM Views** — One view per main process instance
-- **RUM Errors** — Capture Node errors and crashes in main process
+- **RUM Errors** — Capture Node errors and crashes in main process, with sourcemap-ready stacks
 - **RUM Resources** — Capture RUM resources from main process network calls
 - **Traces** — Capture traces for network calls, command execution, IPC messages on main process
 - **Renderer Events** — Capture RUM events from renderer processes via the browser SDK
 - **Operation Monitoring** _(experimental)_ — Track start / succeed / fail steps of critical user-facing workflows
+
+### Error stacks and sourcemaps
+
+Errors reported from the **main process** — uncaught exceptions, unhandled rejections, and
+`addError()` — carry a stack in the same shape the renderer produces:
+
+```
+Error: something went wrong
+  at handleClick @ /Applications/MyApp.app/Contents/Resources/app/dist/main.js:97:15
+  at <anonymous> @ process.processTimers (node:internal/timers:541:7)
+```
+
+Frame URLs are the absolute paths of your bundled main-process code, which is what the sourcemap
+upload keys on, so **main-process stacks can be un-minified just like renderer stacks**. Upload the
+sourcemaps for your main-process bundle alongside your renderer ones.
+
+Node's own internal frames (`node:internal/...`) have no meaningful URL and appear as
+`at <anonymous> @ …`. They are kept because they are useful to read, and are skipped during
+un-minification.
+
+> Native crash stacks (from `crashReporter` minidumps) use a different, address-based format and are
+> unaffected by this. They are reported as-is; symbolication of native frames is not supported yet.
 
 ### Operation Monitoring _(experimental)_
 

@@ -65,6 +65,9 @@ Click each playground button, then wait for a batch flush (~10 s at the default
       all three produce a resource event with the target URL
 - [ ] **error** — `Generate uncaught exception` → `test uncaught exception`
 - [ ] **error** — `Generate unhandled rejection` → `test unhandled rejection`
+- [ ] Both error stacks use the `at ${func} @ ${url}:${line}:${column}` shape — **not** V8's native
+      `at ${func} (${url}:${line}:${column})` — and the frame for your own code carries an absolute
+      path, e.g. `at Timeout._onTimeout @ /…/playground/dist/main.js:97:15`
 - [ ] **vital** — operation buttons (`op-start` / `op-succeed`) produce vital events
 - [ ] **crash** — `Crash` button (kills the app; the crash is reported on next launch)
 
@@ -108,6 +111,19 @@ in `playground/src/main.ts`:
 
 > Reminder: `https://` is hardcoded in the URL template. An intake on plain HTTP, or one not at the
 > root of its host, must be reached through `proxy` — `site` cannot express it.
+
+## 3c. Main-process stack un-minification
+
+> **Gate:** this depends on the fc-rum fix for frame-index misalignment when a frame URL fails to
+> parse. Node's internal frames (`node:internal/...`) produce exactly such URLs. Do not release this
+> SDK ahead of that backend fix — enrichment for main-process errors would misalign or crash.
+
+- [ ] The backend fix is deployed to the environment under test
+- [ ] Sourcemaps for the main-process bundle have been uploaded
+- [ ] A main-process error raised from minified code resolves to the original file, function and
+      line in the console
+- [ ] `node:internal/...` frames are skipped rather than breaking enrichment, and the surrounding
+      application frames still resolve correctly
 
 ## 4. Console verification
 
