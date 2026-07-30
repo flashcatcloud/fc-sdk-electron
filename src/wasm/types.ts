@@ -8,7 +8,17 @@ export interface Frame {
 
 export interface CrashReport {
   status: string;
-  crash_info: {
+  /**
+   * Crash details, only present when the minidump carries an exception stream.
+   *
+   * Crashpad also writes minidumps for processes that were terminated without
+   * raising an exception (for instance a renderer killed through
+   * `webContents.forcefullyCrashRenderer()` on macOS). Those dumps have no
+   * exception stream, so the processor reports threads and modules but no
+   * crash information. Keep this optional: the Rust side omits the whole
+   * object rather than emitting empty fields.
+   */
+  crash_info?: {
     type: string;
     address: string;
     crashing_thread: number | null;
