@@ -125,4 +125,61 @@ describe('ErrorCollection', () => {
       expect(data.error.handling).toBe('handled');
     });
   });
+
+  describe('stack formatting', () => {
+    function stackOf(error: unknown): string | undefined {
+      errorCollection = new ErrorCollection(eventManager);
+      errorCollection.getApi().addError(error);
+      return (rawRumEvents[0].data as RawRumError).error.stack;
+    }
+
+    it('rewrites frames to the `at func @ url:line:column` shape the backend parses', () => {
+      const stack = stackOf(new Error('formatted'));
+
+      // V8's native `at func (url:line:column)` must not survive.
+      expect(stack).not.toMatch(/^\s*at\s+\S+\s+\([^)]*:\d+:\d+\)$/m);
+      expect(stack).toMatch(/^\s*at\s+.+\s@\s.+:\d+:\d+$/m);
+    });
+
+    it('puts an absolute file path in the URL position, so sourcemap lookup can key on it', () => {
+      const stack = stackOf(new Error('formatted'));
+
+      // The frame for this spec file itself.
+      expect(stack).toMatch(/\sat\s.+\s@\s\S*ErrorCollection\.spec\.ts:\d+:\d+/);
+    });
+
+    it('keeps the `Name: message` header line', () => {
+      const stack = stackOf(new TypeError('bad type'));
+
+      expect(stack?.split('\n')[0]).toBe('TypeError: bad type');
+    });
+
+    it("leaves Node's internal frames in the stack even though they carry no usable URL", () => {
+      // Produced by requiring a missing module: the stack is mostly `node:internal/...` frames.
+      let moduleError: unknown;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        require('definitely-not-a-real-module-xyz');
+      } catch (error) {
+        moduleError = error;
+      }
+
+      const stack = stackOf(moduleError);
+
+      // They land wholly in the URL position, which the backend must tolerate by skipping them.
+      expect(stack).toContain('node:internal/');
+      expect(stack).toMatch(/at\s<anonymous>\s@\s.*node:internal\//);
+    });
+
+    it('emits a header-only stack for an Error carrying no stack', () => {
+      const error = new Error('no stack');
+      error.stack = undefined;
+
+      expect(stackOf(error)).toBe('Error: no stack');
+    });
+
+    it('emits no stack at all for a non-Error value', () => {
+      expect(stackOf('just a string')).toBeUndefined();
+    });
+  });
 });

@@ -23,8 +23,13 @@ jobs:
       - name: Enable Corepack
         run: corepack enable
 
+      # Unit tests mock `electron`, so the ~100 MB binary is never executed. Skipping
+      # the download keeps installs fast and deterministic, and makes a missing mock
+      # fail immediately instead of depending on the download succeeding.
       - name: Install dependencies
         run: yarn install --immutable
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 
       - name: Format check
         run: yarn format:check
