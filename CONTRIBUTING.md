@@ -17,7 +17,8 @@ pull request:
 
 - Follow this repository [Documentation][3]
 - Keep commits small and focused, rebase your branch if needed.
-- Write unit and e2e tests for the code you wrote.
+- Write unit tests for the code you wrote, and run the manual acceptance pass (`docs/ACCEPTANCE.md`)
+  when touching the transport, assembly, bridge, or session layers.
 - Write meaningful Commit messages and Pull Request titles.
 - Sign your commits, see [Github's documentation][2].
 - Sign the CLA

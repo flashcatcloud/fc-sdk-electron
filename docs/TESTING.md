@@ -1,57 +1,44 @@
 # Testing
 
-Unit and E2E testing strategy and infrastructure.
+Unit testing strategy, plus the manual acceptance pass that replaces the removed E2E suite.
 
 ## Unit Testing
+
+```sh
+yarn test:unit    # vitest run --coverage
+yarn test         # watch mode
+```
 
 ### Strategy
 
 - Mock network and disk access (fetch API, `node:fs`) to avoid real I/O in tests.
-- Transitive dependency mocks are acceptable to only test orchestration. Consider integration / e2e test to exercise real code path.
+- Transitive dependency mocks are acceptable to only test orchestration. Consider a manual
+  acceptance pass to exercise the real code path.
 - Co-locate specs with source files (`src/**/*.spec.ts`).
 
-## E2E Testing
+### Mocking `electron`
 
-### Strategy
-
-Testing a new feature end-to-end means updating the `e2e/app/` to exercise it, then adding a scenario that asserts on the captured intake events.
-
-### Directory Structure
-
-- **`e2e/app/`**: Minimal Electron app used as test fixture (main, preload, renderer)
-- **`e2e/lib/`**: Shared test utilities
-  - `mainPage.ts`: Page Object that encapsulates high-level interactions with the main app window.
-  - `bridgeWindowPage.ts`: Page Object for bridge windows, with static factory methods to open and await a ready bridge window.
-  - `helpers.ts`: Playwright fixtures for app launch/cleanup
-  - `intake.ts`: Local HTTP server that captures RUM events sent by the SDK
-- **`e2e/scenarios/`**: Test files using Playwright
-- **`e2e/integration/`**: Integration tests with realistic Electron setups
-
-### Custom Test Fixtures
-
-Tests import custom `test` and `expect` from `lib/helpers.ts` (not directly from `@playwright/test`) for automatic app lifecycle management.
-
-### Intake Server
-
-The intake server (`e2e/lib/intake.ts`) runs on a dynamic port (OS-assigned) to avoid conflicts. It is managed as a Playwright fixture for automatic startup/teardown.
-
-#### `rumBrowserSdk` option
-
-By default, no browser-sdk runs in the main window renderer. Tests that need real user-activity tracking (e.g. session renewal via click) opt in per-describe or per file:
+Specs must never load the real `electron` module: `node_modules/electron/index.js` resolves the
+downloaded binary at require time and throws when it is absent, which is the case in CI
+(`ELECTRON_SKIP_BINARY_DOWNLOAD=1`). Any spec that reaches `electron` — including transitively,
+through the `transport`, `bridge`, `domain/rum` or `domain/session` barrels — must declare:
 
 ```ts
-test.describe('session renewal', () => {
-  test.use({ rumBrowserSdk: {} });
-  // ...
-});
+vi.mock('electron', () => ({
+  app: { getPath: vi.fn(() => '/mock/user/data') },
+  // …only the members the code under test touches
+}));
 ```
 
-Pass an object to override specific init options (merged with the defaults). The fixture serialises the config into `DD_RUM_BROWSER_SDK` and the preload exposes it as `window.e2eConfig.rumBrowserSdk`.
+A missing mock surfaces as `Error: Electron failed to install correctly` for the whole suite.
 
-### E2E App as Reference
+## Acceptance Testing
 
-The `e2e/app/` is the reference implementation for IPC bridge patterns and SDK integration.
+The Playwright E2E and integration suites were removed when the repository was forked — they were
+tightly coupled to Datadog infrastructure. Until they are rebuilt, end-to-end behaviour is covered
+by a **manual acceptance pass** against the `playground/` app.
 
-### Integration testing
+See [`ACCEPTANCE.md`](./ACCEPTANCE.md) for the checklist. Run it before every release and after any
+change to the transport, assembly, bridge, or session layers.
 
-See e2e/integration/README.md for integration tests strategy and structure
+`playground/` is also the reference implementation for IPC bridge patterns and SDK integration.

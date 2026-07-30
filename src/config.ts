@@ -1,13 +1,16 @@
 import { ONE_KIBI_BYTE, ONE_MEBI_BYTE, ONE_SECOND, DefaultPrivacyLevel } from '@flashcatcloud/browser-core';
 import { displayError } from './tools/display';
 
-// FlashCat intake hosts. The `site` value is used verbatim as the intake host
-// (see transport/utils.ts), mirroring the FlashCat browser-sdk fork. Aligned with
-// the iOS / Android forks: production CN vs. internal staging.
-const VALID_FLASHCAT_SITES = [
-  'browser.flashcat.cloud', // Production (CN)
-  'jira.flashcat.cloud', // Internal staging
-] as const;
+/**
+ * Intake host used when `site` is omitted.
+ *
+ * `site` is used verbatim as the intake host (see transport/utils.ts), mirroring the
+ * FlashCat browser-sdk fork. There is deliberately no list of accepted hosts, so
+ * self-hosted deployments can point at their own intake. Note that the URL template
+ * hardcodes `https://`, so an intake served over plain HTTP must be reached through
+ * `proxy` instead.
+ */
+export const DEFAULT_SITE = 'browser.flashcat.cloud';
 
 export const BatchSizes = {
   SMALL: 16 * ONE_KIBI_BYTE,
@@ -25,7 +28,8 @@ export type BatchSize = 'SMALL' | 'MEDIUM' | 'LARGE';
 export type UploadFrequency = 'RARE' | 'NORMAL' | 'FREQUENT';
 
 export interface InitConfiguration {
-  site: string;
+  /** Intake host, used verbatim. Defaults to {@link DEFAULT_SITE}. */
+  site?: string;
   proxy?: string;
   service: string;
   clientToken: string;
@@ -63,12 +67,12 @@ function validateRequiredString(value: unknown, fieldName: string): string | und
 }
 
 function validateSite(value: unknown): string | undefined {
-  if (
-    typeof value !== 'string' ||
-    value.length === 0 ||
-    !(VALID_FLASHCAT_SITES as readonly string[]).includes(value)
-  ) {
-    displayError(`Configuration error: 'site' must be one of: ${VALID_FLASHCAT_SITES.join(', ')}`);
+  // Omitted — fall back to the default intake host rather than failing init.
+  if (value === undefined || value === null) {
+    return DEFAULT_SITE;
+  }
+  if (typeof value !== 'string' || value.length === 0) {
+    displayError("Configuration error: 'site' must be a non-empty string");
     return undefined;
   }
   return value;

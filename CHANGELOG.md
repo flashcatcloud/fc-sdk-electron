@@ -1,8 +1,30 @@
 # Changelog
 
-All notable changes to `@datadog/electron-sdk` are documented here.
+All notable changes to `@flashcatcloud/electron-sdk` are documented here.
 
-## [0.3.0] - 2026-05-27
+## [0.1.0]
+
+First FlashCat release. Forked from `@datadog/electron-sdk` v0.3.0 and rebranded to report to the FlashCat platform.
+
+### ✨ Features
+
+- Report RUM events to the FlashCat intake. `site` is now the intake host directly (`browser.flashcat.cloud` for production, `jira.flashcat.cloud` for staging); the intake URL is `https://${site}/api/v2/${track}`.
+- Renderer integration uses the `@flashcatcloud/browser-rum` fork; the SDK's build-time core utilities come from `@flashcatcloud/browser-core`.
+- `site` is optional and accepts any host, so self-hosted deployments can point at their own intake. It defaults to `browser.flashcat.cloud`. `proxy` remains available for intakes that `site` cannot express. See the README.
+- dd-trace's instrumentation telemetry, which reports to a Datadog agent and is unrelated to FlashCat RUM, is disabled by default. Set `DD_INSTRUMENTATION_TELEMETRY_ENABLED=true` to opt back in.
+- Main-process error stacks are normalized to the `at ${func} @ ${url}:${line}:${column}` shape the FlashCat backend parses, using the same helpers as the browser SDK. Frame URLs are the absolute paths of the main-process bundle, so main-process stacks can now be un-minified from uploaded sourcemaps. Native crash stacks are unaffected.
+
+  > **Release ordering:** this requires the fc-rum fix for frame-index misalignment when a frame URL fails to parse. Node's internal frames (`node:internal/...`) produce exactly such URLs. Publishing this SDK before that backend fix is deployed will misalign — or crash — sourcemap enrichment for main-process errors.
+
+### ⚠️ Breaking Changes / Notes
+
+- Package renamed to `@flashcatcloud/electron-sdk` (internal `dd-`/`Datadog` names and the `DatadogEventBridge` global are kept per the fork convention).
+- The intake URL template hardcodes `https://`, so an intake served over plain HTTP is only reachable through `proxy`, not `site`.
+- Main-process events are tagged `source: electron`; renderer events bridged from `@flashcatcloud/browser-rum` keep `source: browser` and are tagged `container.source: electron`. Query both to see all of an app's events.
+- The main-process transport now sends `Content-Type: text/plain;charset=UTF-8` with a newline-delimited-JSON body, as required by the FlashCat intake.
+- APM/trace (`spans`) is not uploaded — FlashCat has no `/api/v2/spans` ingest. Main-process HTTP activity is still reported as RUM `resource` events. Native APM tracing is pending product support.
+
+## [0.3.0] - 2026-05-27 (upstream Datadog)
 
 ### ✨ Features
 

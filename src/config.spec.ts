@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { buildConfiguration } from './config';
+import { buildConfiguration, DEFAULT_SITE } from './config';
 import type { InitConfiguration } from './config';
 
 import * as display from './tools/display';
@@ -128,15 +128,10 @@ describe('buildConfiguration', () => {
   });
 
   describe('site validation', () => {
-    const VALID_FLASHCAT_SITES = ['browser.flashcat.cloud', 'jira.flashcat.cloud'];
-
     it.each([
-      { value: undefined, description: 'undefined' },
       { value: '', description: 'empty string' },
       { value: 123, description: 'number' },
-      { value: null, description: 'null' },
-      { value: 'invalid-site.com', description: 'invalid site' },
-      { value: 'datadoghq.com', description: 'a Datadog site' },
+      { value: {}, description: 'object' },
     ])('returns undefined and logs error when site is $description', ({ value }) => {
       const config = {
         ...DEFAULT_CONFIG,
@@ -144,21 +139,51 @@ describe('buildConfiguration', () => {
       } as unknown as InitConfiguration;
 
       expect(buildConfiguration(config)).toBeUndefined();
-      expect(display.displayError).toHaveBeenCalledWith(
-        `Configuration error: 'site' must be one of: ${VALID_FLASHCAT_SITES.join(', ')}`
-      );
+      expect(display.displayError).toHaveBeenCalledWith("Configuration error: 'site' must be a non-empty string");
     });
 
-    it.each([{ site: 'browser.flashcat.cloud' }, { site: 'jira.flashcat.cloud' }])('accepts valid site: $site', ({ site }) => {
+    it.each([
+      { value: undefined, description: 'omitted' },
+      { value: null, description: 'null' },
+    ])('falls back to the default site when site is $description', ({ value }) => {
       const config = {
         ...DEFAULT_CONFIG,
-        site,
+        site: value,
+      } as unknown as InitConfiguration;
+
+      const result = buildConfiguration(config);
+
+      expect(result).toBeDefined();
+      expect(result?.site).toBe(DEFAULT_SITE);
+      expect(display.displayError).not.toHaveBeenCalled();
+    });
+
+    it('accepts an omitted site without the key being present at all', () => {
+      const withoutSite: InitConfiguration = {
+        service: 'test-service',
+        clientToken: 'test-token',
+        applicationId: 'test-app-id',
       };
+
+      const result = buildConfiguration(withoutSite);
+
+      expect(result?.site).toBe(DEFAULT_SITE);
+    });
+
+    // The whitelist was removed so self-hosted deployments can use their own intake.
+    it.each([
+      { site: 'browser.flashcat.cloud', description: 'production' },
+      { site: 'jira.flashcat.cloud', description: 'staging' },
+      { site: 'rum.acme.internal', description: 'a self-hosted host' },
+      { site: 'localhost:8080', description: 'a host with a port' },
+    ])('accepts $description: $site', ({ site }) => {
+      const config = { ...DEFAULT_CONFIG, site };
 
       const result = buildConfiguration(config);
 
       expect(result).toBeDefined();
       expect(result?.site).toBe(site);
+      expect(display.displayError).not.toHaveBeenCalled();
     });
   });
 

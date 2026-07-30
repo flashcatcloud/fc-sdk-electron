@@ -10,7 +10,7 @@ After cloning, run the one-time setup script:
 yarn repo:init
 ```
 
-This initializes the git submodule, installs playground and e2e app dependencies, and builds the SDK.
+This initializes the git submodule, installs playground dependencies, and builds the SDK.
 
 ## Development Workflow
 
@@ -22,7 +22,7 @@ Run appropriate tests based on your changes:
 - **Type check**: `yarn typecheck` - Verify TypeScript types
 - **Build**: `yarn build` - Verify the SDK builds correctly
 - **Unit tests**: `yarn test:unit` - For SDK code changes
-- **E2E tests**: `yarn test:e2e:init && yarn test:e2e` - For integration testing
+- **Acceptance pass**: see `docs/ACCEPTANCE.md` - Manual end-to-end run against `playground/`
 
 ### Git Hooks
 
