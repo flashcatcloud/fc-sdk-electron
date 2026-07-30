@@ -41,6 +41,16 @@ export interface InitConfiguration {
   uploadFrequency?: UploadFrequency;
   defaultPrivacyLevel?: DefaultPrivacyLevel;
   allowedWebViewHosts?: string[];
+  /**
+   * Rebase the paint metrics (FCP / LCP) of pre-warmed windows onto the moment the window first
+   * became visible, the way the Paint Timing spec handles prerendered pages. Defaults to `true`.
+   *
+   * Turn it off to report the raw document-level timings instead — an application that pre-creates
+   * hidden windows will then see its FCP/LCP inflated by the whole pre-warm interval.
+   *
+   * @see ViewTimingCorrector
+   */
+  correctPrewarmedViewTimings?: boolean;
 }
 
 export interface Configuration {
@@ -56,6 +66,7 @@ export interface Configuration {
   uploadFrequency?: UploadFrequency;
   defaultPrivacyLevel: DefaultPrivacyLevel;
   allowedWebViewHosts: string[];
+  correctPrewarmedViewTimings: boolean;
 }
 
 function validateRequiredString(value: unknown, fieldName: string): string | undefined {
@@ -118,6 +129,17 @@ function validateDefaultPrivacyLevel(value: unknown): DefaultPrivacyLevel {
   return value as DefaultPrivacyLevel;
 }
 
+function validateOptionalBoolean(value: unknown, fieldName: string, defaultValue: boolean): boolean {
+  if (value === undefined || value === null) {
+    return defaultValue;
+  }
+  if (typeof value !== 'boolean') {
+    displayError(`Configuration error: '${fieldName}' must be a boolean`);
+    return defaultValue;
+  }
+  return value;
+}
+
 function validateAllowedWebViewHosts(value: unknown): string[] {
   if (value === undefined || value === null) {
     return [];
@@ -152,5 +174,10 @@ export function buildConfiguration(initConfig: InitConfiguration): Configuration
     telemetrySampleRate: validateTelemetrySampleRate(initConfig.telemetrySampleRate),
     defaultPrivacyLevel: validateDefaultPrivacyLevel(initConfig.defaultPrivacyLevel),
     allowedWebViewHosts: validateAllowedWebViewHosts(initConfig.allowedWebViewHosts),
+    correctPrewarmedViewTimings: validateOptionalBoolean(
+      initConfig.correctPrewarmedViewTimings,
+      'correctPrewarmedViewTimings',
+      true
+    ),
   };
 }

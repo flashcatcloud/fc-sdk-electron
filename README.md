@@ -277,20 +277,49 @@ interface FeatureOperationOptions {
 
 ### Configuration Options
 
-| Option                | Type                                     | Required | Default                  | Description                                                                                                                |
-| --------------------- | ---------------------------------------- | -------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| `clientToken`         | `string`                                 | Yes      | —                        | FlashCat client token                                                                                                      |
-| `applicationId`       | `string`                                 | Yes      | —                        | RUM application ID                                                                                                         |
-| `site`                | `string`                                 | No       | `browser.flashcat.cloud` | Intake host, used verbatim — e.g. `browser.flashcat.cloud` (production), `jira.flashcat.cloud` (staging), or your own host |
-| `service`             | `string`                                 | Yes      | —                        | Service name                                                                                                               |
-| `env`                 | `string`                                 | No       | —                        | Application environment                                                                                                    |
-| `version`             | `string`                                 | No       | —                        | Application version                                                                                                        |
-| `telemetrySampleRate` | `number`                                 | No       | `20`                     | Telemetry sample rate (0–100)                                                                                              |
-| `batchSize`           | `'SMALL' \| 'MEDIUM' \| 'LARGE'`         | No       | —                        | Batch size for event uploads                                                                                               |
-| `uploadFrequency`     | `'RARE' \| 'NORMAL' \| 'FREQUENT'`       | No       | —                        | Upload frequency for event batches                                                                                         |
-| `defaultPrivacyLevel` | `'mask' \| 'allow' \| 'mask-user-input'` | No       | `'mask'`                 | Default privacy level for renderer session replay                                                                          |
-| `allowedWebViewHosts` | `string[]`                               | No       | `[]`                     | Extra hostnames allowed for the renderer bridge (the window's own host is always allowed)                                  |
-| `proxy`               | `string`                                 | No       | —                        | Proxy URL to upload through instead of `site`. See [Self-hosted deployments](#self-hosted-deployments)                     |
+| Option                        | Type                                     | Required | Default                  | Description                                                                                                                |
+| ----------------------------- | ---------------------------------------- | -------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `clientToken`                 | `string`                                 | Yes      | —                        | FlashCat client token                                                                                                      |
+| `applicationId`               | `string`                                 | Yes      | —                        | RUM application ID                                                                                                         |
+| `site`                        | `string`                                 | No       | `browser.flashcat.cloud` | Intake host, used verbatim — e.g. `browser.flashcat.cloud` (production), `jira.flashcat.cloud` (staging), or your own host |
+| `service`                     | `string`                                 | Yes      | —                        | Service name                                                                                                               |
+| `env`                         | `string`                                 | No       | —                        | Application environment                                                                                                    |
+| `version`                     | `string`                                 | No       | —                        | Application version                                                                                                        |
+| `telemetrySampleRate`         | `number`                                 | No       | `20`                     | Telemetry sample rate (0–100)                                                                                              |
+| `batchSize`                   | `'SMALL' \| 'MEDIUM' \| 'LARGE'`         | No       | —                        | Batch size for event uploads                                                                                               |
+| `uploadFrequency`             | `'RARE' \| 'NORMAL' \| 'FREQUENT'`       | No       | —                        | Upload frequency for event batches                                                                                         |
+| `defaultPrivacyLevel`         | `'mask' \| 'allow' \| 'mask-user-input'` | No       | `'mask'`                 | Default privacy level for renderer session replay                                                                          |
+| `allowedWebViewHosts`         | `string[]`                               | No       | `[]`                     | Extra hostnames allowed for the renderer bridge (the window's own host is always allowed)                                  |
+| `proxy`                       | `string`                                 | No       | —                        | Proxy URL to upload through instead of `site`. See [Self-hosted deployments](#self-hosted-deployments)                     |
+| `correctPrewarmedViewTimings` | `boolean`                                | No       | `true`                   | Rebase FCP/LCP of pre-warmed windows onto the moment they became visible. See [Pre-warmed windows](#pre-warmed-windows)    |
+
+### Pre-warmed windows
+
+Applications commonly pre-create a renderer — `new BrowserWindow({ show: false })` — and navigate
+it long before the user ever sees it. Electron keeps painting such a window
+(`paintWhenInitiallyHidden` defaults to `true`), so the page reports `document.visibilityState ===
+'visible'` and the browser SDK's usual "page was in the background" guard never trips. An
+application that renders its first screen when the window is shown therefore reports an FCP and LCP
+inflated by the entire pre-warm interval — measured at 8.2s for a window shown 8s after creation.
+LCP is affected more widely than FCP: it keeps updating until the first user interaction, which
+cannot happen while the window is hidden, so a large element appearing at `show()` becomes the LCP
+even when FCP itself looks healthy.
+
+The SDK corrects this the way the Paint Timing spec handles prerendered pages — by subtracting the
+activation instant, which the main process observes from the window lifecycle:
+
+```
+activationStart = max(0, firstVisibleAt − viewStart)
+metric'         = max(0, metric − activationStart)
+```
+
+Only the first view of a document (`loading_type: initial_load`) is eligible, and only windows the
+SDK saw being created. Ordinary windows are anchored on their creation instant, so their metrics are
+never rewritten. A window that has not been shown at all reports no FCP/LCP rather than a
+meaningless one. `WebContentsView` and `<webview>` have no window lifecycle to observe and are left
+untouched.
+
+Set `correctPrewarmedViewTimings: false` to report the raw document-level timings instead.
 
 ### Self-hosted deployments
 

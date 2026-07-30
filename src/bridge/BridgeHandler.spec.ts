@@ -5,6 +5,7 @@ import { BridgeHandler } from './BridgeHandler';
 import type { BridgeOptions } from './BridgeHandler';
 import { BRIDGE_CHANNEL, CONFIG_CHANNEL } from '../common';
 import { RendererRegistry } from '../domain/RendererRegistry';
+import { ViewTimingCorrector } from '../domain/ViewTimingCorrector';
 
 const { mockIpcMainOn, mockAddError } = vi.hoisted(() => {
   const mockIpcMainOn = vi.fn();
@@ -49,7 +50,12 @@ describe('BridgeHandler', () => {
       }
     });
 
-    new BridgeHandler(eventManager, DEFAULT_BRIDGE_OPTIONS, rendererRegistry);
+    new BridgeHandler(
+      eventManager,
+      DEFAULT_BRIDGE_OPTIONS,
+      rendererRegistry,
+      new ViewTimingCorrector(rendererRegistry, true)
+    );
   });
 
   it('should register an IPC listener on the bridge channel', () => {
@@ -69,7 +75,7 @@ describe('BridgeHandler', () => {
       handlers[channel] = callback;
     });
 
-    new BridgeHandler(eventManager, options, rendererRegistry);
+    new BridgeHandler(eventManager, options, rendererRegistry, new ViewTimingCorrector(rendererRegistry, true));
 
     const event = { returnValue: undefined as unknown };
     handlers[CONFIG_CHANNEL](event);
@@ -95,6 +101,30 @@ describe('BridgeHandler', () => {
         format: EventFormat.RUM,
         data: rumData,
       });
+    });
+
+    it('should apply the pre-warm timing correction before notifying', () => {
+      const collected: RawRumEvent[] = [];
+      eventManager.registerHandler<RawRumEvent>({
+        canHandle: (event): event is RawRumEvent => event.kind === EventKind.RAW,
+        handle: (event) => collected.push(event),
+      });
+      // Window shown 2s after the view started, first paint deferred until then.
+      rendererRegistry.recordFirstVisible(SENDER_ID, 3000);
+
+      simulateIpcMessage(
+        JSON.stringify({
+          eventType: 'rum',
+          event: {
+            type: 'view',
+            date: 1000,
+            view: { id: 'abc', loading_type: 'initial_load', first_contentful_paint: 2_100 * 1e6 },
+          },
+        })
+      );
+
+      const notified = collected[0].data as unknown as { view: { first_contentful_paint: number } };
+      expect(notified.view.first_contentful_paint).toBe(100 * 1e6);
     });
   });
 

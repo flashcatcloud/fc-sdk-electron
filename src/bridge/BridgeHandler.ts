@@ -6,6 +6,7 @@ import type { EventManager, RawRumEvent } from '../event';
 import { monitor, addError as addTelemetryError } from '../domain/telemetry';
 import { BRIDGE_CHANNEL, CONFIG_CHANNEL } from '../common';
 import type { RendererRegistry } from '../domain/RendererRegistry';
+import type { ViewTimingCorrector } from '../domain/ViewTimingCorrector';
 
 type BridgeEventType = 'rum' | 'log' | 'internal_telemetry';
 
@@ -38,7 +39,8 @@ export class BridgeHandler {
   constructor(
     private readonly eventManager: EventManager,
     private readonly bridgeOptions: BridgeOptions,
-    private readonly rendererRegistry: RendererRegistry
+    private readonly rendererRegistry: RendererRegistry,
+    private readonly viewTimingCorrector: ViewTimingCorrector
   ) {
     ipcMain.on(
       BRIDGE_CHANNEL,
@@ -67,6 +69,8 @@ export class BridgeHandler {
     switch (bridgeEvent.eventType) {
       case 'rum':
         this.trackRenderer(bridgeEvent.event, webContentsId);
+        // Rewrite before handing the event over: everything downstream treats it as final.
+        this.viewTimingCorrector.correct(bridgeEvent.event, webContentsId);
         this.eventManager.notify({
           kind: EventKind.RAW,
           source: EventSource.RENDERER,
