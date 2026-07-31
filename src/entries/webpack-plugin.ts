@@ -62,7 +62,7 @@ interface Compiler {
 const _require = typeof __filename !== 'undefined' ? require : createRequire(import.meta.url);
 
 const DD_TRACE_PRELOAD_SOURCE = 'dd-trace/packages/datadog-instrumentations/src/electron/preload.js';
-const EXCLUDE_PATTERN = /[/\\]node_modules[/\\](dd-trace|@datadog[/\\]electron-sdk)[/\\]/;
+const EXCLUDE_PATTERN = /[/\\]node_modules[/\\](dd-trace|@flashcatcloud[/\\]electron-sdk)[/\\]/;
 const ASSET_RELOCATOR = '@vercel/webpack-asset-relocator-loader';
 
 function usesAssetRelocator(rule: Rule): boolean {
@@ -112,7 +112,7 @@ function copyPackageTree(pkg: string, destModules: string, visited: Set<string>)
 export class DatadogWebpackPlugin {
   apply(compiler: Compiler): void {
     // Externalize dd-trace and @flashcatcloud/electron-sdk so webpack doesn't bundle them
-    const ddTraceExternals = [/^dd-trace(\/.*)?$/, /^@datadog\/electron-sdk(\/.*)?$/];
+    const ddTraceExternals = [/^dd-trace(\/.*)?$/, /^@flashcatcloud\/electron-sdk(\/.*)?$/];
     const existing = compiler.options.externals;
     if (!existing) {
       compiler.options.externals = ddTraceExternals;

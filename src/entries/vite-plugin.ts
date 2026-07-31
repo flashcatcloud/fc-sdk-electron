@@ -90,7 +90,7 @@ export function datadogVitePlugin(): VitePlugin {
       return {
         build: {
           rollupOptions: {
-            external: [/^dd-trace/, /^@datadog\/electron-sdk/],
+            external: [/^dd-trace/, /^@flashcatcloud\/electron-sdk/],
           },
         },
       };
