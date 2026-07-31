@@ -1,6 +1,7 @@
 import * as fs from 'node:fs/promises';
 import { app } from 'electron';
 import type { StackTrace } from '@flashcatcloud/browser-core';
+import { addError as addTelemetryError } from './telemetry';
 
 /**
  * Scheme every in-application frame is rewritten to. Matches the Sentry Electron SDK, so an
@@ -11,6 +12,12 @@ import type { StackTrace } from '@flashcatcloud/browser-core';
  * `flashcat-cli sourcemaps upload --minified-path-prefix /dist` is stored under.
  */
 const APP_URL_PREFIX = 'app:///';
+
+/**
+ * Rewrite a stack frame's absolute path. Returning `undefined` falls through to the built-in
+ * `app:///` normalization; returning a string uses it verbatim.
+ */
+export type NormalizeStackPath = (absolutePath: string) => string | undefined;
 
 /**
  * Rewrites the absolute file paths in error stacks to `app:///<path relative to the app root>`.
@@ -42,13 +49,22 @@ export class StackPathNormalizer {
    */
   private readonly appRootPattern: RegExp | undefined;
 
-  /** Use {@link create} in production; the explicit root exists so tests can pin one. */
-  constructor(enabled: boolean, appRoot: string | undefined) {
+  /**
+   * Use {@link create} in production; the explicit root exists so tests can pin one.
+   *
+   * `normalizeStackPath` is honoured even when the built-in normalization is off: the option
+   * governs the built-in `app:///` step only, never the application's own rewriting.
+   */
+  constructor(
+    enabled: boolean,
+    appRoot: string | undefined,
+    private readonly normalizeStackPath?: NormalizeStackPath
+  ) {
     this.appRootPattern = enabled ? buildAppRootPattern(appRoot) : undefined;
   }
 
-  static async create(enabled: boolean): Promise<StackPathNormalizer> {
-    return new StackPathNormalizer(enabled, enabled ? await readAppRoot() : undefined);
+  static async create(enabled: boolean, normalizeStackPath?: NormalizeStackPath): Promise<StackPathNormalizer> {
+    return new StackPathNormalizer(enabled, enabled ? await readAppRoot() : undefined, normalizeStackPath);
   }
 
   /**
@@ -58,17 +74,47 @@ export class StackPathNormalizer {
    * path quoted in the error message can never be mistaken for one.
    */
   normalizeStackTrace(stackTrace: StackTrace): StackTrace {
-    const appRootPattern = this.appRootPattern;
-    if (!appRootPattern) {
+    if (!this.isActive()) {
       return stackTrace;
     }
 
     for (const frame of stackTrace.stack) {
       if (frame.url) {
-        frame.url = normalizeUrlToAppRoot(frame.url, appRootPattern);
+        frame.url = this.normalizePath(frame.url);
       }
     }
     return stackTrace;
+  }
+
+  private isActive(): boolean {
+    return this.appRootPattern !== undefined || this.normalizeStackPath !== undefined;
+  }
+
+  /** The application's own rewriting wins; otherwise fall back to the built-in one. */
+  private normalizePath(path: string): string {
+    const custom = this.applyNormalizeStackPath(path);
+    if (custom !== undefined) {
+      return custom;
+    }
+    return this.appRootPattern ? normalizeUrlToAppRoot(path, this.appRootPattern) : path;
+  }
+
+  private applyNormalizeStackPath(path: string): string | undefined {
+    if (!this.normalizeStackPath) {
+      return undefined;
+    }
+
+    let rewritten: string | undefined;
+    try {
+      rewritten = this.normalizeStackPath(path);
+    } catch (error) {
+      // A user callback must never take the reporting pipeline down: report it as an SDK error
+      // and fall back to the built-in behaviour.
+      addTelemetryError(error);
+      return undefined;
+    }
+
+    return typeof rewritten === 'string' && rewritten.length > 0 ? rewritten : undefined;
   }
 }
 

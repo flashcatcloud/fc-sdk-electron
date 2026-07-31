@@ -42,7 +42,7 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
   sessionManager = await SessionManager.start(eventManager, hooks);
 
   const rendererRegistry = new RendererRegistry();
-  const stackPathNormalizer = await StackPathNormalizer.create(config.normalizeStackPaths);
+  const stackPathNormalizer = await StackPathNormalizer.create(config.normalizeStackPaths, config.normalizeStackPath);
 
   // Observing window visibility is only useful to the correction it feeds.
   if (config.correctPrewarmedViewTimings) {
@@ -50,9 +50,11 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
   }
 
   new Assembly(eventManager, hooks);
+  // Only the two fields the renderer bridge reads: they are returned over a synchronous IPC
+  // channel, which can carry structured-cloneable data only — a callback would throw there.
   new BridgeHandler(
     eventManager,
-    config,
+    { defaultPrivacyLevel: config.defaultPrivacyLevel, allowedWebViewHosts: config.allowedWebViewHosts },
     rendererRegistry,
     new ViewTimingCorrector(rendererRegistry, config.correctPrewarmedViewTimings)
   );

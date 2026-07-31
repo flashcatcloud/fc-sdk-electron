@@ -1,12 +1,19 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StackTrace } from '@flashcatcloud/browser-core';
 import { StackPathNormalizer } from './StackPathNormalizer';
+import type { NormalizeStackPath } from './StackPathNormalizer';
+
+const { mockAddTelemetryError } = vi.hoisted(() => ({ mockAddTelemetryError: vi.fn() }));
 
 vi.mock('electron', () => ({
   app: {
     getPath: vi.fn(() => '/mock/user/data'),
     getAppPath: vi.fn(() => '/mock/app/root'),
   },
+}));
+
+vi.mock('./telemetry', () => ({
+  addError: mockAddTelemetryError,
 }));
 
 /** Run a single frame URL through the normalizer and read it back. */
@@ -16,6 +23,10 @@ function normalizeUrl(url: string, appRoot: string | undefined, enabled = true):
 }
 
 describe('StackPathNormalizer', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   describe('normalizeStackTrace', () => {
     it('rewrites a frame under the app root to app:///', () => {
       expect(normalizeUrl('/home/user/my-app/dist/main.js', '/home/user/my-app')).toBe('app:///dist/main.js');
@@ -202,6 +213,84 @@ describe('StackPathNormalizer', () => {
       const normalizer = await StackPathNormalizer.create(false);
 
       expect(normalizer.normalizeStackTrace(stackTrace).stack[0].url).toBe('/mock/app/root/dist/main.js');
+    });
+  });
+
+  describe('normalizeStackPath hook', () => {
+    const APP_ROOT = '/Applications/MyApp.app/Contents/Resources/app.asar';
+
+    /** The real layout that motivated the hook: build output under `public/`, plus a linked package. */
+    const customize = (absolutePath: string): string | undefined => {
+      const emitted = /\/public(\/dist\/.+)$/.exec(absolutePath);
+      if (emitted) {
+        return emitted[1];
+      }
+      const linked = /(\/node_modules\/@ctq\/im-renderer\/dist\/.+)$/.exec(absolutePath);
+      return linked ? linked[1] : undefined;
+    };
+
+    function normalizeWithHook(url: string, hook: NormalizeStackPath, enabled = true): string | undefined {
+      const stackTrace = { stack: [{ func: 'fn', url, line: 1, column: 2 }] } as StackTrace;
+      return new StackPathNormalizer(enabled, APP_ROOT, hook).normalizeStackTrace(stackTrace).stack[0].url;
+    }
+
+    it('swallows the intermediate directory the built-in normalization would keep', () => {
+      expect(normalizeWithHook(`file://${APP_ROOT}/public/dist/renderer.js`, customize)).toBe('/dist/renderer.js');
+      // What the built-in normalization alone would have produced.
+      expect(normalizeUrl(`file://${APP_ROOT}/public/dist/renderer.js`, APP_ROOT)).toBe(
+        'app:///public/dist/renderer.js'
+      );
+    });
+
+    it('maps a second root the same call cannot express as one base path', () => {
+      expect(normalizeWithHook(`file://${APP_ROOT}/node_modules/@ctq/im-renderer/dist/index.js`, customize)).toBe(
+        '/node_modules/@ctq/im-renderer/dist/index.js'
+      );
+    });
+
+    it('falls through to the built-in normalization when it returns undefined', () => {
+      expect(normalizeWithHook(`file://${APP_ROOT}/dist/main.js`, customize)).toBe('app:///dist/main.js');
+    });
+
+    it('falls through when it returns an empty string', () => {
+      expect(normalizeWithHook(`file://${APP_ROOT}/dist/main.js`, () => '')).toBe('app:///dist/main.js');
+    });
+
+    it('falls through when it returns a non-string', () => {
+      expect(normalizeWithHook(`file://${APP_ROOT}/dist/main.js`, (() => 42) as unknown as NormalizeStackPath)).toBe(
+        'app:///dist/main.js'
+      );
+    });
+
+    it('falls back to the built-in normalization when it throws, and reports the error', () => {
+      const boom = new Error('hook exploded');
+
+      expect(
+        normalizeWithHook(`file://${APP_ROOT}/dist/main.js`, () => {
+          throw boom;
+        })
+      ).toBe('app:///dist/main.js');
+      expect(mockAddTelemetryError).toHaveBeenCalledWith(boom);
+    });
+
+    it('keeps the frame raw when it throws and the built-in normalization is off', () => {
+      const url = `file://${APP_ROOT}/dist/main.js`;
+
+      expect(
+        normalizeWithHook(
+          url,
+          () => {
+            throw new Error('hook exploded');
+          },
+          false
+        )
+      ).toBe(url);
+    });
+
+    it('runs even when the built-in normalization is off', () => {
+      expect(normalizeWithHook(`file://${APP_ROOT}/public/dist/renderer.js`, customize, false)).toBe(
+        '/dist/renderer.js'
+      );
     });
   });
 });

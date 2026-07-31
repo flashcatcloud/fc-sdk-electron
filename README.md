@@ -222,6 +222,33 @@ including the renderer stacks an application rewrites itself in the browser SDK'
 
 Set `normalizeStackPaths: false` to report the raw absolute paths instead.
 
+#### Custom path mapping
+
+When one application root cannot express the mapping, `normalizeStackPath` rewrites a frame's path
+before the built-in normalization runs. Return `undefined` to fall through to `app:///`, or a
+string to use verbatim.
+
+A build that emits to `<app root>/public/dist` but uploads its sourcemaps under `/dist` — so the
+intermediate `public/` segment has to be swallowed — while a linked package keeps its path relative
+to the application root:
+
+```ts
+init({
+  // …
+  normalizeStackPath: (absolutePath) => {
+    const emitted = /\/public(\/dist\/.+)$/.exec(absolutePath);
+    if (emitted) {
+      return emitted[1]; // …/public/dist/renderer.js → /dist/renderer.js
+    }
+    const linked = /(\/node_modules\/@acme\/widgets\/dist\/.+)$/.exec(absolutePath);
+    return linked ? linked[1] : undefined; // everything else → built-in app:///
+  },
+});
+```
+
+A callback that throws is reported as an SDK error and that frame falls back to the built-in
+behaviour, so a faulty callback can never take error reporting down.
+
 > Native crash stacks (from `crashReporter` minidumps) use a different, address-based format and are
 > unaffected by this. They are reported as-is; symbolication of native frames is not supported yet.
 

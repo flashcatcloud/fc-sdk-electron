@@ -62,6 +62,24 @@ export interface InitConfiguration {
    * @see StackPathNormalizer
    */
   normalizeStackPaths?: boolean;
+  /**
+   * Rewrite a stack frame's absolute path before the built-in `app:///` normalization runs.
+   * Return `undefined` to fall through to the built-in behaviour, or a string to use verbatim.
+   *
+   * Reach for this when a single application root cannot express the mapping — for instance a
+   * build that emits to `<app root>/public/dist` but uploads its sourcemaps under `/dist`:
+   *
+   * ```ts
+   * normalizeStackPath: (absolutePath) => {
+   *   const match = /\/public(\/dist\/.+)$/.exec(absolutePath);
+   *   return match ? match[1] : undefined;
+   * };
+   * ```
+   *
+   * Applies to main-process and renderer frames alike. A callback that throws is reported as an
+   * SDK error and the frame falls back to the built-in behaviour.
+   */
+  normalizeStackPath?: (absolutePath: string) => string | undefined;
 }
 
 export interface Configuration {
@@ -79,6 +97,7 @@ export interface Configuration {
   allowedWebViewHosts: string[];
   correctPrewarmedViewTimings: boolean;
   normalizeStackPaths: boolean;
+  normalizeStackPath?: (absolutePath: string) => string | undefined;
 }
 
 function validateRequiredString(value: unknown, fieldName: string): string | undefined {
@@ -152,6 +171,17 @@ function validateOptionalBoolean(value: unknown, fieldName: string, defaultValue
   return value;
 }
 
+function validateOptionalCallback<T>(value: unknown, fieldName: string): T | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== 'function') {
+    displayError(`Configuration error: '${fieldName}' must be a function`);
+    return undefined;
+  }
+  return value as T;
+}
+
 function validateAllowedWebViewHosts(value: unknown): string[] {
   if (value === undefined || value === null) {
     return [];
@@ -192,5 +222,9 @@ export function buildConfiguration(initConfig: InitConfiguration): Configuration
       true
     ),
     normalizeStackPaths: validateOptionalBoolean(initConfig.normalizeStackPaths, 'normalizeStackPaths', true),
+    normalizeStackPath: validateOptionalCallback<InitConfiguration['normalizeStackPath']>(
+      initConfig.normalizeStackPath,
+      'normalizeStackPath'
+    ),
   };
 }

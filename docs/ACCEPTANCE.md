@@ -166,16 +166,20 @@ Edit `playground/src/main.ts` to pre-warm the window: `new BrowserWindow({ show:
 
 ## 3e. Stack path normalization
 
-Verifies `normalizeStackPaths`. The unit tests cover the rewriting itself;
+Verifies `normalizeStackPaths` and `normalizeStackPath`. The unit tests cover the rewriting itself;
 what only a real run can show is that the application root the SDK derives matches the paths V8 and
 Chromium actually report — which differs between a packaged (asar) and an unpackaged build.
 
 - [ ] Main-process frames are reported as `app:///dist/main.js`, not as an absolute install path
+- [ ] Renderer frames are reported as `app:///dist/renderer.js`, not as `file:///…`
 - [ ] Same for an **asar-packaged** build (`app.getAppPath()` ends in `app.asar`) — package the
       playground and repeat
 - [ ] `node:internal/...` frames still carry their original text
-- [ ] Renderer frames are **not** touched — they stay `file:///…`
+- [ ] `view.url` is **not** rewritten — it stays `file:///…/index.html`
 - [ ] `normalizeStackPaths: false` restores the raw absolute paths
+- [ ] With `normalizeStackPath` returning a string, that string is used verbatim; returning
+      `undefined` falls back to `app:///`
+- [ ] With `normalizeStackPath` throwing, frames fall back to `app:///` and events keep flowing
 
 > Point `--minified-path-prefix` at the directory the rewritten path names (`/dist` for
 > `app:///dist/…`) — `url.Parse("app:///dist/main.js").Path` is `/dist/main.js`, which is what the

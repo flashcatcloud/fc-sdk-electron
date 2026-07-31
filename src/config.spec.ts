@@ -308,6 +308,31 @@ describe('buildConfiguration', () => {
     });
   });
 
+  describe('normalizeStackPath validation', () => {
+    it('defaults to undefined when not provided', () => {
+      const result = buildConfiguration({ ...DEFAULT_CONFIG });
+
+      expect(result?.normalizeStackPath).toBeUndefined();
+    });
+
+    it('keeps the callback it is given', () => {
+      const normalizeStackPath = (absolutePath: string) => absolutePath;
+
+      const result = buildConfiguration({ ...DEFAULT_CONFIG, normalizeStackPath });
+
+      expect(result?.normalizeStackPath).toBe(normalizeStackPath);
+    });
+
+    it('logs an error and drops the value when not a function', () => {
+      const config = { ...DEFAULT_CONFIG, normalizeStackPath: '/dist' } as unknown as InitConfiguration;
+
+      const result = buildConfiguration(config);
+
+      expect(result?.normalizeStackPath).toBeUndefined();
+      expect(display.displayError).toHaveBeenCalledWith("Configuration error: 'normalizeStackPath' must be a function");
+    });
+  });
+
   describe('allowedWebViewHosts validation', () => {
     it('defaults to empty array when not provided', () => {
       const config = { ...DEFAULT_CONFIG };
