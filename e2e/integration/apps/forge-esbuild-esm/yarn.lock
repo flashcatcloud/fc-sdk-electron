@@ -5,48 +5,6 @@ __metadata:
   version: 8
   cacheKey: 10c0
 
-"@datadog/browser-core@npm:6.32.0":
-  version: 6.32.0
-  resolution: "@datadog/browser-core@npm:6.32.0"
-  checksum: 10c0/631afa79701f48c3c5d7aa0aa57a61ad1f84a82426a6bdb81032a509cb93925b540aac993fe0da31accdda21b017edfb0a908d0da85162e1982f47bf18c3e4c9
-  languageName: node
-  linkType: hard
-
-"@datadog/browser-rum-core@npm:6.32.0":
-  version: 6.32.0
-  resolution: "@datadog/browser-rum-core@npm:6.32.0"
-  dependencies:
-    "@datadog/browser-core": "npm:6.32.0"
-  checksum: 10c0/a1967c34c21811a5a5d44b2dac5c70dae9c4c4cd627ac9946daffe51e398b9451fce163f5c65800d2c375c469ef01b6c69a737b76fcf47b2624ad56cfafeed4b
-  languageName: node
-  linkType: hard
-
-"@datadog/browser-rum@npm:6.32.0":
-  version: 6.32.0
-  resolution: "@datadog/browser-rum@npm:6.32.0"
-  dependencies:
-    "@datadog/browser-core": "npm:6.32.0"
-    "@datadog/browser-rum-core": "npm:6.32.0"
-  peerDependencies:
-    "@datadog/browser-logs": 6.32.0
-  peerDependenciesMeta:
-    "@datadog/browser-logs":
-      optional: true
-  checksum: 10c0/ad160880950d3fb0dcf50cd83ac2309c8b25d7acaeda74eea461a4a54eeb83839a6b1472a99c867f24afcfafd7f62270be4d2b8c77cb9cb55c25e70912eedc12
-  languageName: node
-  linkType: hard
-
-"@datadog/electron-sdk@file:../../integration-sdk.tgz::locator=forge-esbuild-esm%40workspace%3A.":
-  version: 0.2.0
-  resolution: "@datadog/electron-sdk@file:../../integration-sdk.tgz#../../integration-sdk.tgz::hash=6ae430&locator=forge-esbuild-esm%40workspace%3A."
-  dependencies:
-    dd-trace: "npm:5.103.0"
-  peerDependencies:
-    electron: ">=39"
-  checksum: 10c0/14cfc21d9bdc8a34a97a46b9c4baf1101848f42336a72c556f8554989613f200519e0a6fbbc4e6d2fa323ccc34283d8e12543b78dc152226a049e60942fdff3a
-  languageName: node
-  linkType: hard
-
 "@datadog/flagging-core@npm:0.3.3":
   version: 0.3.3
   resolution: "@datadog/flagging-core@npm:0.3.3"
@@ -717,6 +675,48 @@ __metadata:
   version: 0.27.3
   resolution: "@esbuild/win32-x64@npm:0.27.3"
   conditions: os=win32 & cpu=x64
+  languageName: node
+  linkType: hard
+
+"@flashcatcloud/browser-core@npm:0.0.6":
+  version: 0.0.6
+  resolution: "@flashcatcloud/browser-core@npm:0.0.6"
+  checksum: 10c0/cd4005b5ae79c7f760cd148f97e5c8ac8277e19585866cca3f2d81270d7824c589d3823ec1f3c63cc3311e5e0cf58597ef8537d50ef22128fe6f36df2dc1856a
+  languageName: node
+  linkType: hard
+
+"@flashcatcloud/browser-rum-core@npm:0.0.6":
+  version: 0.0.6
+  resolution: "@flashcatcloud/browser-rum-core@npm:0.0.6"
+  dependencies:
+    "@flashcatcloud/browser-core": "npm:0.0.6"
+  checksum: 10c0/fe5fb95337948e5a106021680c4eb1bfec7706c086c57eb7ce81daf8405be30dad3e8f787c5b8d0229fb25af48457248c0a26966526fe6a45d6d44b39cbf8393
+  languageName: node
+  linkType: hard
+
+"@flashcatcloud/browser-rum@npm:0.0.6":
+  version: 0.0.6
+  resolution: "@flashcatcloud/browser-rum@npm:0.0.6"
+  dependencies:
+    "@flashcatcloud/browser-core": "npm:0.0.6"
+    "@flashcatcloud/browser-rum-core": "npm:0.0.6"
+  peerDependencies:
+    "@flashcatcloud/browser-logs": 0.0.6
+  peerDependenciesMeta:
+    "@flashcatcloud/browser-logs":
+      optional: true
+  checksum: 10c0/9c6833e5a797d295fd93c19f3198800ec667868d99a13c7188dbab4802da174dcef8a51ed5e0885f304c32db487e10c8f1a56fa131713bcf0dd92f8dfdc91b3a
+  languageName: node
+  linkType: hard
+
+"@flashcatcloud/electron-sdk@file:../../integration-sdk.tgz::locator=forge-esbuild-esm%40workspace%3A.":
+  version: 0.1.0
+  resolution: "@flashcatcloud/electron-sdk@file:../../integration-sdk.tgz#../../integration-sdk.tgz::hash=13c2a9&locator=forge-esbuild-esm%40workspace%3A."
+  dependencies:
+    dd-trace: "npm:5.103.0"
+  peerDependencies:
+    electron: ">=39"
+  checksum: 10c0/c76c2ba1d702f6ff7c10c067c1859b311220eedefd4df2f4688ac1602df1ea6c66c030614a0dc1bf0317889507d422d3f864188b835831c73a2ab3913b6d07be
   languageName: node
   linkType: hard
 
@@ -2670,9 +2670,9 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "forge-esbuild-esm@workspace:."
   dependencies:
-    "@datadog/browser-rum": "npm:6.32.0"
-    "@datadog/electron-sdk": "file:../../integration-sdk.tgz"
     "@electron-forge/cli": "npm:7.11.1"
+    "@flashcatcloud/browser-rum": "npm:0.0.6"
+    "@flashcatcloud/electron-sdk": "file:../../integration-sdk.tgz"
     "@types/node": "npm:24.10.11"
     electron: "npm:41.1.0"
     esbuild: "npm:0.27.3"
