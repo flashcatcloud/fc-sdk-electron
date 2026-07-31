@@ -22,6 +22,8 @@ Run appropriate tests based on your changes:
 - **Type check**: `yarn typecheck` - Verify TypeScript types
 - **Build**: `yarn build` - Verify the SDK builds correctly
 - **Unit tests**: `yarn test:unit` - For SDK code changes
+- **E2E tests**: `yarn test:e2e:init && yarn test:e2e` - For collection, assembly, bridge or transport changes
+- **Integration tests**: `yarn test:integration:init && yarn test:integration` - For bundler-plugin changes; slow, pre-release only
 - **Acceptance pass**: see `docs/ACCEPTANCE.md` - Manual end-to-end run against `playground/`
 
 ### Git Hooks

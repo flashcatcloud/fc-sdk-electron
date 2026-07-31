@@ -42,3 +42,49 @@ jobs:
 
       - name: Unit tests
         run: yarn test:unit
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      # The root install never runs Electron (unit tests mock it), so the binary download is
+      # skipped here. `e2e/app` installs its own Electron and does download it.
+      - name: Install dependencies
+        run: yarn install --immutable
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      # Electron links against the same system libraries as Chromium.
+      - name: Install Electron system dependencies
+        run: yarn playwright install-deps chromium
+
+      # Builds the SDK, then installs and builds the fixture app against it.
+      - name: Build the SDK and the e2e app
+        run: yarn test:e2e:init
+
+      # After the build: the e2e tsconfig maps `@flashcatcloud/electron-sdk` to `dist/index.d.ts`.
+      - name: Typecheck e2e
+        run: yarn test:e2e:typecheck
+
+      - name: E2E tests
+        run: xvfb-run -a yarn test:e2e
+
+      - name: Upload report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+          retention-days: 7

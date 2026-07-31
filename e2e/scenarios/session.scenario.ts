@@ -1,0 +1,23 @@
+import { test, expect } from '../lib/helpers';
+import type { TelemetryErrorEvent } from '@flashcatcloud/electron-sdk';
+
+test.use({ rumBrowserSdk: {} });
+
+test('new session id is generated when renewing a session', async ({ mainPage, intake }) => {
+  await mainPage.generateTelemetryError();
+  await mainPage.flushTransport();
+
+  const firstEvents = await intake.getEventsByType('telemetry');
+  const firstSessionId = (firstEvents[0].body as TelemetryErrorEvent).session?.id;
+  expect(firstSessionId).toMatch(/^[0-9a-f-]+$/);
+
+  await mainPage.renewSession();
+  await mainPage.generateTelemetryError();
+  await mainPage.flushTransport();
+
+  const allEvents = await intake.waitForEventCount('telemetry', 2);
+  const secondSessionId = (allEvents[1].body as TelemetryErrorEvent).session?.id;
+  expect(secondSessionId).toMatch(/^[0-9a-f-]+$/);
+
+  expect(secondSessionId).not.toBe(firstSessionId);
+});

@@ -1,8 +1,8 @@
 # Manual Acceptance Checklist
 
-The Playwright E2E and integration suites were removed during the fork. This checklist is the
-compensating control: run it **before every release**, and after any change to the transport,
-assembly, bridge, or session layers.
+The automated suites (`yarn test:unit`, `yarn test:e2e`, `yarn test:integration`) all run against a
+fake intake. This checklist is what exercises the **real** backend: run it before every release,
+and after any change to the transport, assembly, bridge, or session layers.
 
 Expected results below are the values observed on the reference run against staging
 (`jira.flashcat.cloud`, SDK `0.1.0`, Electron 41, macOS).
