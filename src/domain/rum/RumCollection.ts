@@ -4,6 +4,7 @@ import { ErrorCollection, CrashCollection, ProcessGoneCollection } from './error
 import { OperationCollection } from './operation';
 import { ViewCollection } from './view';
 import type { RendererRegistry } from '../RendererRegistry';
+import type { StackPathNormalizer } from '../StackPathNormalizer';
 
 export class RumCollection {
   private constructor(
@@ -16,10 +17,11 @@ export class RumCollection {
   static async start(
     eventManager: EventManager,
     hooks: FormatHooks,
-    rendererRegistry: RendererRegistry
+    rendererRegistry: RendererRegistry,
+    stackPathNormalizer: StackPathNormalizer
   ): Promise<RumCollection> {
     const viewCollection = await ViewCollection.start(eventManager, hooks);
-    const errorCollection = new ErrorCollection(eventManager);
+    const errorCollection = new ErrorCollection(eventManager, stackPathNormalizer);
     const operationCollection = new OperationCollection(eventManager);
     const processGoneCollection = new ProcessGoneCollection(eventManager, rendererRegistry);
     CrashCollection.start(eventManager);

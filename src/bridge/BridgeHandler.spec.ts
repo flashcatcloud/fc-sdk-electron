@@ -6,6 +6,7 @@ import type { BridgeOptions } from './BridgeHandler';
 import { BRIDGE_CHANNEL, CONFIG_CHANNEL } from '../common';
 import { RendererRegistry } from '../domain/RendererRegistry';
 import { ViewTimingCorrector } from '../domain/ViewTimingCorrector';
+import { StackPathNormalizer } from '../domain/StackPathNormalizer';
 
 const { mockIpcMainOn, mockAddError } = vi.hoisted(() => {
   const mockIpcMainOn = vi.fn();
@@ -16,6 +17,9 @@ const { mockIpcMainOn, mockAddError } = vi.hoisted(() => {
 vi.mock('electron', () => ({
   ipcMain: {
     on: mockIpcMainOn,
+  },
+  app: {
+    getAppPath: vi.fn(() => '/mock/app/root'),
   },
 }));
 
@@ -31,6 +35,8 @@ const DEFAULT_BRIDGE_OPTIONS: BridgeOptions = {
 };
 
 const SENDER_ID = 7;
+
+const APP_ROOT = '/Applications/MyApp.app/Contents/Resources/app.asar';
 
 describe('BridgeHandler', () => {
   let eventManager: EventManager;
@@ -50,11 +56,14 @@ describe('BridgeHandler', () => {
       }
     });
 
+    // Both collaborators are live for every case below, so the two rewriting tests double as
+    // proof that neither swallows the other.
     new BridgeHandler(
       eventManager,
       DEFAULT_BRIDGE_OPTIONS,
       rendererRegistry,
-      new ViewTimingCorrector(rendererRegistry, true)
+      new ViewTimingCorrector(rendererRegistry, true),
+      new StackPathNormalizer(true, APP_ROOT)
     );
   });
 
@@ -75,7 +84,13 @@ describe('BridgeHandler', () => {
       handlers[channel] = callback;
     });
 
-    new BridgeHandler(eventManager, options, rendererRegistry, new ViewTimingCorrector(rendererRegistry, true));
+    new BridgeHandler(
+      eventManager,
+      options,
+      rendererRegistry,
+      new ViewTimingCorrector(rendererRegistry, true),
+      new StackPathNormalizer(true, APP_ROOT)
+    );
 
     const event = { returnValue: undefined as unknown };
     handlers[CONFIG_CHANNEL](event);
@@ -125,6 +140,27 @@ describe('BridgeHandler', () => {
 
       const notified = collected[0].data as unknown as { view: { first_contentful_paint: number } };
       expect(notified.view.first_contentful_paint).toBe(100 * 1e6);
+    });
+
+    it('should anchor renderer stacks on the app root before notifying', () => {
+      const collected: RawRumEvent[] = [];
+      eventManager.registerHandler<RawRumEvent>({
+        canHandle: (event): event is RawRumEvent => event.kind === EventKind.RAW,
+        handle: (event) => collected.push(event),
+      });
+
+      simulateIpcMessage(
+        JSON.stringify({
+          eventType: 'rum',
+          event: {
+            type: 'error',
+            error: { message: 'boom', stack: `Error: boom\n  at fn @ file://${APP_ROOT}/dist/renderer.js:4:2` },
+          },
+        })
+      );
+
+      const notified = collected[0].data as unknown as { error: { stack: string } };
+      expect(notified.error.stack).toBe('Error: boom\n  at fn @ app:///dist/renderer.js:4:2');
     });
   });
 

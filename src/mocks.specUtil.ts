@@ -40,6 +40,7 @@ export function createTestConfiguration(overrides: Partial<Configuration> = {}):
     defaultPrivacyLevel: 'mask',
     allowedWebViewHosts: [],
     correctPrewarmedViewTimings: true,
+    normalizeStackPaths: true,
     ...overrides,
   };
 }

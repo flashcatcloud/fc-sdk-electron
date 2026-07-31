@@ -138,7 +138,7 @@ in `playground/src/main.ts`:
 > SDK ahead of that backend fix — enrichment for main-process errors would misalign or crash.
 
 - [ ] The backend fix is deployed to the environment under test
-- [ ] Sourcemaps for the main-process bundle have been uploaded
+- [ ] Sourcemaps for the main-process bundle have been uploaded with `--minified-path-prefix /dist`
 - [ ] A main-process error raised from minified code resolves to the original file, function and
       line in the console
 - [ ] `node:internal/...` frames are skipped rather than breaking enrichment, and the surrounding
@@ -163,6 +163,27 @@ Edit `playground/src/main.ts` to pre-warm the window: `new BrowserWindow({ show:
 > The standalone Electron probe used to characterise the platform behaviour, and a harness that
 > replays its logs through the shipped corrector, live in the task report
 > `2026-07-30-electron-fcp-prewarm/` (see its README).
+
+## 3e. Stack path normalization
+
+Verifies `normalizeStackPaths` and `normalizeStackPath`. The unit tests cover the rewriting itself;
+what only a real run can show is that the application root the SDK derives matches the paths V8 and
+Chromium actually report — which differs between a packaged (asar) and an unpackaged build.
+
+- [ ] Main-process frames are reported as `app:///dist/main.js`, not as an absolute install path
+- [ ] Renderer frames are reported as `app:///dist/renderer.js`, not as `file:///…`
+- [ ] Same for an **asar-packaged** build (`app.getAppPath()` ends in `app.asar`) — package the
+      playground and repeat
+- [ ] `node:internal/...` frames still carry their original text
+- [ ] `view.url` is **not** rewritten — it stays `file:///…/index.html`
+- [ ] `normalizeStackPaths: false` restores the raw absolute paths
+- [ ] With `normalizeStackPath` returning a string, that string is used verbatim for both
+      main-process and renderer frames; returning `undefined` falls back to `app:///`
+- [ ] With `normalizeStackPath` throwing, frames fall back to `app:///` and events keep flowing
+
+> Point `--minified-path-prefix` at the directory the rewritten path names (`/dist` for
+> `app:///dist/…`) — `url.Parse("app:///dist/main.js").Path` is `/dist/main.js`, which is what the
+> upload stores the sourcemap under.
 
 ## 4. Console verification
 

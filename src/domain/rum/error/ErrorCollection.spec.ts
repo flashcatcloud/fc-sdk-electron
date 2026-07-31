@@ -1,16 +1,25 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ErrorCollection } from './ErrorCollection';
 import { EventFormat, EventKind, EventManager, type RawRumEvent } from '../../../event';
 import type { RawRumError } from '../rawRumData.types';
+import { StackPathNormalizer } from '../../StackPathNormalizer';
+
+vi.mock('electron', () => ({
+  app: { getAppPath: vi.fn(() => '/mock/app/root') },
+}));
 
 describe('ErrorCollection', () => {
   let eventManager: EventManager;
   let errorCollection: ErrorCollection;
   let rawRumEvents: RawRumEvent[];
+  // Off by default so the existing expectations keep seeing raw absolute paths; the tests that
+  // care about normalization build their own.
+  let stackPathNormalizer: StackPathNormalizer;
 
   beforeEach(() => {
     eventManager = new EventManager();
     rawRumEvents = [];
+    stackPathNormalizer = new StackPathNormalizer(false, undefined);
 
     eventManager.registerHandler<RawRumEvent>({
       canHandle: (event): event is RawRumEvent => event.kind === EventKind.RAW && event.format === EventFormat.RUM,
@@ -24,7 +33,7 @@ describe('ErrorCollection', () => {
 
   describe('uncaughtException', () => {
     it('emits an error event with correct fields from an Error object', () => {
-      errorCollection = new ErrorCollection(eventManager);
+      errorCollection = new ErrorCollection(eventManager, stackPathNormalizer);
 
       process.emit('uncaughtException', new Error('test error'));
 
@@ -40,7 +49,7 @@ describe('ErrorCollection', () => {
     });
 
     it('emits an error event with fallback message from a non-Error value', () => {
-      errorCollection = new ErrorCollection(eventManager);
+      errorCollection = new ErrorCollection(eventManager, stackPathNormalizer);
 
       process.emit('uncaughtException', 'string error' as unknown as Error);
 
@@ -54,7 +63,7 @@ describe('ErrorCollection', () => {
 
   describe('unhandledRejection', () => {
     it('emits an error event with correct fields from an Error rejection', () => {
-      errorCollection = new ErrorCollection(eventManager);
+      errorCollection = new ErrorCollection(eventManager, stackPathNormalizer);
 
       process.emit('unhandledRejection', new Error('test rejection'), Promise.resolve());
 
@@ -67,7 +76,7 @@ describe('ErrorCollection', () => {
     });
 
     it('emits an error event with fallback message from a non-Error rejection', () => {
-      errorCollection = new ErrorCollection(eventManager);
+      errorCollection = new ErrorCollection(eventManager, stackPathNormalizer);
 
       process.emit('unhandledRejection', 'string rejection', Promise.resolve());
 
@@ -80,7 +89,7 @@ describe('ErrorCollection', () => {
 
   describe('getApi().addError', () => {
     it('emits an error event with handling: handled and source: custom', () => {
-      errorCollection = new ErrorCollection(eventManager);
+      errorCollection = new ErrorCollection(eventManager, stackPathNormalizer);
 
       errorCollection.getApi().addError(new Error('manual error'));
 
@@ -96,7 +105,7 @@ describe('ErrorCollection', () => {
     });
 
     it('emits an error event with custom context', () => {
-      errorCollection = new ErrorCollection(eventManager);
+      errorCollection = new ErrorCollection(eventManager, stackPathNormalizer);
 
       errorCollection.getApi().addError(new Error('manual error'), { context: { key: 'value' } });
 
@@ -105,7 +114,7 @@ describe('ErrorCollection', () => {
     });
 
     it('emits an error event with custom startTime', () => {
-      errorCollection = new ErrorCollection(eventManager);
+      errorCollection = new ErrorCollection(eventManager, stackPathNormalizer);
 
       errorCollection.getApi().addError(new Error('manual error'), { startTime: 1234567890 });
 
@@ -115,7 +124,7 @@ describe('ErrorCollection', () => {
     });
 
     it('emits an error event with fallback message from a non-Error value', () => {
-      errorCollection = new ErrorCollection(eventManager);
+      errorCollection = new ErrorCollection(eventManager, stackPathNormalizer);
 
       errorCollection.getApi().addError('string error');
 
@@ -128,7 +137,7 @@ describe('ErrorCollection', () => {
 
   describe('stack formatting', () => {
     function stackOf(error: unknown): string | undefined {
-      errorCollection = new ErrorCollection(eventManager);
+      errorCollection = new ErrorCollection(eventManager, stackPathNormalizer);
       errorCollection.getApi().addError(error);
       return (rawRumEvents[0].data as RawRumError).error.stack;
     }
@@ -180,6 +189,27 @@ describe('ErrorCollection', () => {
 
     it('emits no stack at all for a non-Error value', () => {
       expect(stackOf('just a string')).toBeUndefined();
+    });
+
+    describe('path normalization', () => {
+      it('anchors frames under the app root on `app:///`', () => {
+        // This spec file itself lives under the repository root, which stands in for the app root.
+        stackPathNormalizer = new StackPathNormalizer(true, process.cwd());
+
+        const stack = stackOf(new Error('normalized'));
+
+        expect(stack).toMatch(/\sat\s.+\s@\sapp:\/\/\/src\/domain\/rum\/error\/ErrorCollection\.spec\.ts:\d+:\d+/);
+        expect(stack).not.toContain(process.cwd());
+      });
+
+      it('keeps absolute paths when normalization is disabled', () => {
+        stackPathNormalizer = new StackPathNormalizer(false, process.cwd());
+
+        const stack = stackOf(new Error('raw'));
+
+        expect(stack).not.toContain('app:///');
+        expect(stack).toContain(`${process.cwd()}/src/domain/rum/error/ErrorCollection.spec.ts`);
+      });
     });
   });
 });

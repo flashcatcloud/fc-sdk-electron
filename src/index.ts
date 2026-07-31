@@ -7,6 +7,7 @@ import { UserActivityTracker } from './domain/UserActivityTracker';
 import { RendererRegistry } from './domain/RendererRegistry';
 import { ViewTimingCorrector } from './domain/ViewTimingCorrector';
 import { WindowVisibilityTracker } from './domain/WindowVisibilityTracker';
+import { StackPathNormalizer } from './domain/StackPathNormalizer';
 import type { ErrorOptions, FailureReason, FeatureOperationOptions } from './domain/rum';
 import { callMonitored, startTelemetry } from './domain/telemetry';
 import { EventManager } from './event';
@@ -41,6 +42,7 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
   sessionManager = await SessionManager.start(eventManager, hooks);
 
   const rendererRegistry = new RendererRegistry();
+  const stackPathNormalizer = await StackPathNormalizer.create(config.normalizeStackPaths, config.normalizeStackPath);
 
   // Observing window visibility is only useful to the correction it feeds.
   if (config.correctPrewarmedViewTimings) {
@@ -48,11 +50,14 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
   }
 
   new Assembly(eventManager, hooks);
+  // Only the two fields the renderer bridge reads: they are returned over a synchronous IPC
+  // channel, which can carry structured-cloneable data only — a callback would throw there.
   new BridgeHandler(
     eventManager,
-    config,
+    { defaultPrivacyLevel: config.defaultPrivacyLevel, allowedWebViewHosts: config.allowedWebViewHosts },
     rendererRegistry,
-    new ViewTimingCorrector(rendererRegistry, config.correctPrewarmedViewTimings)
+    new ViewTimingCorrector(rendererRegistry, config.correctPrewarmedViewTimings),
+    stackPathNormalizer
   );
   new UserActivityTracker(eventManager);
 
@@ -61,7 +66,7 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
   }
 
   transport = await Transport.create(config, eventManager);
-  const rum = await RumCollection.start(eventManager, hooks, rendererRegistry);
+  const rum = await RumCollection.start(eventManager, hooks, rendererRegistry, stackPathNormalizer);
   rumApi = rum.getApi();
 
   return true;
