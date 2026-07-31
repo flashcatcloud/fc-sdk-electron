@@ -292,5 +292,99 @@ describe('StackPathNormalizer', () => {
         '/dist/renderer.js'
       );
     });
+
+    it('applies to renderer stacks too', () => {
+      const event = {
+        error: {
+          stack: `Error: boom\n  at fn @ file://${APP_ROOT}/public/dist/renderer.js:9:1`,
+        },
+      };
+
+      new StackPathNormalizer(true, APP_ROOT, customize).normalizeRumEvent(event);
+
+      expect(event.error.stack).toBe('Error: boom\n  at fn @ /dist/renderer.js:9:1');
+    });
+  });
+
+  describe('normalizeRumEvent', () => {
+    const APP_ROOT = '/Applications/MyApp.app/Contents/Resources/app.asar';
+
+    it('rewrites the frame URLs of a formatted renderer stack', () => {
+      const event = {
+        type: 'error',
+        error: {
+          stack: [
+            'TypeError: cannot read x',
+            `  at handleClick @ file://${APP_ROOT}/dist/renderer/index.js:12:9`,
+            `  at <anonymous> @ file://${APP_ROOT}/dist/renderer/vendor.js:1:44`,
+          ].join('\n'),
+        },
+      };
+
+      new StackPathNormalizer(true, APP_ROOT).normalizeRumEvent(event);
+
+      expect(event.error.stack).toBe(
+        [
+          'TypeError: cannot read x',
+          '  at handleClick @ app:///dist/renderer/index.js:12:9',
+          '  at <anonymous> @ app:///dist/renderer/vendor.js:1:44',
+        ].join('\n')
+      );
+    });
+
+    it('rewrites the stacks of error causes too', () => {
+      const event = {
+        error: {
+          stack: `Error: outer\n  at a @ file://${APP_ROOT}/dist/a.js:1:1`,
+          causes: [{ stack: `Error: inner\n  at b @ file://${APP_ROOT}/dist/b.js:2:2` }, { stack: undefined }],
+        },
+      };
+
+      new StackPathNormalizer(true, APP_ROOT).normalizeRumEvent(event);
+
+      expect(event.error.stack).toBe('Error: outer\n  at a @ app:///dist/a.js:1:1');
+      expect(event.error.causes[0].stack).toBe('Error: inner\n  at b @ app:///dist/b.js:2:2');
+    });
+
+    it('leaves the header line alone even when it quotes a path under the app root', () => {
+      const event = { error: { stack: `Error: cannot open ${APP_ROOT}/dist/data.json` } };
+
+      new StackPathNormalizer(true, APP_ROOT).normalizeRumEvent(event);
+
+      expect(event.error.stack).toBe(`Error: cannot open ${APP_ROOT}/dist/data.json`);
+    });
+
+    it('leaves frames served over http untouched', () => {
+      const event = { error: { stack: 'Error: dev\n  at fn @ http://localhost:5173/src/main.ts:3:1' } };
+
+      new StackPathNormalizer(true, APP_ROOT).normalizeRumEvent(event);
+
+      expect(event.error.stack).toBe('Error: dev\n  at fn @ http://localhost:5173/src/main.ts:3:1');
+    });
+
+    it('does not rewrite the view url, which identifies the page rather than the code', () => {
+      const event = { type: 'view', view: { url: `file://${APP_ROOT}/dist/index.html` } };
+
+      new StackPathNormalizer(true, APP_ROOT).normalizeRumEvent(event);
+
+      expect(event.view.url).toBe(`file://${APP_ROOT}/dist/index.html`);
+    });
+
+    it('leaves the event untouched when disabled', () => {
+      const event = { error: { stack: `Error: x\n  at a @ file://${APP_ROOT}/dist/a.js:1:1` } };
+
+      new StackPathNormalizer(false, APP_ROOT).normalizeRumEvent(event);
+
+      expect(event.error.stack).toBe(`Error: x\n  at a @ file://${APP_ROOT}/dist/a.js:1:1`);
+    });
+
+    it('tolerates events carrying no error at all', () => {
+      expect(() => {
+        const normalizer = new StackPathNormalizer(true, APP_ROOT);
+        normalizer.normalizeRumEvent(undefined);
+        normalizer.normalizeRumEvent({ type: 'view' });
+        normalizer.normalizeRumEvent({ error: {} });
+      }).not.toThrow();
+    });
   });
 });

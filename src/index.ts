@@ -56,7 +56,8 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
     eventManager,
     { defaultPrivacyLevel: config.defaultPrivacyLevel, allowedWebViewHosts: config.allowedWebViewHosts },
     rendererRegistry,
-    new ViewTimingCorrector(rendererRegistry, config.correctPrewarmedViewTimings)
+    new ViewTimingCorrector(rendererRegistry, config.correctPrewarmedViewTimings),
+    stackPathNormalizer
   );
   new UserActivityTracker(eventManager);
 

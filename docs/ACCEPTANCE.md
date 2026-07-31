@@ -177,8 +177,8 @@ Chromium actually report — which differs between a packaged (asar) and an unpa
 - [ ] `node:internal/...` frames still carry their original text
 - [ ] `view.url` is **not** rewritten — it stays `file:///…/index.html`
 - [ ] `normalizeStackPaths: false` restores the raw absolute paths
-- [ ] With `normalizeStackPath` returning a string, that string is used verbatim; returning
-      `undefined` falls back to `app:///`
+- [ ] With `normalizeStackPath` returning a string, that string is used verbatim for both
+      main-process and renderer frames; returning `undefined` falls back to `app:///`
 - [ ] With `normalizeStackPath` throwing, frames fall back to `app:///` and events keep flowing
 
 > Point `--minified-path-prefix` at the directory the rewritten path names (`/dist` for

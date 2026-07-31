@@ -7,6 +7,7 @@ import { monitor, addError as addTelemetryError } from '../domain/telemetry';
 import { BRIDGE_CHANNEL, CONFIG_CHANNEL } from '../common';
 import type { RendererRegistry } from '../domain/RendererRegistry';
 import type { ViewTimingCorrector } from '../domain/ViewTimingCorrector';
+import type { StackPathNormalizer } from '../domain/StackPathNormalizer';
 
 type BridgeEventType = 'rum' | 'log' | 'internal_telemetry';
 
@@ -40,7 +41,8 @@ export class BridgeHandler {
     private readonly eventManager: EventManager,
     private readonly bridgeOptions: BridgeOptions,
     private readonly rendererRegistry: RendererRegistry,
-    private readonly viewTimingCorrector: ViewTimingCorrector
+    private readonly viewTimingCorrector: ViewTimingCorrector,
+    private readonly stackPathNormalizer: StackPathNormalizer
   ) {
     ipcMain.on(
       BRIDGE_CHANNEL,
@@ -69,8 +71,14 @@ export class BridgeHandler {
     switch (bridgeEvent.eventType) {
       case 'rum':
         this.trackRenderer(bridgeEvent.event, webContentsId);
-        // Rewrite before handing the event over: everything downstream treats it as final.
+        // Both rewrite the event in place, before it is handed over: everything downstream
+        // treats the bridged event as final. They are independent of one another and the order
+        // between them does not matter — the correction only reads `type: 'view'` events and
+        // only writes `view.*` paint metrics, the normalization only reads events carrying a
+        // top-level `error` and only writes `error.stack`. Neither replaces the event object,
+        // so neither can swallow the other.
         this.viewTimingCorrector.correct(bridgeEvent.event, webContentsId);
+        this.stackPathNormalizer.normalizeRumEvent(bridgeEvent.event);
         this.eventManager.notify({
           kind: EventKind.RAW,
           source: EventSource.RENDERER,

@@ -13,11 +13,22 @@ import { addError as addTelemetryError } from './telemetry';
  */
 const APP_URL_PREFIX = 'app:///';
 
+/** Separator `toStackTraceString` puts between a frame's function and its URL. */
+const FRAME_URL_SEPARATOR = ' @ ';
+
 /**
  * Rewrite a stack frame's absolute path. Returning `undefined` falls through to the built-in
  * `app:///` normalization; returning a string uses it verbatim.
  */
 export type NormalizeStackPath = (absolutePath: string) => string | undefined;
+
+/** Shape of the error payload carried by an assembled renderer RUM event. */
+interface NormalizableRumEvent {
+  error?: {
+    stack?: string;
+    causes?: { stack?: string }[];
+  };
+}
 
 /**
  * Rewrites the absolute file paths in error stacks to `app:///<path relative to the app root>`.
@@ -86,8 +97,55 @@ export class StackPathNormalizer {
     return stackTrace;
   }
 
+  /**
+   * Rewrite the stacks carried by an assembled renderer RUM event, in place.
+   *
+   * Renderer stacks reach the main process already formatted, so they are rewritten frame line by
+   * frame line rather than through `StackTrace`. Only stacks are touched — `view.url` and resource
+   * URLs identify the page, not the code, and rewriting them would change view attribution.
+   */
+  normalizeRumEvent(event: unknown): void {
+    if (!this.isActive()) {
+      return;
+    }
+
+    const error = (event as NormalizableRumEvent | undefined)?.error;
+    if (!error) {
+      return;
+    }
+
+    if (error.stack) {
+      error.stack = this.normalizeStackString(error.stack);
+    }
+    for (const cause of error.causes ?? []) {
+      if (cause.stack) {
+        cause.stack = this.normalizeStackString(cause.stack);
+      }
+    }
+  }
+
   private isActive(): boolean {
     return this.appRootPattern !== undefined || this.normalizeStackPath !== undefined;
+  }
+
+  /**
+   * Rewrite the URL half of every `at <func> @ <url>:<line>:<column>` frame of a formatted stack.
+   *
+   * The `Name: message` header carries no separator and is left alone, as is any line whose URL
+   * does not sit under the application root.
+   */
+  private normalizeStackString(stack: string): string {
+    return stack
+      .split('\n')
+      .map((line) => {
+        const separatorIndex = line.indexOf(FRAME_URL_SEPARATOR);
+        if (separatorIndex === -1) {
+          return line;
+        }
+        const urlStart = separatorIndex + FRAME_URL_SEPARATOR.length;
+        return line.slice(0, urlStart) + this.normalizePath(line.slice(urlStart));
+      })
+      .join('\n');
   }
 
   /** The application's own rewriting wins; otherwise fall back to the built-in one. */

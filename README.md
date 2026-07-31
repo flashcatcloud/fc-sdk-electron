@@ -180,8 +180,8 @@ await esbuild.build({
 ### Error stacks and sourcemaps
 
 Errors reported from the **main process** — uncaught exceptions, unhandled rejections, and
-`addError()` — carry a stack in the same shape the renderer produces, with every frame under your
-application root rewritten to `app:///<path relative to the app root>`:
+`addError()` — carry a stack in the same shape the renderer produces. In **both** processes, every
+frame under your application root is rewritten to `app:///<path relative to the app root>`:
 
 ```
 Error: something went wrong
@@ -217,8 +217,9 @@ flashcat-cli sourcemaps upload ./dist \
 
 Anything that is not a path under your application root is left exactly as it is: `node:internal/…`
 frames (kept because they are useful to read, skipped during un-minification), `http(s)` URLs,
-native modules under `app.asar.unpacked`, and paths your own code has already normalized —
-including the renderer stacks an application rewrites itself in the browser SDK's `beforeSend`.
+native modules under `app.asar.unpacked`, and paths your own code has already normalized — so a
+renderer `beforeSend` that already rewrites stacks keeps working unchanged. `view.url` is left
+alone as well: it identifies the page, not the code.
 
 Set `normalizeStackPaths: false` to report the raw absolute paths instead.
 
@@ -246,8 +247,9 @@ init({
 });
 ```
 
-A callback that throws is reported as an SDK error and that frame falls back to the built-in
-behaviour, so a faulty callback can never take error reporting down.
+It applies to main-process and renderer frames alike. A callback that throws is reported as an SDK
+error and that frame falls back to the built-in behaviour, so a faulty callback can never take
+error reporting down.
 
 > Native crash stacks (from `crashReporter` minidumps) use a different, address-based format and are
 > unaffected by this. They are reported as-is; symbolication of native frames is not supported yet.
