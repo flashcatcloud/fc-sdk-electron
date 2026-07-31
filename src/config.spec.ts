@@ -285,6 +285,29 @@ describe('buildConfiguration', () => {
     });
   });
 
+  describe('normalizeStackPaths validation', () => {
+    it('defaults to true when not provided', () => {
+      const result = buildConfiguration({ ...DEFAULT_CONFIG });
+
+      expect(result?.normalizeStackPaths).toBe(true);
+    });
+
+    it('accepts false', () => {
+      const result = buildConfiguration({ ...DEFAULT_CONFIG, normalizeStackPaths: false });
+
+      expect(result?.normalizeStackPaths).toBe(false);
+    });
+
+    it('logs an error and keeps the default when not a boolean', () => {
+      const config = { ...DEFAULT_CONFIG, normalizeStackPaths: 'yes' } as unknown as InitConfiguration;
+
+      const result = buildConfiguration(config);
+
+      expect(result?.normalizeStackPaths).toBe(true);
+      expect(display.displayError).toHaveBeenCalledWith("Configuration error: 'normalizeStackPaths' must be a boolean");
+    });
+  });
+
   describe('allowedWebViewHosts validation', () => {
     it('defaults to empty array when not provided', () => {
       const config = { ...DEFAULT_CONFIG };

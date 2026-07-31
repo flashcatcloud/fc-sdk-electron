@@ -51,6 +51,17 @@ export interface InitConfiguration {
    * @see ViewTimingCorrector
    */
   correctPrewarmedViewTimings?: boolean;
+  /**
+   * Rewrite the absolute file paths in error stacks to `app:///<path relative to the app root>`,
+   * so uploaded sourcemaps match regardless of where the application was installed. Defaults to
+   * `true`.
+   *
+   * Turn it off to report the raw runtime paths instead — sourcemap un-minification then only
+   * works for installations whose paths match the ones the sourcemaps were uploaded under.
+   *
+   * @see StackPathNormalizer
+   */
+  normalizeStackPaths?: boolean;
 }
 
 export interface Configuration {
@@ -67,6 +78,7 @@ export interface Configuration {
   defaultPrivacyLevel: DefaultPrivacyLevel;
   allowedWebViewHosts: string[];
   correctPrewarmedViewTimings: boolean;
+  normalizeStackPaths: boolean;
 }
 
 function validateRequiredString(value: unknown, fieldName: string): string | undefined {
@@ -179,5 +191,6 @@ export function buildConfiguration(initConfig: InitConfiguration): Configuration
       'correctPrewarmedViewTimings',
       true
     ),
+    normalizeStackPaths: validateOptionalBoolean(initConfig.normalizeStackPaths, 'normalizeStackPaths', true),
   };
 }

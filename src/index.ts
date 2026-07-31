@@ -7,6 +7,7 @@ import { UserActivityTracker } from './domain/UserActivityTracker';
 import { RendererRegistry } from './domain/RendererRegistry';
 import { ViewTimingCorrector } from './domain/ViewTimingCorrector';
 import { WindowVisibilityTracker } from './domain/WindowVisibilityTracker';
+import { StackPathNormalizer } from './domain/StackPathNormalizer';
 import type { ErrorOptions, FailureReason, FeatureOperationOptions } from './domain/rum';
 import { callMonitored, startTelemetry } from './domain/telemetry';
 import { EventManager } from './event';
@@ -41,6 +42,7 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
   sessionManager = await SessionManager.start(eventManager, hooks);
 
   const rendererRegistry = new RendererRegistry();
+  const stackPathNormalizer = await StackPathNormalizer.create(config.normalizeStackPaths);
 
   // Observing window visibility is only useful to the correction it feeds.
   if (config.correctPrewarmedViewTimings) {
@@ -61,7 +63,7 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
   }
 
   transport = await Transport.create(config, eventManager);
-  const rum = await RumCollection.start(eventManager, hooks, rendererRegistry);
+  const rum = await RumCollection.start(eventManager, hooks, rendererRegistry, stackPathNormalizer);
   rumApi = rum.getApi();
 
   return true;

@@ -180,21 +180,47 @@ await esbuild.build({
 ### Error stacks and sourcemaps
 
 Errors reported from the **main process** — uncaught exceptions, unhandled rejections, and
-`addError()` — carry a stack in the same shape the renderer produces:
+`addError()` — carry a stack in the same shape the renderer produces, with every frame under your
+application root rewritten to `app:///<path relative to the app root>`:
 
 ```
 Error: something went wrong
-  at handleClick @ /Applications/MyApp.app/Contents/Resources/app/dist/main.js:97:15
+  at handleClick @ app:///dist/main.js:97:15
   at <anonymous> @ process.processTimers (node:internal/timers:541:7)
 ```
 
-Frame URLs are the absolute paths of your bundled main-process code, which is what the sourcemap
-upload keys on, so **main-process stacks can be un-minified just like renderer stacks**. Upload the
-sourcemaps for your main-process bundle alongside your renderer ones.
+The raw frame URL is the runtime _installation_ path — which your build cannot know:
 
-Node's own internal frames (`node:internal/...`) have no meaningful URL and appear as
-`at <anonymous> @ …`. They are kept because they are useful to read, and are skipped during
-un-minification.
+| Platform         | Raw frame URL                                                      |
+| ---------------- | ------------------------------------------------------------------ |
+| macOS            | `/Applications/MyApp.app/Contents/Resources/app.asar/dist/main.js` |
+| Windows          | `C:/Users/<user>/AppData/Local/Programs/MyApp/…/dist/main.js`      |
+| Linux (AppImage) | `/tmp/.mount_XXXXXX/resources/app.asar/dist/main.js`               |
+
+Sourcemaps uploaded against those paths would only ever match on the machine the paths happened to
+describe. Anchoring each path on the application root strips the machine-specific part and leaves
+one that is stable across installs and platforms. This is the same `app:///` scheme the Sentry
+Electron SDK uses, and it works the same for asar-packaged and unpackaged (development) builds.
+
+Upload the sourcemaps for your bundle with a prefix matching the rewritten path — `app:///dist/…`
+resolves to `/dist/…`, so the prefix is `/dist`:
+
+```sh
+flashcat-cli sourcemaps upload ./dist \
+  --service my-app \
+  --release-version 1.2.3 \
+  --minified-path-prefix /dist
+```
+
+> Pass the **path**, `/dist` — not `app:///dist`. The intake keys sourcemaps by URL path only, and
+> the CLI rejects a prefix that is neither an `http(s)` URL nor an absolute path.
+
+Anything that is not a path under your application root is left exactly as it is: `node:internal/…`
+frames (kept because they are useful to read, skipped during un-minification), `http(s)` URLs,
+native modules under `app.asar.unpacked`, and paths your own code has already normalized —
+including the renderer stacks an application rewrites itself in the browser SDK's `beforeSend`.
+
+Set `normalizeStackPaths: false` to report the raw absolute paths instead.
 
 > Native crash stacks (from `crashReporter` minidumps) use a different, address-based format and are
 > unaffected by this. They are reported as-is; symbolication of native frames is not supported yet.
@@ -277,21 +303,22 @@ interface FeatureOperationOptions {
 
 ### Configuration Options
 
-| Option                        | Type                                     | Required | Default                  | Description                                                                                                                |
-| ----------------------------- | ---------------------------------------- | -------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| `clientToken`                 | `string`                                 | Yes      | —                        | FlashCat client token                                                                                                      |
-| `applicationId`               | `string`                                 | Yes      | —                        | RUM application ID                                                                                                         |
-| `site`                        | `string`                                 | No       | `browser.flashcat.cloud` | Intake host, used verbatim — e.g. `browser.flashcat.cloud` (production), `jira.flashcat.cloud` (staging), or your own host |
-| `service`                     | `string`                                 | Yes      | —                        | Service name                                                                                                               |
-| `env`                         | `string`                                 | No       | —                        | Application environment                                                                                                    |
-| `version`                     | `string`                                 | No       | —                        | Application version                                                                                                        |
-| `telemetrySampleRate`         | `number`                                 | No       | `20`                     | Telemetry sample rate (0–100)                                                                                              |
-| `batchSize`                   | `'SMALL' \| 'MEDIUM' \| 'LARGE'`         | No       | —                        | Batch size for event uploads                                                                                               |
-| `uploadFrequency`             | `'RARE' \| 'NORMAL' \| 'FREQUENT'`       | No       | —                        | Upload frequency for event batches                                                                                         |
-| `defaultPrivacyLevel`         | `'mask' \| 'allow' \| 'mask-user-input'` | No       | `'mask'`                 | Default privacy level for renderer session replay                                                                          |
-| `allowedWebViewHosts`         | `string[]`                               | No       | `[]`                     | Extra hostnames allowed for the renderer bridge (the window's own host is always allowed)                                  |
-| `proxy`                       | `string`                                 | No       | —                        | Proxy URL to upload through instead of `site`. See [Self-hosted deployments](#self-hosted-deployments)                     |
-| `correctPrewarmedViewTimings` | `boolean`                                | No       | `true`                   | Rebase FCP/LCP of pre-warmed windows onto the moment they became visible. See [Pre-warmed windows](#pre-warmed-windows)    |
+| Option                        | Type                                     | Required | Default                  | Description                                                                                                                            |
+| ----------------------------- | ---------------------------------------- | -------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `clientToken`                 | `string`                                 | Yes      | —                        | FlashCat client token                                                                                                                  |
+| `applicationId`               | `string`                                 | Yes      | —                        | RUM application ID                                                                                                                     |
+| `site`                        | `string`                                 | No       | `browser.flashcat.cloud` | Intake host, used verbatim — e.g. `browser.flashcat.cloud` (production), `jira.flashcat.cloud` (staging), or your own host             |
+| `service`                     | `string`                                 | Yes      | —                        | Service name                                                                                                                           |
+| `env`                         | `string`                                 | No       | —                        | Application environment                                                                                                                |
+| `version`                     | `string`                                 | No       | —                        | Application version                                                                                                                    |
+| `telemetrySampleRate`         | `number`                                 | No       | `20`                     | Telemetry sample rate (0–100)                                                                                                          |
+| `batchSize`                   | `'SMALL' \| 'MEDIUM' \| 'LARGE'`         | No       | —                        | Batch size for event uploads                                                                                                           |
+| `uploadFrequency`             | `'RARE' \| 'NORMAL' \| 'FREQUENT'`       | No       | —                        | Upload frequency for event batches                                                                                                     |
+| `defaultPrivacyLevel`         | `'mask' \| 'allow' \| 'mask-user-input'` | No       | `'mask'`                 | Default privacy level for renderer session replay                                                                                      |
+| `allowedWebViewHosts`         | `string[]`                               | No       | `[]`                     | Extra hostnames allowed for the renderer bridge (the window's own host is always allowed)                                              |
+| `proxy`                       | `string`                                 | No       | —                        | Proxy URL to upload through instead of `site`. See [Self-hosted deployments](#self-hosted-deployments)                                 |
+| `normalizeStackPaths`         | `boolean`                                | No       | `true`                   | Rewrite stack frame paths to `app:///<path relative to the app root>`. See [Error stacks and sourcemaps](#error-stacks-and-sourcemaps) |
+| `correctPrewarmedViewTimings` | `boolean`                                | No       | `true`                   | Rebase FCP/LCP of pre-warmed windows onto the moment they became visible. See [Pre-warmed windows](#pre-warmed-windows)                |
 
 ### Pre-warmed windows
 
