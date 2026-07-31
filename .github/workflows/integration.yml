@@ -1,0 +1,68 @@
+## Integration tests: the SDK installed from a packed tarball into three realistic Electron apps,
+## one per bundler plugin, each run unpackaged and packaged.
+##
+## Deliberately not part of the pull-request CI: installing and packaging three Electron apps takes
+## far longer than the rest of the pipeline and is the most flake-prone thing in the repository.
+## Run it before a release — automatically on a `v*` tag, or on demand.
+name: Integration
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # One job per app: packaging an Electron app dominates the runtime, so sharding by app
+        # (both modes together) is what actually shortens the wall clock.
+        app: [forge-webpack, electron-vite, forge-esbuild-esm]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install --immutable
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      # Electron links against the same system libraries as Chromium.
+      - name: Install Electron system dependencies
+        run: yarn playwright install-deps chromium
+
+      # Packs the SDK and installs it into every integration app from the tarball, then packages
+      # them. The tarball — rather than a `portal:`/`file:` directory — is what validates the
+      # `files` field of package.json, i.e. what customers actually receive from npm.
+      - name: Build and package the integration app
+        run: yarn test:integration:init ${{ matrix.app }}
+
+      - name: Integration tests
+        run: |
+          xvfb-run -a yarn test:integration \
+            --project=${{ matrix.app }}-dev \
+            --project=${{ matrix.app }}-packaged
+
+      - name: Upload report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-report-${{ matrix.app }}
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+          retention-days: 7
