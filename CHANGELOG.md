@@ -16,6 +16,8 @@ First FlashCat release. Forked from `@datadog/electron-sdk` v0.3.0 and rebranded
 
   > **Release ordering:** this requires the fc-rum fix for frame-index misalignment when a frame URL fails to parse. Node's internal frames (`node:internal/...`) produce exactly such URLs. Publishing this SDK before that backend fix is deployed will misalign — or crash — sourcemap enrichment for main-process errors.
 
+- FCP and LCP of pre-warmed windows (`new BrowserWindow({ show: false })`, navigated ahead of time) are rebased onto the moment the window first became visible, the way the Paint Timing spec handles prerendered pages. Without it, an application that renders its first screen at `show()` reports paint metrics inflated by the whole pre-warm interval. Set `correctPrewarmedViewTimings: false` to keep the raw document-level values. See the README.
+
 ### ⚠️ Breaking Changes / Notes
 
 - Package renamed to `@flashcatcloud/electron-sdk` (internal `dd-`/`Datadog` names and the `DatadogEventBridge` global are kept per the fork convention).

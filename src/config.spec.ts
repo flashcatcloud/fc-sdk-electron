@@ -331,6 +331,31 @@ describe('buildConfiguration', () => {
     });
   });
 
+  describe('correctPrewarmedViewTimings validation', () => {
+    it('defaults to true when not provided', () => {
+      const result = buildConfiguration({ ...DEFAULT_CONFIG });
+
+      expect(result?.correctPrewarmedViewTimings).toBe(true);
+    });
+
+    it('accepts false', () => {
+      const result = buildConfiguration({ ...DEFAULT_CONFIG, correctPrewarmedViewTimings: false });
+
+      expect(result?.correctPrewarmedViewTimings).toBe(false);
+    });
+
+    it('logs an error and keeps the default when not a boolean', () => {
+      const config = { ...DEFAULT_CONFIG, correctPrewarmedViewTimings: 'yes' } as unknown as InitConfiguration;
+
+      const result = buildConfiguration(config);
+
+      expect(result?.correctPrewarmedViewTimings).toBe(true);
+      expect(display.displayError).toHaveBeenCalledWith(
+        "Configuration error: 'correctPrewarmedViewTimings' must be a boolean"
+      );
+    });
+  });
+
   describe('telemetrySampleRate validation', () => {
     it('defaults to 20 when not provided', () => {
       const config = { ...DEFAULT_CONFIG };

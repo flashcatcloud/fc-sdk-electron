@@ -5,6 +5,8 @@ import { RumCollection } from './domain/rum';
 import { SessionManager } from './domain/session';
 import { UserActivityTracker } from './domain/UserActivityTracker';
 import { RendererRegistry } from './domain/RendererRegistry';
+import { ViewTimingCorrector } from './domain/ViewTimingCorrector';
+import { WindowVisibilityTracker } from './domain/WindowVisibilityTracker';
 import type { ErrorOptions, FailureReason, FeatureOperationOptions } from './domain/rum';
 import { callMonitored, startTelemetry } from './domain/telemetry';
 import { EventManager } from './event';
@@ -40,8 +42,18 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
 
   const rendererRegistry = new RendererRegistry();
 
+  // Observing window visibility is only useful to the correction it feeds.
+  if (config.correctPrewarmedViewTimings) {
+    new WindowVisibilityTracker(rendererRegistry);
+  }
+
   new Assembly(eventManager, hooks);
-  new BridgeHandler(eventManager, config, rendererRegistry);
+  new BridgeHandler(
+    eventManager,
+    config,
+    rendererRegistry,
+    new ViewTimingCorrector(rendererRegistry, config.correctPrewarmedViewTimings)
+  );
   new UserActivityTracker(eventManager);
 
   if (tracing.enabled) {

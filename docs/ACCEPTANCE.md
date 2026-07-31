@@ -144,6 +144,26 @@ in `playground/src/main.ts`:
 - [ ] `node:internal/...` frames are skipped rather than breaking enrichment, and the surrounding
       application frames still resolve correctly
 
+## 3d. Pre-warmed window paint timings
+
+Verifies `correctPrewarmedViewTimings`. Only reproducible against a real window lifecycle — the
+correction rebases FCP/LCP on when the window became visible, which no unit test can prove.
+
+Edit `playground/src/main.ts` to pre-warm the window: `new BrowserWindow({ show: false, … })`,
+`loadURL` immediately, and `setTimeout(() => win.show(), 8000)`.
+
+- [ ] The renderer `view` event's `first_contentful_paint` / `largest_contentful_paint` are on the
+      order of the paint delay **after** `show()` — not ~8s
+- [ ] Same for `view.performance.fcp.timestamp` / `view.performance.lcp.timestamp`
+- [ ] With the window left hidden for the whole run, the `view` event carries **no** FCP/LCP at all
+      rather than an inflated value
+- [ ] Reverting to the normal `show: true` window leaves FCP/LCP exactly as before the change
+- [ ] `correctPrewarmedViewTimings: false` restores the raw (inflated) values
+
+> The standalone Electron probe used to characterise the platform behaviour, and a harness that
+> replays its logs through the shipped corrector, live in the task report
+> `2026-07-30-electron-fcp-prewarm/` (see its README).
+
 ## 4. Console verification
 
 - [ ] Events are queryable in the FlashCat RUM console for the target application

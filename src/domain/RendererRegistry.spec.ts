@@ -32,6 +32,32 @@ describe('RendererRegistry', () => {
     expect(registry.get(1)).toBeUndefined();
   });
 
+  it('marks a renderer as visibility-tracked without claiming it was visible', () => {
+    const registry = new RendererRegistry();
+
+    registry.trackWindowVisibility(1);
+
+    expect(registry.get(1)).toEqual({ visibilityTracked: true });
+  });
+
+  it('keeps the first activation instant when a window is shown again', () => {
+    const registry = new RendererRegistry();
+
+    registry.recordFirstVisible(1, 100);
+    registry.recordFirstVisible(1, 500);
+
+    expect(registry.get(1)?.firstVisibleAt).toBe(100);
+  });
+
+  it('keeps the activation instant across later bridge updates', () => {
+    const registry = new RendererRegistry();
+
+    registry.recordFirstVisible(1, 100);
+    registry.set(1, { viewId: 'view-1' });
+
+    expect(registry.get(1)).toEqual({ viewId: 'view-1', visibilityTracked: true, firstVisibleAt: 100 });
+  });
+
   it('evicts the oldest renderer past the cap so long-running apps do not leak', () => {
     const registry = new RendererRegistry();
 
