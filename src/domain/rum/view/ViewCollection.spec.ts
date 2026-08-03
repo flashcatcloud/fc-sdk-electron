@@ -83,6 +83,52 @@ describe('ViewCollection', () => {
     });
   });
 
+  describe('view context timestamp consistency', () => {
+    // A view's start time and its context-history entry must come from a single clock read.
+    // `timeStampNow()` has millisecond granularity and `TimeStampValueHistory.find()` only matches
+    // entries with `startTime <= lookup`, so reading the clock a second time to register the entry
+    // lets a millisecond tick land in between: the view event's lookup by its own start time then
+    // misses its own entry and `ViewContext`'s RUM hook discards the event. Every later update
+    // reuses the same view start time, so a single missed tick silently drops the whole session's
+    // view stream while errors, resources and vitals keep referencing the now-unreported view id.
+    it('attributes the initial view event to its own context entry when the clock ticks between reads', async () => {
+      // A clock that advances 1ms on every read: any two `timeStampNow()` calls made for the same
+      // logical instant are guaranteed to disagree, turning the race into a certainty.
+      // `Date.now()` stays on the mocked system time, so it is a stable base to advance from.
+      let tick = 0;
+      const getTime = vi.spyOn(Date.prototype, 'getTime').mockImplementation(() => Date.now() + tick++);
+
+      const racyEventManager = new EventManager();
+      const racyHooks = createFormatHooks();
+      const emitted: RawRumEvent[] = [];
+      racyEventManager.registerHandler<RawRumEvent>({
+        canHandle: (event): event is RawRumEvent => event.kind === EventKind.RAW && event.format === EventFormat.RUM,
+        handle: (event) => emitted.push(event),
+      });
+
+      const racyCollection = await ViewCollection.start(racyEventManager, racyHooks);
+      getTime.mockRestore();
+
+      try {
+        expect(emitted).toHaveLength(1);
+        const viewEvent = emitted[0];
+        const viewId = (viewEvent.data as RawRumView).view.id;
+
+        const { startTime } = viewEvent;
+        if (startTime === undefined) {
+          throw new Error('the view event should carry the start time its context is looked up by');
+        }
+
+        // Resolve the context the way Assembly does: by the event's own start time.
+        expect(racyHooks.triggerRum({ eventType: 'view', startTime })).toMatchObject({
+          view: { id: viewId },
+        });
+      } finally {
+        racyCollection.stop();
+      }
+    });
+  });
+
   describe('hook registration', () => {
     it('injects view attributes into RUM hooks', () => {
       const initialViewAttributes = (rawRumEvents[0].data as RawRumView).view;

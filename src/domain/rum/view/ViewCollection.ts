@@ -97,16 +97,17 @@ export class ViewCollection {
 
   private createNewView(): void {
     const viewId = generateUUID();
+    const startTime = timeStampNow();
     this.currentView = {
       id: viewId,
-      startTime: timeStampNow(),
+      startTime,
       documentVersion: 1,
       isActive: true,
       counters: { action: { count: 0 }, error: { count: 0 }, resource: { count: 0 } },
     };
 
-    this.viewContext.close(); // close previous view if any (ensures non-overlapping history entries)
-    this.viewContext.add(viewId);
+    this.viewContext.close(startTime); // close previous view if any (ensures non-overlapping history entries)
+    this.viewContext.add(viewId, startTime);
     this.emitViewUpdate();
     this.keepSessionAlive();
   }

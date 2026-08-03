@@ -1,6 +1,6 @@
 import { app } from 'electron';
 import * as path from 'node:path';
-import { DISCARDED, SKIPPED, timeStampNow } from '@flashcatcloud/browser-core';
+import { DISCARDED, SKIPPED, timeStampNow, type TimeStamp } from '@flashcatcloud/browser-core';
 import type { FormatHooks } from '../../../assembly';
 import { DiskValueHistory } from '../../../tools/DiskValueHistory';
 import { SESSION_TIME_OUT_DELAY } from '../../session';
@@ -38,11 +38,11 @@ export class ViewContext {
     return new ViewContext(history, hooks);
   }
 
-  add(id: string): void {
-    this.history.add(id, timeStampNow());
+  add(id: string, startTime: TimeStamp = timeStampNow()): void {
+    this.history.add(id, startTime);
   }
 
-  close(): void {
-    this.history.closeActive(timeStampNow());
+  close(endTime: TimeStamp = timeStampNow()): void {
+    this.history.closeActive(endTime);
   }
 }
