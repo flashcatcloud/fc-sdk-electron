@@ -1,6 +1,6 @@
 import { test as base, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
-import { join } from 'node:path';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { basename, join } from 'node:path';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { Intake } from './intake';
 import { TestServer } from './testServer';
@@ -157,6 +157,92 @@ export async function launchAppManually(
 
 export async function createUserDataDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'electron-sdk-e2e-'));
+}
+
+/**
+ * Waits until a native crash has been fully written to disk.
+ *
+ * This — not the crashed process going away — is what a relaunch needs: the SDK reports crashes by
+ * scanning `app.getPath('crashDumps')` at startup, and Crashpad takes a few seconds to produce the
+ * minidump. Returns the dump path.
+ */
+export async function waitForCrashDump(userDataDir: string, timeout = 30_000): Promise<string> {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    const dumpPath = await findCrashDump(userDataDir);
+    if (dumpPath !== undefined) {
+      return dumpPath;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`No crash dump appeared under ${userDataDir} within ${timeout}ms`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
+async function findCrashDump(userDataDir: string): Promise<string | undefined> {
+  // Electron points `crashDumps` at `<userData>/Crashpad`, but scan the whole user data directory
+  // so this does not depend on the per-platform layout underneath.
+  let entries;
+  try {
+    entries = await readdir(userDataDir, { recursive: true, withFileTypes: true });
+  } catch {
+    // The directory can be swept while Crashpad reorganizes its database; retry on the next tick.
+    return undefined;
+  }
+  for (const entry of entries) {
+    // Crashpad writes a dump under `new/` and renames it into `pending/` once complete, so a dump
+    // still in `new/` is not readable yet.
+    if (entry.isFile() && entry.name.endsWith('.dmp') && basename(entry.parentPath) !== 'new') {
+      return join(entry.parentPath, entry.name);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Makes sure a crashed process is gone before the test relaunches the app.
+ *
+ * `process.crash()` raises SIGABRT. macOS tears the process down within a second, but on Linux CI
+ * runners the aborting Electron process has been observed alive more than two minutes after its
+ * minidump was written, blocked writing to the Crashpad handler pipe. Waiting on Playwright's
+ * `close` event therefore hangs the test, so poll the process id directly and SIGKILL it once the
+ * grace period elapses.
+ *
+ * Best effort by design: the relaunch only needs the crash dump, which is already on disk by the
+ * time this runs, so a process that survives even SIGKILL is reported and then left behind rather
+ * than failing the test.
+ */
+export async function ensureProcessGone(pid: number | undefined, grace = 5_000): Promise<void> {
+  if (pid === undefined || (await waitForProcessGone(pid, grace))) {
+    return;
+  }
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch {
+    // Already reaped between the last poll and here.
+    return;
+  }
+  if (!(await waitForProcessGone(pid, grace))) {
+    console.warn(`Crashed process ${pid} is still alive after SIGKILL; continuing anyway.`);
+  }
+}
+
+async function waitForProcessGone(pid: number, timeout: number): Promise<boolean> {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    try {
+      // Signal 0 performs the permission and existence checks without sending anything.
+      process.kill(pid, 0);
+    } catch (error) {
+      // ESRCH means no such process. EPERM means it is still there, just not ours to signal.
+      return (error as NodeJS.ErrnoException).code !== 'EPERM';
+    }
+    if (Date.now() >= deadline) {
+      return false;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
 }
 
 export async function cleanupUserDataDir(userDataDir: string): Promise<void> {
