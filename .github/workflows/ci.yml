@@ -72,6 +72,17 @@ jobs:
       - name: Build the SDK and the e2e app
         run: yarn test:e2e:init
 
+      # GitHub runners check out as an unprivileged user, so Electron's setuid sandbox helper
+      # lacks the root ownership and 4755 mode Chromium demands, and the app refuses to launch.
+      # Fix it in place rather than passing --no-sandbox, so CI exercises the same process model
+      # as production. Matched by path so every Electron install is covered.
+      - name: Configure Electron's sandbox helper
+        run: |
+          find . -path '*/electron/dist/chrome-sandbox' -print0 \
+            | xargs -0 -r sudo chown root:root
+          find . -path '*/electron/dist/chrome-sandbox' -print0 \
+            | xargs -0 -r sudo chmod 4755
+
       # After the build: the e2e tsconfig maps `@flashcatcloud/electron-sdk` to `dist/index.d.ts`.
       - name: Typecheck e2e
         run: yarn test:e2e:typecheck
@@ -84,7 +95,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-report
+          # Playwright resolves both directories against the working directory, not against the
+          # config passed to `-c e2e`, so they land at the repository root.
           path: |
-            e2e/test-results/
-            e2e/playwright-report/
+            test-results/
+            playwright-report/
           retention-days: 7

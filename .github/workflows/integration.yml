@@ -51,6 +51,19 @@ jobs:
       - name: Build and package the integration app
         run: yarn test:integration:init ${{ matrix.app }}
 
+      # GitHub runners check out as an unprivileged user, so Electron's setuid sandbox helper
+      # lacks the root ownership and 4755 mode Chromium demands, and the app refuses to launch.
+      # Fix it in place rather than passing --no-sandbox, so CI exercises the same process model
+      # as production. Runs after the step above so both the node_modules copies and the
+      # `out/*-linux-*` packaged trees — which ship their own helper — are covered; hence the
+      # match on file name rather than on the `electron/dist` path used by the e2e workflow.
+      - name: Configure Electron's sandbox helper
+        run: |
+          find . -name chrome-sandbox -type f -print0 \
+            | xargs -0 -r sudo chown root:root
+          find . -name chrome-sandbox -type f -print0 \
+            | xargs -0 -r sudo chmod 4755
+
       - name: Integration tests
         run: |
           xvfb-run -a yarn test:integration \
@@ -62,7 +75,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: integration-report-${{ matrix.app }}
+          # Playwright resolves both directories against the working directory, not against the
+          # config passed to `-c e2e`, so they land at the repository root.
           path: |
-            e2e/test-results/
-            e2e/playwright-report/
+            test-results/
+            playwright-report/
           retention-days: 7
