@@ -5,6 +5,12 @@ name: Publish
 #   2. Tag the merge commit `vX.Y.Z` (must match package.json version).
 #   3. Run this workflow from that tag (Actions → Publish → select the tag).
 # Use the `dry_run` input first to validate auth/build without publishing.
+#
+# `npm_tag` selects the dist-tag. Publishing under `next` leaves `npm install
+# @flashcatcloud/electron-sdk` resolving to whatever `latest` already points at,
+# so a release can be staged while its backend support is still rolling out.
+# Promote it afterwards without republishing:
+#   npm dist-tag add @flashcatcloud/electron-sdk@X.Y.Z latest
 
 on:
   workflow_dispatch:
@@ -13,6 +19,13 @@ on:
         description: 'Skip publish and GitHub release creation (dry run)'
         type: boolean
         default: false
+      npm_tag:
+        description: 'npm dist-tag to publish under'
+        type: choice
+        options:
+          - latest
+          - next
+        default: latest
 
 permissions:
   contents: write # create GitHub release
@@ -75,15 +88,17 @@ jobs:
 
       - name: Publish to npm (dry run)
         if: ${{ inputs.dry_run }}
-        run: npm publish --access public --dry-run
+        run: npm publish --access public --tag "$NPM_TAG" --dry-run
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TAG: ${{ inputs.npm_tag }}
 
       - name: Publish to npm
         if: ${{ !inputs.dry_run }}
-        run: npm publish --access public
+        run: npm publish --access public --tag "$NPM_TAG"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TAG: ${{ inputs.npm_tag }}
 
       - name: Extract release notes from CHANGELOG.md
         if: ${{ !inputs.dry_run }}
@@ -95,11 +110,19 @@ jobs:
             echo "## [${VERSION}]" > release-notes.md
           fi
 
+      # A `next` publish is not the release users get by default, so the GitHub
+      # release must not claim to be either — otherwise the two disagree.
       - name: Create GitHub Release
         if: ${{ !inputs.dry_run }}
         run: |
+          EXTRA=()
+          if [ "$NPM_TAG" != "latest" ]; then
+            EXTRA=(--prerelease --latest=false)
+          fi
           gh release create "v${{ steps.version.outputs.version }}" \
             --title "v${{ steps.version.outputs.version }}" \
-            --notes-file release-notes.md
+            --notes-file release-notes.md \
+            "${EXTRA[@]}"
         env:
           GH_TOKEN: ${{ github.token }}
+          NPM_TAG: ${{ inputs.npm_tag }}
