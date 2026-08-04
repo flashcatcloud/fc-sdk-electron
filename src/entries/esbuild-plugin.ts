@@ -5,15 +5,13 @@
  * for both CJS and ESM esbuild output formats.
  *
  * For CJS output: prepends a banner that initializes dd-trace via require()
- * before any application code. dd-trace hooks require('electron') to wrap
- * BrowserWindow with automatic preload injection.
+ * before any application code, so dd-trace can hook require('electron') and
+ * instrument the `net` module and IPC.
  *
- * For ESM output: prepends a banner that initializes dd-trace and registers
- * dd-trace's preload script directly via session.registerPreloadScript().
- * In ESM, static imports are loaded before any module code evaluates, so
- * dd-trace's IITM hooks cannot intercept `import 'electron'` for automatic
- * BrowserWindow wrapping. The direct preload registration achieves the same
- * result using dd-trace's preload script.
+ * For ESM output: prepends the same initialization, reached through
+ * createRequire because `require` is not defined in an ES module. The bridge
+ * preload is registered by the instrument entry itself, so ESM needs nothing
+ * more even though it loads `electron` before the banner evaluates.
  *
  * Usage:
  *   import { datadogEsbuildPlugin } from '@flashcatcloud/electron-sdk/esbuild-plugin';
@@ -34,28 +32,11 @@ interface EsbuildPlugin {
   }) => void;
 }
 
-const DD_TRACE_PRELOAD = 'dd-trace/packages/datadog-instrumentations/src/electron/preload.js';
-
 const CJS_BANNER = 'try{require("@flashcatcloud/electron-sdk/instrument")}catch{}';
 
-// ESM banner: initialize dd-trace and register the preload script directly.
-// IITM cannot wrap BrowserWindow in ESM because static imports are loaded
-// before module code evaluates, so we register the preload via session API.
 const ESM_BANNER = `
 import { createRequire as __ddCR } from "module";
-try {
-  const __ddR = __ddCR(import.meta.url);
-  __ddR("@flashcatcloud/electron-sdk/instrument");
-  const __ddP = __ddR.resolve("${DD_TRACE_PRELOAD}");
-  const { app: __ddApp, session: __ddSes } = __ddR("electron");
-  const __ddReg = () => {
-    try {
-      __ddSes.defaultSession.registerPreloadScript({ type: "frame", filePath: __ddP });
-    } catch {}
-  };
-  if (__ddApp.isReady()) __ddReg();
-  else __ddApp.once("ready", __ddReg);
-} catch {}
+try { __ddCR(import.meta.url)("@flashcatcloud/electron-sdk/instrument"); } catch {}
 `.trim();
 
 export function datadogEsbuildPlugin(): EsbuildPlugin {

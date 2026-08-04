@@ -62,6 +62,18 @@ const config = [
     external: ['electron'],
     plugins: sharedPlugins,
   },
+  // Preload script: injected into renderer frames, so it must stay a standalone CJS file whose
+  // only dependency is 'electron' — preload sandboxes make nothing else requireable.
+  {
+    input: 'src/preload/preloadScript.ts',
+    output: {
+      file: 'dist/preload.js',
+      format: 'cjs',
+      sourcemap: true,
+    },
+    external: ['electron'],
+    plugins: sharedPlugins,
+  },
   // Vite plugin: ensures dd-trace initializes before hoisted requires
   {
     input: 'src/entries/vite-plugin.ts',

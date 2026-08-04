@@ -3,6 +3,7 @@ import type { InitConfiguration } from './config';
 import { buildConfiguration } from './config';
 import { RumCollection } from './domain/rum';
 import { SessionManager } from './domain/session';
+import { AnonymousId } from './domain/AnonymousId';
 import { UserActivityTracker } from './domain/UserActivityTracker';
 import { RendererRegistry } from './domain/RendererRegistry';
 import { ViewTimingCorrector } from './domain/ViewTimingCorrector';
@@ -39,7 +40,9 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
 
   registerCommonContext(config, hooks);
   startTelemetry(eventManager, config);
-  sessionManager = await SessionManager.start(eventManager, hooks);
+  const manager = await SessionManager.start(eventManager, hooks);
+  sessionManager = manager;
+  const anonymousId = await AnonymousId.init();
 
   const rendererRegistry = new RendererRegistry();
   const stackPathNormalizer = await StackPathNormalizer.create(config.normalizeStackPaths, config.normalizeStackPath);
@@ -50,11 +53,17 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
   }
 
   new Assembly(eventManager, hooks);
-  // Only the two fields the renderer bridge reads: they are returned over a synchronous IPC
-  // channel, which can carry structured-cloneable data only — a callback would throw there.
+  // Only the fields the renderer bridge reads: they are returned over a synchronous IPC channel,
+  // which can carry structured-cloneable data only — a callback would throw there. The session id
+  // is read through a getter rather than captured, because it changes as the session is renewed.
   new BridgeHandler(
     eventManager,
-    { defaultPrivacyLevel: config.defaultPrivacyLevel, allowedWebViewHosts: config.allowedWebViewHosts },
+    {
+      defaultPrivacyLevel: config.defaultPrivacyLevel,
+      allowedWebViewHosts: config.allowedWebViewHosts,
+      anonymousId: anonymousId.value,
+    },
+    () => getActiveSessionId(manager),
     rendererRegistry,
     new ViewTimingCorrector(rendererRegistry, config.correctPrewarmedViewTimings),
     stackPathNormalizer
@@ -70,6 +79,15 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
   rumApi = rum.getApi();
 
   return true;
+}
+
+/**
+ * Id of the session renderers should attribute their events to, or `''` while none is active —
+ * an expired session must not keep collecting renderer data under its old id.
+ */
+function getActiveSessionId(manager: SessionManager): string {
+  const session = manager.getSession();
+  return session.status === 'active' ? session.id : '';
 }
 
 /**

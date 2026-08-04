@@ -51,9 +51,9 @@ a packager-specific bug ever justifies them.
 | `forge-esbuild-esm` | esbuild             | ESM         | Electron Forge   | `datadogEsbuildPlugin` |
 
 All apps use `import '@flashcatcloud/electron-sdk/instrument'` before importing `electron` in their main process.
-This initializes dd-trace which automatically injects the preload script via BrowserWindow wrapping.
-Vite-based apps use `datadogVitePlugin`, webpack-based apps use `DatadogWebpackPlugin`, and esbuild-based apps use `datadogEsbuildPlugin` to ensure correct module loading order and preload availability in packaged builds.
-The `forge-esbuild-esm` app additionally exercises the plugin's ESM path, which registers the dd-trace preload via `session.registerPreloadScript()` because static `import` bypasses dd-trace's IITM hook on `require('electron')`.
+That initializes dd-trace — so it can hook `require('electron')` for `net` and IPC instrumentation — and registers the SDK's bridge preload on every session.
+Vite-based apps use `datadogVitePlugin`, webpack-based apps use `DatadogWebpackPlugin`, and esbuild-based apps use `datadogEsbuildPlugin` to ensure correct module loading order and SDK availability in packaged builds.
+The `forge-esbuild-esm` app additionally exercises the plugin's ESM path, where a static `import` bypasses dd-trace's IITM hook on `require('electron')` — preload registration must not depend on that hook.
 
 ## Key design points
 

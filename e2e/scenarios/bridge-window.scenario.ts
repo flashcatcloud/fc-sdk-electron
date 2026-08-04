@@ -1,5 +1,7 @@
 import { test, expect } from '../lib/helpers';
-import type { RumViewEvent, RumErrorEvent } from '@flashcatcloud/electron-sdk';
+import type { RumViewEvent, RumErrorEvent, TelemetryErrorEvent } from '@flashcatcloud/electron-sdk';
+
+const UUID_PATTERN = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i;
 
 function isBridgeView(event: { body: unknown }): boolean {
   return (event.body as RumViewEvent).view.url !== 'electron://main-process';
@@ -119,5 +121,66 @@ test.describe('bridge window — event types', () => {
 
     const resourceEvents = await intake.getEventsByType('resource');
     expect(resourceEvents.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+test.describe('bridge window — identifiers', () => {
+  test('the bridge answers with the identifiers the main process owns', async ({ electronApp, mainPage, intake }) => {
+    await mainPage.flushTransport();
+    const mainView = (await intake.getEventsByType('view'))[0].body as RumViewEvent;
+
+    const bridgeWindowPage = await mainPage.openBridgeFileWindow(electronApp);
+
+    expect(await bridgeWindowPage.getSessionId()).toBe(mainView.session.id);
+    expect(await bridgeWindowPage.getAnonymousId()).toMatch(UUID_PATTERN);
+  });
+
+  test("the SDK's bridge is the one the page sees, not dd-trace's", async ({ electronApp, mainPage }) => {
+    // With context isolation off, both scripts would write to the same `window`, so the bridge the
+    // page ends up with is whichever ran last. Identifiers only the SDK's script knows about prove
+    // dd-trace's was superseded rather than merely outrun.
+    const bridgeWindowPage = await mainPage.openBridgeFileWindowNoIsolation(electronApp);
+
+    expect(await bridgeWindowPage.getAnonymousId()).toMatch(UUID_PATTERN);
+  });
+
+  test('the same anonymous id is served to every renderer', async ({ electronApp, mainPage }) => {
+    const firstWindow = await mainPage.openBridgeFileWindow(electronApp);
+    const secondWindow = await mainPage.openBridgeHttpWindow(electronApp);
+
+    expect(await secondWindow.getAnonymousId()).toBe(await firstWindow.getAnonymousId());
+  });
+
+  test('the bridge still declares no capability — the renderer keeps owning its recorder', async ({
+    electronApp,
+    mainPage,
+  }) => {
+    const bridgeWindowPage = await mainPage.openBridgeFileWindow(electronApp);
+
+    await expect(bridgeWindowPage.getCapabilities()).resolves.toBe('[]');
+  });
+});
+
+test.describe('bridge window — session renewal', () => {
+  // Renewal is driven by a real click in the main window, which only becomes an end-user activity
+  // once browser-rum runs there.
+  test.use({ rumBrowserSdk: {} });
+
+  test('a renewed session id reaches renderers that are already open', async ({ electronApp, mainPage, intake }) => {
+    const bridgeWindowPage = await mainPage.openBridgeFileWindow(electronApp);
+    const firstSessionId = await bridgeWindowPage.getSessionId();
+    expect(firstSessionId).toMatch(UUID_PATTERN);
+
+    await mainPage.renewSession();
+    await mainPage.generateTelemetryError();
+    await mainPage.flushTransport();
+
+    const telemetryEvents = await intake.getEventsByType('telemetry');
+    const renewedSessionId = (telemetryEvents[telemetryEvents.length - 1].body as TelemetryErrorEvent).session?.id;
+    expect(renewedSessionId).toMatch(UUID_PATTERN);
+    expect(renewedSessionId).not.toBe(firstSessionId);
+
+    // The renderer never asks for it: the main process pushes it over the identity channel.
+    await expect.poll(() => bridgeWindowPage.getSessionId()).toBe(renewedSessionId);
   });
 });

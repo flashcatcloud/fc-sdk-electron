@@ -117,6 +117,19 @@ its events through the main process instead of uploading them itself. Use the **
 > allows the window's own host. Set `allowedWebViewHosts` only when you also want to accept events
 > from **third-party** pages loaded in a `<webview>`/`BrowserView`.
 
+##### Identifiers the bridge answers
+
+`window.DatadogEventBridge` exposes the two identifiers the main process owns, so a renderer can
+attribute anything it uploads itself to the same session and device:
+
+| Method             | Returns                                                                                               |
+| ------------------ | ----------------------------------------------------------------------------------------------------- |
+| `getSessionId()`   | Id of the session the main process considers active, or `''` while none is (expired, not renewed yet) |
+| `getAnonymousId()` | Device-scoped id, generated once and kept under `app.getPath('userData')` across restarts             |
+
+Both answer synchronously and without IPC: the anonymous id is delivered when the bridge is set up,
+and the main process pushes every session change to open renderers.
+
 ##### How to find your events
 
 Main-process and renderer-process events carry different `source` values — this matters when

@@ -51,7 +51,7 @@ More details in the [How tracing works](#how-tracing-works) section.
 
 ### Renderer Process
 
-dd-trace exposes a `DatadogEventBridge` to every renderer process via a preload script. When present, the Browser SDK detects the bridge and routes events through IPC to the Electron SDK instead of sending them directly to Datadog servers.
+The SDK exposes a `DatadogEventBridge` to every renderer process via its own preload script. When present, the Browser SDK detects the bridge and routes events through IPC to the Electron SDK instead of sending them directly to Datadog servers. The bridge also answers the renderer's identity questions (`getSessionId`, `getAnonymousId`).
 More details in the [Preload injection](#preload-injection) section.
 
 ## Event Pipeline
@@ -186,15 +186,26 @@ All spans are enriched with electron context (`_dd.application.id`, `_dd.session
 
 ### Preload injection
 
-dd-trace wraps `BrowserWindow` to automatically inject a preload script via `session.registerPreloadScript()`. This preload sets up the `DatadogEventBridge` in every renderer process.
+The bridge preload is the SDK's own script (`dist/preload.js`, exported as `@flashcatcloud/electron-sdk/preload`). It is a standalone CJS file whose only dependency is `electron`, because preload scripts run in a sandbox where nothing else is guaranteed to be requireable.
 
-For this to work, dd-trace must hook `require('electron')` **before** electron is loaded. This is straightforward in non-bundled environments but requires bundler plugins for Vite and Webpack:
+`installBridgePreload()` — called by the instrument entry — registers it on `app.on('session-created')` plus the default session at app ready. Hooking session creation rather than wrapping `BrowserWindow` covers custom partitions and works whether the app reaches `BrowserWindow` through `require` or a static ESM `import`.
 
-- **Vite** hoists all `require()` calls to the top of the bundle, breaking import order. The `datadogVitePlugin` (`@datadog/electron-sdk/vite-plugin`) fixes this by externalizing dd-trace, prepending initialization before hoisted requires, and copying dd-trace's runtime dependencies into the build output for packaged apps.
-- **Webpack** preserves module execution order (lazy evaluation via `__webpack_require__`), so the import order in source code is maintained. The `DatadogWebpackPlugin` (`@datadog/electron-sdk/webpack-plugin`) copies dd-trace's preload script into the webpack output at the fallback path dd-trace expects in packaged apps.
-- **esbuild** preserves module execution order (like Webpack), so `import '@datadog/electron-sdk/instrument'` runs before `import 'electron'` without special hoisting tricks. The `datadogEsbuildPlugin` (`@datadog/electron-sdk/esbuild-plugin`) externalizes dd-trace and prepends an initialization banner. Unlike the Vite and Webpack plugins, it does **not** copy dependencies into the build output (esbuild lacks an equivalent post-emit hook) — the packaging tool (e.g., Electron Forge, electron-builder) must ensure `node_modules` is available at runtime.
+dd-trace ships a bridge preload of its own and registers it from the `BrowserWindow` subclass it installs when it hooks `require('electron')`. The SDK **redirects** that registration to its own script: only one bridge may reach the page (`contextBridge.exposeInMainWorld` throws on a duplicate key, and without context isolation the last writer of `window.DatadogEventBridge` wins), so letting both run would make the outcome depend on registration order. The script also guards itself with `window.__dd_bridge_initialized`, so a duplicate registration is a no-op.
 
-See `src/domain/tracing/`, `src/entries/instrument.ts`, `src/entries/vite-plugin.ts`, `src/entries/webpack-plugin.ts`, and `src/entries/esbuild-plugin.ts`.
+dd-trace still needs to hook `require('electron')` **before** electron is loaded, for `net` and IPC instrumentation. This is straightforward in non-bundled environments but requires bundler plugins for Vite and Webpack:
+
+- **Vite** hoists all `require()` calls to the top of the bundle, breaking import order. The `datadogVitePlugin` (`@flashcatcloud/electron-sdk/vite-plugin`) fixes this by externalizing dd-trace, prepending initialization before hoisted requires, and copying dd-trace's runtime dependencies into the build output for packaged apps.
+- **Webpack** preserves module execution order (lazy evaluation via `__webpack_require__`), so the import order in source code is maintained. The `DatadogWebpackPlugin` (`@flashcatcloud/electron-sdk/webpack-plugin`) copies the SDK and dd-trace into the webpack output's `node_modules` so both — and the preload shipped inside the SDK package — are available in packaged apps.
+- **esbuild** preserves module execution order (like Webpack), so `import '@flashcatcloud/electron-sdk/instrument'` runs before `import 'electron'` without special hoisting tricks. The `datadogEsbuildPlugin` (`@flashcatcloud/electron-sdk/esbuild-plugin`) externalizes dd-trace and prepends an initialization banner. Unlike the Vite and Webpack plugins, it does **not** copy dependencies into the build output (esbuild lacks an equivalent post-emit hook) — the packaging tool (e.g., Electron Forge, electron-builder) must ensure `node_modules` is available at runtime.
+
+### Renderer identifiers
+
+The renderer needs the main process's session id to attribute anything it uploads itself, and a device-scoped id to make installs countable. Both are answered synchronously by the bridge:
+
+- `getAnonymousId()` — generated once and stored in `app.getPath('userData')`, so it survives restarts. It never changes, so the synchronous config channel carries it once.
+- `getSessionId()` — the session the main process considers active, or `''` while none is. Sessions expire and renew, so the main process **pushes** every change over `datadog:bridge-identity` to the renderers that asked for a configuration; the preload caches the value and answers from the cache. A synchronous IPC call per event would be far too slow.
+
+See `src/preload/`, `src/bridge/BridgeHandler.ts`, `src/domain/AnonymousId.ts`, `src/domain/tracing/`, `src/entries/instrument.ts`, `src/entries/vite-plugin.ts`, `src/entries/webpack-plugin.ts`, and `src/entries/esbuild-plugin.ts`.
 
 ### dd-trace as a bundled dependency
 
