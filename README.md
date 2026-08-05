@@ -108,7 +108,7 @@ flashcatRum.init({
 });
 ```
 
-No extra wiring is needed. The main-process SDK injects a preload script that exposes a
+No extra wiring is needed for RUM. The main-process SDK injects a preload script that exposes a
 `DatadogEventBridge` global to every `BrowserWindow`; the Browser SDK auto-detects it and routes
 its events through the main process instead of uploading them itself. Use the **same
 `applicationId`** in both processes so the events land in one application.
@@ -116,6 +116,25 @@ its events through the main process instead of uploading them itself. Use the **
 > This works for pages loaded over `file://` as well as `http(s)://` — the injected bridge always
 > allows the window's own host. Set `allowedWebViewHosts` only when you also want to accept events
 > from **third-party** pages loaded in a `<webview>`/`BrowserView`.
+
+##### Session Replay
+
+Session Replay is the one feature the bridge does **not** carry. Seeing a bridge, the Browser SDK
+hands recording over to the host application by default — and the main process does not record, so
+nothing is captured at all. Add both of these to the renderer's `init` to keep the recorder in the
+page, uploading straight to the intake:
+
+```ts
+flashcatRum.init({
+  // ...
+  sessionReplaySampleRate: 100, // defaults to 0 — the option alone records nothing
+  sessionReplayDirectUpload: true,
+});
+```
+
+Segments then bypass the main process entirely, so they need a Content Security Policy that allows
+`worker-src blob:` and the intake origin, and they do not share the main process's disk-backed
+retry.
 
 ##### Identifiers the bridge answers
 

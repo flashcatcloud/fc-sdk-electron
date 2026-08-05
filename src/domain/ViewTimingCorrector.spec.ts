@@ -88,6 +88,25 @@ describe('ViewTimingCorrector', () => {
       expect(event.view.largest_contentful_paint).toBe(100 * MS);
     });
 
+    it('rebases onto a whole nanosecond, whatever precision the renderer sent', () => {
+      // Every corrected field is an int64 on the intake, and its decoder fails the whole event on
+      // a fraction — silently, since the 202 is sent before decoding. The correction must not be
+      // the thing that introduces one.
+      registry.recordFirstVisible(WEB_CONTENTS_ID, VIEW_DATE + 7900);
+      const event = createViewEvent({
+        first_contentful_paint: 8000 * MS + 0.5,
+        largest_contentful_paint: 8100 * MS + 0.4,
+        performance: { fcp: { timestamp: 8000 * MS + 0.5 }, lcp: { timestamp: 8100 * MS + 0.4 } },
+      });
+
+      corrector.correct(event, WEB_CONTENTS_ID);
+
+      expect(event.view.first_contentful_paint).toBe(100 * MS + 1);
+      expect(event.view.largest_contentful_paint).toBe(200 * MS);
+      expect(Number.isInteger(event.view.performance?.fcp?.timestamp)).toBe(true);
+      expect(Number.isInteger(event.view.performance?.lcp?.timestamp)).toBe(true);
+    });
+
     it('leaves absent metrics absent', () => {
       registry.recordFirstVisible(WEB_CONTENTS_ID, VIEW_DATE + 7900);
       const event = createViewEvent({
