@@ -3,7 +3,7 @@ import type { InitConfiguration } from './config';
 import { buildConfiguration } from './config';
 import { RumCollection } from './domain/rum';
 import { SessionManager } from './domain/session';
-import { AnonymousId } from './domain/AnonymousId';
+import { initAnonymousId } from './domain/AnonymousId';
 import { UserActivityTracker } from './domain/UserActivityTracker';
 import { RendererRegistry } from './domain/RendererRegistry';
 import { ViewTimingCorrector } from './domain/ViewTimingCorrector';
@@ -38,9 +38,9 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
   eventManager = new EventManager();
   const hooks = createFormatHooks();
 
-  const anonymousId = await AnonymousId.init();
+  const anonymousId = await initAnonymousId();
 
-  registerCommonContext(config, hooks, anonymousId.value);
+  registerCommonContext(config, hooks, anonymousId);
   startTelemetry(eventManager, config);
   const manager = await SessionManager.start(eventManager, hooks);
   sessionManager = manager;
@@ -62,7 +62,7 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
     {
       defaultPrivacyLevel: config.defaultPrivacyLevel,
       allowedWebViewHosts: config.allowedWebViewHosts,
-      anonymousId: anonymousId.value,
+      anonymousId,
     },
     () => getActiveSessionId(manager),
     rendererRegistry,

@@ -1,6 +1,5 @@
 import { ipcMain } from 'electron';
 import type { IpcMainEvent, WebContents } from 'electron';
-import { DefaultPrivacyLevel } from '@flashcatcloud/browser-core';
 import { EventKind, EventSource, EventFormat, LifecycleKind } from '../event';
 import type { EventManager, LifecycleEvent, RawRumEvent } from '../event';
 import { monitor, addError as addTelemetryError } from '../domain/telemetry';
@@ -22,12 +21,12 @@ interface BridgedRumEvent {
   view?: { id?: string; url?: string };
 }
 
-/** The part of the bridge configuration that is fixed for the lifetime of the SDK. */
-export interface BridgeOptions {
-  defaultPrivacyLevel: DefaultPrivacyLevel;
-  allowedWebViewHosts: string[];
-  anonymousId: string;
-}
+/**
+ * The part of the bridge configuration that is fixed for the lifetime of the SDK — everything the
+ * preload reads except the session id, which `buildConfig` adds as of the moment it is asked.
+ * Derived from `BridgeConfig` so the two cannot drift as fields are added.
+ */
+export type BridgeOptions = Omit<BridgeConfig, 'sessionId'>;
 
 /**
  * Receives events from renderer processes via IPC and routes them through the
