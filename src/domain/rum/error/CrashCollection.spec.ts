@@ -163,6 +163,42 @@ describe('CrashCollection', () => {
     expect(data.error.message).toBe('Application crashed');
   });
 
+  /**
+   * Guard, not an observation. `fs.Stats` timestamps carry sub-millisecond precision, so the raw
+   * value is a float; the intake decodes `date` into an int64 and Go drops the whole event on a
+   * fractional number — silently, because the `202` is sent before decoding. That kept every
+   * native crash out of Error Tracking up to v0.1.0. Asserting the field merely *has* a value
+   * would not have caught it, and would not catch it coming back.
+   */
+  it('emits a whole-millisecond date, since fs timestamps are fractional', async () => {
+    const birthtimeMs = 1785900421429.7532;
+    mockDmpFile('crash.dmp', birthtimeMs);
+    vi.mocked(processMinidump).mockResolvedValue(createMinidumpResult());
+
+    await startAndFlush(eventManager);
+
+    const event = rawRumEvents[0];
+    const data = event.data as RawRumError;
+    expect(Number.isInteger(data.date)).toBe(true);
+    expect(data.date).toBe(1785900421430);
+    expect(Number.isInteger(event.startTime)).toBe(true);
+  });
+
+  it('emits a whole-millisecond date when falling back to mtimeMs', async () => {
+    // birthtimeMs is 0 on Linux ext4, and mtimeMs is just as fractional.
+    mfs.readdir.mockResolvedValue([{ name: 'crash.dmp', isFile: () => true, isDirectory: () => false }]);
+    mfs.stat.mockResolvedValue({ birthtimeMs: 0, mtimeMs: 1785900421429.7532 });
+    mfs.readFile.mockResolvedValue(new Uint8Array([1]));
+    mfs.unlink.mockResolvedValue(undefined);
+    vi.mocked(processMinidump).mockResolvedValue(createMinidumpResult());
+
+    await startAndFlush(eventManager);
+
+    const data = rawRumEvents[0].data as RawRumError;
+    expect(Number.isInteger(data.date)).toBe(true);
+    expect(data.date).toBe(1785900421430);
+  });
+
   it('maps mac os to macos source_type', async () => {
     mockDmpFile();
     vi.mocked(processMinidump).mockResolvedValue(
