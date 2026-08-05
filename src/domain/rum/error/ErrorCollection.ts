@@ -76,7 +76,9 @@ export class ErrorCollection {
     const { message, stack, kind } = formatError(error, options.nonErrorPrefix, this.stackPathNormalizer);
     // `startTime` is caller-supplied through the public `addError` options, so it arrives with
     // whatever precision the caller had — `performance.timeOrigin + performance.now()`, say.
-    const startTime = options.startTime === undefined ? timeStampNow() : toIntakeTimeStamp(options.startTime);
+    // `??` rather than an `undefined` check: JavaScript callers reach this API too, and rounding a
+    // `null` would date the error to the epoch instead of now.
+    const startTime = toIntakeTimeStamp(options.startTime ?? timeStampNow());
 
     const errorEvent: RawRumError = {
       type: 'error',

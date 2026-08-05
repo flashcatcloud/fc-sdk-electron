@@ -66,7 +66,7 @@ export class BridgeHandler {
     ipcMain.on(
       CONFIG_CHANNEL,
       monitor((ipcEvent: IpcMainEvent) => {
-        this.trackBridgedRenderer(ipcEvent?.sender);
+        this.trackBridgedRenderer(ipcEvent.sender);
         ipcEvent.returnValue = this.buildConfig();
       })
     );

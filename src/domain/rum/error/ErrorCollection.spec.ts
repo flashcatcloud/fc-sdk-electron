@@ -148,6 +148,16 @@ describe('ErrorCollection', () => {
       expect(rawRumEvents[0].startTime).toBeGreaterThan(0);
     });
 
+    it('also defaults to now when startTime is null', () => {
+      // `addError` is reachable from plain JavaScript, where an absent value is as likely to be
+      // `null` as `undefined`. Rounding `null` would date the error to the epoch.
+      errorCollection = new ErrorCollection(eventManager, stackPathNormalizer);
+
+      errorCollection.getApi().addError(new Error('manual error'), { startTime: null as unknown as number });
+
+      expect(rawRumEvents[0].startTime).toBeGreaterThan(0);
+    });
+
     it('emits an error event with fallback message from a non-Error value', () => {
       errorCollection = new ErrorCollection(eventManager, stackPathNormalizer);
 
