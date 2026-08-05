@@ -198,14 +198,24 @@ dd-trace still needs to hook `require('electron')` **before** electron is loaded
 - **Webpack** preserves module execution order (lazy evaluation via `__webpack_require__`), so the import order in source code is maintained. The `DatadogWebpackPlugin` (`@flashcatcloud/electron-sdk/webpack-plugin`) copies the SDK and dd-trace into the webpack output's `node_modules` so both — and the preload shipped inside the SDK package — are available in packaged apps.
 - **esbuild** preserves module execution order (like Webpack), so `import '@flashcatcloud/electron-sdk/instrument'` runs before `import 'electron'` without special hoisting tricks. The `datadogEsbuildPlugin` (`@flashcatcloud/electron-sdk/esbuild-plugin`) externalizes dd-trace and prepends an initialization banner. Unlike the Vite and Webpack plugins, it does **not** copy dependencies into the build output (esbuild lacks an equivalent post-emit hook) — the packaging tool (e.g., Electron Forge, electron-builder) must ensure `node_modules` is available at runtime.
 
+### User identity
+
+The device-scoped anonymous id (`src/domain/AnonymousId.ts`) is generated once and stored in `app.getPath('userData')`, so it survives restarts. Unique-user counts are derived from it: a session id is renewed as the user comes and goes, so only an id that outlives the session can count an install.
+
+`registerCommonContext` stamps it on every main-process RUM event as `usr.anonymous_id`. The synthetic `electron://main-process` view is usually a session's first, and the session takes its user identity from that first view — without the field, a main-process-only session would have none.
+
+**`usr.id` is never backfilled with it.** Electron is counted off `COALESCE(NULLIF(usr_anonymous_id, ''), NULLIF(usr_id, ''))`, which reads the anonymous id first and is stable across a login. The browser SDK does backfill, because its count is `COUNT(DISTINCT usr_id)` and that is the only way it can see logged-out users; copying that here would buy nothing and would split one device into two people at login, when `usr.id` flips from the anonymous id to the real one. `src/assembly/commonContext.spec.ts` pins this down.
+
+Renderer events are left alone: the renderer reads the same id off the bridge itself, so the main process must not stamp a second one over it.
+
 ### Renderer identifiers
 
-The renderer needs the main process's session id to attribute anything it uploads itself, and a device-scoped id to make installs countable. Both are answered synchronously by the bridge:
+The renderer needs the main process's session id to attribute anything it uploads itself, and the same device id so both halves of a session count as one user. Both are answered synchronously by the bridge:
 
-- `getAnonymousId()` — generated once and stored in `app.getPath('userData')`, so it survives restarts. It never changes, so the synchronous config channel carries it once.
+- `getAnonymousId()` — the id above. It never changes, so the synchronous config channel carries it once.
 - `getSessionId()` — the session the main process considers active, or `''` while none is. Sessions expire and renew, so the main process **pushes** every change over `datadog:bridge-identity` to the renderers that asked for a configuration; the preload caches the value and answers from the cache. A synchronous IPC call per event would be far too slow.
 
-See `src/preload/`, `src/bridge/BridgeHandler.ts`, `src/domain/AnonymousId.ts`, `src/domain/tracing/`, `src/entries/instrument.ts`, `src/entries/vite-plugin.ts`, `src/entries/webpack-plugin.ts`, and `src/entries/esbuild-plugin.ts`.
+See `src/preload/`, `src/bridge/BridgeHandler.ts`, `src/domain/AnonymousId.ts`, `src/assembly/commonContext.ts`, `src/domain/tracing/`, `src/entries/instrument.ts`, `src/entries/vite-plugin.ts`, `src/entries/webpack-plugin.ts`, and `src/entries/esbuild-plugin.ts`.
 
 ### dd-trace as a bundled dependency
 

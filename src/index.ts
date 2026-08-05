@@ -38,11 +38,12 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
   eventManager = new EventManager();
   const hooks = createFormatHooks();
 
-  registerCommonContext(config, hooks);
+  const anonymousId = await AnonymousId.init();
+
+  registerCommonContext(config, hooks, anonymousId.value);
   startTelemetry(eventManager, config);
   const manager = await SessionManager.start(eventManager, hooks);
   sessionManager = manager;
-  const anonymousId = await AnonymousId.init();
 
   const rendererRegistry = new RendererRegistry();
   const stackPathNormalizer = await StackPathNormalizer.create(config.normalizeStackPaths, config.normalizeStackPath);

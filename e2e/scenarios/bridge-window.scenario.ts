@@ -133,6 +133,9 @@ test.describe('bridge window — identifiers', () => {
 
     expect(await bridgeWindowPage.getSessionId()).toBe(mainView.session.id);
     expect(await bridgeWindowPage.getAnonymousId()).toMatch(UUID_PATTERN);
+    // One device, one id: what the bridge hands the renderer is what the main process stamps on
+    // its own events, so both halves of a session count as the same user.
+    expect(await bridgeWindowPage.getAnonymousId()).toBe(mainView.usr?.anonymous_id);
   });
 
   test("the SDK's bridge is the one the page sees, not dd-trace's", async ({ electronApp, mainPage }) => {
