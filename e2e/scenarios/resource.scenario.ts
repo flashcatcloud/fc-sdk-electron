@@ -23,6 +23,11 @@ test('emits a resource event for a main-process fetch', async ({ mainPage, intak
   expect(resourceEvents).toHaveLength(1);
 
   const resource = resourceEvents[0].body as RumResourceEvent;
+  // The date is derived from a dd-trace span start, which is a nanosecond count that is not a
+  // whole number of milliseconds. The intake decodes `date` into an int64 and Go drops the event
+  // on a fractional number — silently, since the `202` is sent before decoding.
+  expect(Number.isInteger(resource.date)).toBe(true);
+  expect(intake.getProtocolViolations()).toEqual([]);
   expect(resource.resource.method).toBe('GET');
   expect(resource.resource.status_code).toBe(200);
   expect(resource.resource.url).toBe(url);

@@ -60,6 +60,14 @@ The fake intake does more than record events: it also validates the FlashCat wir
 intake answer `400`, which the SDK retries forever — invisible in the event data.
 `intake-contract.scenario.ts` asserts there were none.
 
+It also flags **fractional numbers**. Every numeric event field except a short allowlist is an
+`int64` on the intake, and Go's decoder fails the whole event on a fraction — silently, because the
+`202` is sent before decoding. A JavaScript mock parses such an event happily, so without this
+check the suite stays green while nothing is ingested. That is not hypothetical: it hid a
+fractional crash `date` (`fs.Stats.birthtimeMs`) and a fractional resource `date` (a dd-trace span
+start in nanoseconds) all the way through the `v0.1.0` release. When adding a scenario for a new
+event type, assert `intake.getProtocolViolations()` is empty.
+
 ### Not covered
 
 - **APM spans.** FlashCat exposes no `/api/v2/spans` ingest, so the SPANS track is not uploaded and
