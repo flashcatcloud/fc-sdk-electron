@@ -33,7 +33,9 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
     return false;
   }
 
-  tracing = new Tracing();
+  // Before Transport.create(), so the SDK's own uploads are excluded from instrumentation before
+  // the first one can happen.
+  tracing = new Tracing(config);
 
   eventManager = new EventManager();
   const hooks = createFormatHooks();

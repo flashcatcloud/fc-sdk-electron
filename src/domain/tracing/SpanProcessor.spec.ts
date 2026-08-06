@@ -187,86 +187,102 @@ describe('SpanProcessor', () => {
     });
   });
 
+  /**
+   * This is the second line of defense: `Tracing` blocklists the intake origin so these spans are
+   * normally never created. It still has to be right, and for the same reason — it compares the
+   * request's origin, port included, not just its host.
+   */
   describe('SDK request filtering', () => {
-    it('should filter out requests to the intake hostname', () => {
-      const span = createSpan({
-        meta: { 'http.url': 'https://browser.flashcat.cloud/api/v2/rum', 'http.method': 'POST' },
-      });
-      publish([[span]]);
+    function useConfig(overrides: Partial<Configuration>) {
+      processor.stop();
+      processor = new SpanProcessor(eventManager, hooks, {
+        env: 'test',
+        service: 'test-service',
+        site: 'browser.flashcat.cloud',
+        ...overrides,
+      } as Configuration);
+    }
+
+    function publishRequest(url: string) {
+      publish([[createSpan({ meta: { 'http.url': url, 'http.method': 'POST' } })]]);
+    }
+
+    it('should filter out requests to the intake host', () => {
+      publishRequest('https://browser.flashcat.cloud/api/v2/rum');
 
       expect(collected).toHaveLength(0);
     });
 
     it('should filter out requests to the configured staging intake host', () => {
-      processor.stop();
-      processor = new SpanProcessor(eventManager, hooks, {
-        env: 'test',
-        service: 'test-service',
-        site: 'jira.flashcat.cloud',
-      } as Configuration);
-      publish([
-        [
-          createSpan({
-            meta: { 'http.url': 'https://jira.flashcat.cloud/api/v2/rum', 'http.method': 'POST' },
-          }),
-        ],
-      ]);
+      useConfig({ site: 'jira.flashcat.cloud' });
+      publishRequest('https://jira.flashcat.cloud/api/v2/rum');
 
       expect(collected).toHaveLength(0);
     });
 
-    it('should filter out requests to the configured proxy hostname', () => {
-      processor.stop();
-      processor = new SpanProcessor(eventManager, hooks, {
-        env: 'test',
-        service: 'test-service',
-        site: 'browser.flashcat.cloud',
-        proxy: 'http://localhost:9999/api/v2/rum',
-      } as Configuration);
-      publish([[createSpan({ meta: { 'http.url': 'http://localhost:9999/api/v2/rum', 'http.method': 'POST' } })]]);
+    it('should filter out requests to the configured proxy', () => {
+      useConfig({ proxy: 'http://localhost:9999/api/v2/rum' });
+      publishRequest('http://localhost:9999/api/v2/rum');
 
       expect(collected).toHaveLength(0);
     });
 
     it('should not filter localhost requests when no proxy is configured', () => {
-      const span = createSpan({ meta: { 'http.url': 'http://localhost:3000/api/data', 'http.method': 'GET' } });
-      publish([[span]]);
+      publishRequest('http://localhost:3000/api/data');
 
       expect(collected.length).toBeGreaterThan(0);
     });
 
-    it('should filter spans whose resource contains the intake hostname', () => {
-      const span = createSpan({
-        type: 'dns',
-        resource: 'browser.flashcat.cloud',
-        meta: {},
-      });
-      publish([[span]]);
-
-      expect(collected).toHaveLength(0);
-    });
-
-    it('should filter spans whose resource contains the proxy hostname', () => {
-      processor.stop();
-      processor = new SpanProcessor(eventManager, hooks, {
-        env: 'test',
-        service: 'test-service',
-        site: 'browser.flashcat.cloud',
-        proxy: 'http://localhost:9999/api/v2/rum',
-      } as Configuration);
-      const span = createSpan({
-        type: 'tls',
-        resource: 'tls.connect localhost:9999',
-        meta: {},
-      });
-      publish([[span]]);
-
-      expect(collected).toHaveLength(0);
-    });
-
     it('should not filter external HTTP requests', () => {
-      const span = createSpan({ meta: { 'http.url': 'https://api.example.com/data', 'http.method': 'GET' } });
-      publish([[span]]);
+      publishRequest('https://api.example.com/data');
+
+      expect(collected.length).toBeGreaterThan(0);
+    });
+
+    /**
+     * Guard. Matching on the hostname alone made every application request sharing a host with the
+     * proxy disappear — the normal shape of a self-hosted deployment, where the intake and the
+     * application's own services differ only by port.
+     */
+    it('should keep application requests that share the proxy host but not its port', () => {
+      useConfig({ proxy: 'http://127.0.0.1:8790/api/v2/rum' });
+      publishRequest('http://127.0.0.1:9001/api/orders');
+
+      expect(collected.length).toBeGreaterThan(0);
+    });
+
+    /**
+     * Guard, the same bug seen from the other side. A `site` carrying a port never equalled the
+     * hostname of an intake URL, so the filter silently matched nothing and the SDK reported its
+     * own uploads as resources — which produced more uploads.
+     */
+    it('should filter out requests to an intake host that carries a port', () => {
+      useConfig({ site: '10.0.0.5:8790' });
+      publishRequest('https://10.0.0.5:8790/api/v2/rum');
+
+      expect(collected).toHaveLength(0);
+    });
+
+    it('should keep application requests on the site host but another port', () => {
+      useConfig({ site: '10.0.0.5:8790' });
+      publishRequest('https://10.0.0.5:9001/api/orders');
+
+      expect(collected.length).toBeGreaterThan(0);
+    });
+
+    /**
+     * dd-trace sets a client span's `resource` to the HTTP method, so it never carries a host.
+     * The previous substring match on it could therefore only ever produce false positives.
+     */
+    it('should not filter a span on its resource name', () => {
+      publish([[createSpan({ type: 'dns', resource: 'browser.flashcat.cloud', meta: {} })]]);
+
+      expect(collected.length).toBeGreaterThan(0);
+    });
+
+    it('should filter nothing when the configuration yields no intake origin', () => {
+      useConfig({ proxy: 'not a url' });
+      publishRequest('https://browser.flashcat.cloud/api/v2/rum');
 
       expect(collected.length).toBeGreaterThan(0);
     });

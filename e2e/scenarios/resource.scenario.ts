@@ -119,9 +119,38 @@ test('does not emit a resource event for SDK intake traffic', async ({ mainPage,
   await mainPage.flushTransport();
   await intake.getEventsByType('view');
 
-  const intakeUrl = `http://localhost:${intake.getPort()}/api/v2/rum`;
+  const intakeUrl = `http://127.0.0.1:${intake.getPort()}/api/v2/rum`;
   await mainPage.mainHttpRequest(intakeUrl);
   await mainPage.flushTransport();
 
   await intake.assertNoNewEvents('resource');
+});
+
+/**
+ * Guard for the port half of intake exclusion, which the rest of this suite cannot see.
+ *
+ * The two URLs below are the same host and differ only by port — the shape of a self-hosted
+ * deployment, and the one an exclusion comparing hostnames gets wrong in both directions at once:
+ * it drops the application request and, when the intake host carries a port of its own, stops
+ * recognizing the upload. Both assertions below fail with such an exclusion in place.
+ */
+test('tells intake traffic from application traffic on the same host by port', async ({
+  mainPage,
+  intake,
+  testServer,
+}) => {
+  await mainPage.flushTransport();
+  await intake.getEventsByType('view');
+
+  const intakeUrl = `http://127.0.0.1:${intake.getPort()}/api/v2/rum`;
+  const applicationUrl = testServer.urlFor(200);
+  expect(new URL(intakeUrl).hostname).toBe(new URL(applicationUrl).hostname);
+  expect(new URL(intakeUrl).port).not.toBe(new URL(applicationUrl).port);
+
+  await mainPage.mainHttpRequest(intakeUrl);
+  await mainPage.mainFetch(applicationUrl);
+  await mainPage.flushTransport();
+
+  const resourceEvents = await intake.getEventsByType('resource');
+  expect(resourceEvents.map((event) => (event.body as RumResourceEvent).resource.url)).toEqual([applicationUrl]);
 });

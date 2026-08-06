@@ -26,6 +26,10 @@ First FlashCat release. Forked from `@datadog/electron-sdk` v0.3.0 and rebranded
 
 - Main-process HTTP calls no longer lose their `resource` events to a sibling request that never returns. dd-trace only exported a trace once every span in it had finished, so one hung request withheld the resource events of every other request made from the same `ipcMain.handle` invocation, for the rest of the process' life. Spans are now exported as they finish (`flushMinSpans: 1`).
 
+- The SDK's own uploads are now excluded from tracing by **origin** — scheme, host and port — and at the instrumentation layer, so they never produce a span in the first place. The previous exclusion compared hostnames only and was wrong in both directions: with a `proxy` set, it dropped every application request sharing the proxy's host, whatever its port; and when `site` carried a port of its own (`rum.example.internal:8443`), it matched nothing at all, so the SDK reported its own uploads as resources — which produced more uploads.
+
+  > **Self-hosted deployments will see more `resource` events.** Application requests that share a host with the intake and differ only by port were being dropped and are now reported. This is data coming back, not new data.
+
 ### ⚠️ Breaking Changes / Notes
 
 - Package renamed to `@flashcatcloud/electron-sdk` (internal `dd-`/`Datadog` names and the `DatadogEventBridge` global are kept per the fork convention).
