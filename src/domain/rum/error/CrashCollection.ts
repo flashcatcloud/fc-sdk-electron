@@ -8,6 +8,7 @@ import type { RawRumError } from '../rawRumData.types';
 import type { RumErrorEvent } from '../rumEvent.types';
 import { displayError, displayInfo } from '../../../tools/display';
 import { addError, monitor } from '../../telemetry';
+import { toIntakeTimeStamp } from '../../../tools/intakeTimeStamp';
 
 /**
  * Collect RUM error events for native crashes.
@@ -43,8 +44,10 @@ export class CrashCollection {
     for (const filePath of dmpFiles) {
       try {
         const fileStat = await fs.stat(filePath);
-        // birthtimeMs can be 0 on Linux (ext4), fall back to mtimeMs
-        const crashTime = (fileStat.birthtimeMs || fileStat.mtimeMs) as TimeStamp;
+        // birthtimeMs can be 0 on Linux (ext4), fall back to mtimeMs.
+        // Both carry sub-millisecond precision — `1785900421429.7532`, say — hence the rounding;
+        // see `toIntakeTimeStamp` for what an unrounded one costs.
+        const crashTime = toIntakeTimeStamp(fileStat.birthtimeMs || fileStat.mtimeMs);
         const bytes = new Uint8Array(await fs.readFile(filePath));
         const crashReport = await processMinidump(bytes);
 

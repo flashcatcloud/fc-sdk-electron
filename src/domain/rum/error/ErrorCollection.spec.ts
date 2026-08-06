@@ -123,6 +123,41 @@ describe('ErrorCollection', () => {
       expect(data.date).toBe(1234567890);
     });
 
+    /**
+     * `startTime` is caller-supplied, so it arrives with whatever precision the caller had —
+     * `performance.timeOrigin + performance.now()` is fractional, for one. The intake decodes
+     * `date` into an int64 and Go drops the whole event on a fraction, without a word.
+     */
+    it('rounds a fractional custom startTime', () => {
+      errorCollection = new ErrorCollection(eventManager, stackPathNormalizer);
+
+      errorCollection.getApi().addError(new Error('manual error'), { startTime: 1785900421429.7532 });
+
+      const data = rawRumEvents[0].data as RawRumError;
+      expect(Number.isInteger(data.date)).toBe(true);
+      expect(data.date).toBe(1785900421430);
+      expect(rawRumEvents[0].startTime).toBe(1785900421430);
+    });
+
+    it('still defaults to now when startTime is omitted', () => {
+      errorCollection = new ErrorCollection(eventManager, stackPathNormalizer);
+
+      errorCollection.getApi().addError(new Error('manual error'));
+
+      expect(Number.isInteger(rawRumEvents[0].startTime)).toBe(true);
+      expect(rawRumEvents[0].startTime).toBeGreaterThan(0);
+    });
+
+    it('also defaults to now when startTime is null', () => {
+      // `addError` is reachable from plain JavaScript, where an absent value is as likely to be
+      // `null` as `undefined`. Rounding `null` would date the error to the epoch.
+      errorCollection = new ErrorCollection(eventManager, stackPathNormalizer);
+
+      errorCollection.getApi().addError(new Error('manual error'), { startTime: null as unknown as number });
+
+      expect(rawRumEvents[0].startTime).toBeGreaterThan(0);
+    });
+
     it('emits an error event with fallback message from a non-Error value', () => {
       errorCollection = new ErrorCollection(eventManager, stackPathNormalizer);
 

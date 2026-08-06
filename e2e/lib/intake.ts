@@ -15,6 +15,7 @@ import * as http from 'node:http';
  * - path is `/api/v2/rum` (the only track FlashCat exposes — there is no `/api/v2/spans`)
  * - `Content-Type: text/plain;charset=UTF-8` (`application/json` is rejected)
  * - body is newline-delimited JSON, one event per line (a JSON array is rejected)
+ * - every number is a whole number, except the few fields the intake really types as floats
  */
 export interface ReceivedEvent {
   timestamp: number;
@@ -31,6 +32,48 @@ export interface ProtocolViolation {
 
 const RUM_TRACK_PATH = '/api/v2/rum';
 const EXPECTED_CONTENT_TYPE = 'text/plain';
+
+/**
+ * Event fields the intake decodes into a floating-point type. Everything else numeric is an
+ * `int64` over there, and Go's JSON decoder refuses a fractional number into an integer — it
+ * fails the whole event, silently, because the `202` is returned before decoding.
+ *
+ * JavaScript has no such boundary, so a float slips through this mock unnoticed unless it is
+ * checked for explicitly. That is exactly how a fractional `date` (`fs.Stats.birthtimeMs` carries
+ * sub-millisecond precision) kept every native crash out of Error Tracking up to v0.1.0 while
+ * every test stayed green.
+ *
+ * Taken from `fc-rum/types/datadog/rum.go` — `grep 'float64 \`json:'`.
+ */
+const FRACTIONAL_FIELDS = new Set([
+  'average',
+  'cpu_ticks_count',
+  'cpu_ticks_per_second',
+  'cumulative_layout_shift',
+  'custom',
+  'execution_start',
+  'freeze_rate',
+  'height',
+  'max',
+  'max_depth',
+  'max_depth_scroll_top',
+  'max_scroll_height',
+  'memory_average',
+  'memory_max',
+  'metric_max',
+  'min',
+  'refresh_rate_average',
+  'refresh_rate_min',
+  'render_start',
+  'rule_psr',
+  'score',
+  'session_replay_sample_rate',
+  'session_sample_rate',
+  'slow_frames_rate',
+  'width',
+  'x',
+  'y',
+]);
 
 const byType = (type: string) => (event: ReceivedEvent) => (event.body as { type?: string }).type === type;
 
@@ -68,6 +111,10 @@ export class Intake {
       if (Array.isArray(parsed)) {
         this.addViolation('body is a JSON array instead of newline-delimited JSON', truncate(line));
         continue;
+      }
+
+      for (const path of findFractionalFields(parsed)) {
+        this.addViolation('fractional number in an integer field', `${eventLabel(parsed)} → ${path}`);
       }
 
       this.rumEvents.push({ timestamp: Date.now(), body: parsed, headers });
@@ -226,6 +273,28 @@ export class Intake {
 
 function truncate(value: string, max = 200): string {
   return value.length > max ? `${value.slice(0, max)}…` : value;
+}
+
+/** Dotted paths of every number the intake would fail to decode into an integer. */
+function findFractionalFields(value: unknown, path = ''): string[] {
+  if (typeof value === 'number') {
+    const field = path.split('.').pop() ?? '';
+    return Number.isInteger(value) || FRACTIONAL_FIELDS.has(field) ? [] : [`${path} = ${value}`];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) => findFractionalFields(item, `${path}[${index}]`));
+  }
+  if (value !== null && typeof value === 'object') {
+    return Object.entries(value).flatMap(([key, item]) =>
+      findFractionalFields(item, path === '' ? key : `${path}.${key}`)
+    );
+  }
+  return [];
+}
+
+function eventLabel(event: unknown): string {
+  const { type, source } = (event ?? {}) as { type?: string; source?: string };
+  return `${source ?? 'unknown'}/${type ?? 'unknown'}`;
 }
 
 function formatViolations(violations: ProtocolViolation[]): string {

@@ -132,6 +132,11 @@ test.describe('crash reporting across restart @integration', () => {
         expect(error.error.source).toBe('source');
         expect(error.error.handling).toBe('unhandled');
         expect(error.error.stack).toBeTruthy();
+        // The crash time comes from the dump file's `fs.Stats`, which is fractional. This mock
+        // intake parses it happily; the real one decodes `date` into an int64 and Go drops the
+        // event on a fractional number, silently. Assert the type, and the contract at large.
+        expect(Number.isInteger(error.date)).toBe(true);
+        expect(intake.getProtocolViolations()).toEqual([]);
       } finally {
         await secondApp.close();
       }

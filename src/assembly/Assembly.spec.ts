@@ -95,7 +95,7 @@ describe('Assembly — renderer events', () => {
     const eventManager = new EventManager();
     const hooks = createFormatHooks();
 
-    registerCommonContext(config, hooks);
+    registerCommonContext(config, hooks, 'device-anonymous-id');
     hooks.registerRum(() => ({ session: { id: 'main-session-id' }, view: { id: 'main-view-id' } }));
 
     new Assembly(eventManager, hooks);

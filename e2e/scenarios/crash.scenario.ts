@@ -42,6 +42,11 @@ test('emits a crash error event after a native crash', async ({ intake }) => {
     expect(errorEvents).toHaveLength(1);
 
     const error = errorEvents[0].body as RumErrorEvent;
+    // The crash time comes from the dump file's `fs.Stats`, which is fractional. The intake
+    // decodes `date` into an int64 and Go drops the event on a fractional number, without any
+    // sign of it on this side — so assert the type, not just the presence.
+    expect(Number.isInteger(error.date)).toBe(true);
+    expect(intake.getProtocolViolations()).toEqual([]);
     expect(error.session.id).toBe(sessionId);
     expect(error.error.is_crash).toBe(true);
     expect(error.error.source).toBe('source');

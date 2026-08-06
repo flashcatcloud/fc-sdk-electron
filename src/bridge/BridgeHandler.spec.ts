@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { EventFormat, EventKind, EventManager, EventSource } from '../event';
+import { EventFormat, EventKind, EventManager, EventSource, LifecycleKind } from '../event';
 import type { RawRumEvent } from '../event';
 import { BridgeHandler } from './BridgeHandler';
 import type { BridgeOptions } from './BridgeHandler';
-import { BRIDGE_CHANNEL, CONFIG_CHANNEL } from '../common';
+import { BRIDGE_CHANNEL, CONFIG_CHANNEL, IDENTITY_CHANNEL } from '../common';
 import { RendererRegistry } from '../domain/RendererRegistry';
 import { ViewTimingCorrector } from '../domain/ViewTimingCorrector';
 import { StackPathNormalizer } from '../domain/StackPathNormalizer';
@@ -32,27 +32,59 @@ vi.mock('../domain/telemetry', () => ({
 const DEFAULT_BRIDGE_OPTIONS: BridgeOptions = {
   defaultPrivacyLevel: 'mask',
   allowedWebViewHosts: [],
+  anonymousId: 'anonymous-id',
 };
 
 const SENDER_ID = 7;
 
 const APP_ROOT = '/Applications/MyApp.app/Contents/Resources/app.asar';
 
+type IpcCallback = (event: { sender?: unknown; returnValue?: unknown }, msg: string) => void;
+
+/** Stand-in for a renderer's `webContents`, with the methods the handler touches. */
+function createSender(id = SENDER_ID) {
+  const destroyedListeners: (() => void)[] = [];
+  const sender = {
+    id,
+    send: vi.fn(),
+    isDestroyed: vi.fn(() => false),
+    once: vi.fn((_event: string, listener: () => void) => destroyedListeners.push(listener)),
+    destroy: () => {
+      sender.isDestroyed.mockReturnValue(true);
+      for (const listener of destroyedListeners) {
+        listener();
+      }
+    },
+  };
+  return sender;
+}
+
 describe('BridgeHandler', () => {
   let eventManager: EventManager;
   let rendererRegistry: RendererRegistry;
+  let sessionId: string;
   /** `senderId: null` simulates an IPC event without a `sender` (e.g. a destroyed webContents). */
   let simulateIpcMessage: (msg: string, senderId?: number | null) => void;
+  /** Replays a renderer's synchronous configuration request, and returns what it got back. */
+  let simulateConfigRequest: (sender?: ReturnType<typeof createSender>) => unknown;
 
   beforeEach(() => {
     vi.clearAllMocks();
     eventManager = new EventManager();
     rendererRegistry = new RendererRegistry();
+    sessionId = 'session-1';
 
-    mockIpcMainOn.mockImplementation((channel: string, callback: (_event: unknown, msg: string) => void) => {
+    mockIpcMainOn.mockImplementation((channel: string, callback: IpcCallback) => {
       if (channel === BRIDGE_CHANNEL) {
         simulateIpcMessage = (msg: string, senderId: number | null = SENDER_ID) =>
           callback(senderId === null ? {} : { sender: { id: senderId } }, msg);
+      }
+      if (channel === CONFIG_CHANNEL) {
+        simulateConfigRequest = (sender = createSender()) => {
+          const ipcEvent = { sender, returnValue: undefined as unknown };
+          callback(ipcEvent, '');
+          return ipcEvent.returnValue;
+        };
       }
     });
 
@@ -61,6 +93,7 @@ describe('BridgeHandler', () => {
     new BridgeHandler(
       eventManager,
       DEFAULT_BRIDGE_OPTIONS,
+      () => sessionId,
       rendererRegistry,
       new ViewTimingCorrector(rendererRegistry, true),
       new StackPathNormalizer(true, APP_ROOT)
@@ -75,27 +108,106 @@ describe('BridgeHandler', () => {
     expect(mockIpcMainOn).toHaveBeenCalledWith(CONFIG_CHANNEL, expect.any(Function));
   });
 
-  it('should return bridge options via event.returnValue on config channel', () => {
-    const options: BridgeOptions = { defaultPrivacyLevel: 'allow', allowedWebViewHosts: ['example.com'] };
-    vi.clearAllMocks();
-
-    const handlers: Record<string, (event: unknown) => void> = {};
-    mockIpcMainOn.mockImplementation((channel: string, callback: (event: unknown) => void) => {
-      handlers[channel] = callback;
+  describe('configuration channel', () => {
+    it('should answer with the bridge options and the current session id', () => {
+      expect(simulateConfigRequest()).toEqual({
+        defaultPrivacyLevel: 'mask',
+        allowedWebViewHosts: [],
+        anonymousId: 'anonymous-id',
+        sessionId: 'session-1',
+      });
     });
 
-    new BridgeHandler(
-      eventManager,
-      options,
-      rendererRegistry,
-      new ViewTimingCorrector(rendererRegistry, true),
-      new StackPathNormalizer(true, APP_ROOT)
-    );
+    it('should answer with plain data only — the channel is synchronous, so it is structured-cloned', () => {
+      const config = simulateConfigRequest();
 
-    const event = { returnValue: undefined as unknown };
-    handlers[CONFIG_CHANNEL](event);
+      expect(() => structuredClone(config)).not.toThrow();
+    });
 
-    expect(event.returnValue).toEqual(options);
+    it('should answer with the session id of the moment, not the one init started with', () => {
+      sessionId = 'session-2';
+
+      expect(simulateConfigRequest()).toMatchObject({ sessionId: 'session-2' });
+    });
+
+    it('should answer a renderer that has no sender', () => {
+      const ipcEvent = { returnValue: undefined as unknown };
+      const configHandler = mockIpcMainOn.mock.calls.find(([channel]) => channel === CONFIG_CHANNEL)![1] as (
+        event: unknown
+      ) => void;
+
+      expect(() => configHandler(ipcEvent)).not.toThrow();
+      expect(ipcEvent.returnValue).toMatchObject({ sessionId: 'session-1' });
+    });
+  });
+
+  describe('identity pushes', () => {
+    it('should push the renewed session id to every bridged renderer', () => {
+      const first = createSender(1);
+      const second = createSender(2);
+      simulateConfigRequest(first);
+      simulateConfigRequest(second);
+
+      sessionId = 'session-2';
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_RENEW });
+
+      expect(first.send).toHaveBeenCalledWith(IDENTITY_CHANNEL, { sessionId: 'session-2' });
+      expect(second.send).toHaveBeenCalledWith(IDENTITY_CHANNEL, { sessionId: 'session-2' });
+    });
+
+    it('should push an empty session id when the session expires', () => {
+      const sender = createSender();
+      simulateConfigRequest(sender);
+
+      sessionId = '';
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_EXPIRED });
+
+      expect(sender.send).toHaveBeenCalledWith(IDENTITY_CHANNEL, { sessionId: '' });
+    });
+
+    it('should not push on unrelated lifecycle events', () => {
+      const sender = createSender();
+      simulateConfigRequest(sender);
+
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.END_USER_ACTIVITY });
+
+      expect(sender.send).not.toHaveBeenCalled();
+    });
+
+    it('should push to a renderer only once even if it asks for the configuration again', () => {
+      const sender = createSender();
+      simulateConfigRequest(sender);
+      simulateConfigRequest(sender);
+
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_RENEW });
+
+      expect(sender.send).toHaveBeenCalledOnce();
+    });
+
+    it('should stop pushing to a renderer that went away', () => {
+      const sender = createSender();
+      simulateConfigRequest(sender);
+
+      sender.destroy();
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_RENEW });
+
+      expect(sender.send).not.toHaveBeenCalled();
+    });
+
+    it('should keep pushing to the other renderers when one fails', () => {
+      const failing = createSender(1);
+      const healthy = createSender(2);
+      failing.send.mockImplementation(() => {
+        throw new Error('Render frame was disposed');
+      });
+      simulateConfigRequest(failing);
+      simulateConfigRequest(healthy);
+
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_RENEW });
+
+      expect(healthy.send).toHaveBeenCalledOnce();
+      expect(mockAddError).toHaveBeenCalledOnce();
+    });
   });
 
   describe('rum events', () => {

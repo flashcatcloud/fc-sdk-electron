@@ -7,6 +7,7 @@ import { computeIntakeHostname } from '../../transport';
 import { RawRumResource } from '../rum';
 import { monitor } from '../telemetry';
 import { NsTimeStamp, RawSpanData, RawTraceData } from './rawTracingData.types';
+import { toIntakeTimeStamp } from '../../tools/intakeTimeStamp';
 
 /**
  * Structure of spans exported by dd-trace electron exporter.
@@ -160,6 +161,11 @@ function spanToResource(exportedSpan: ExportedSpan): RawRumResource {
   };
 }
 
+/**
+ * dd-trace measures span starts off `performance.now()` and reports them as nanoseconds, so the
+ * millisecond value almost never divides evenly — see `toIntakeTimeStamp` for what an unrounded
+ * one costs.
+ */
 function toTimeStamp(nsTimeStamp: NsTimeStamp): TimeStamp {
-  return (nsTimeStamp / 1e6) as TimeStamp;
+  return toIntakeTimeStamp(nsTimeStamp / 1e6);
 }

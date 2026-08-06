@@ -108,6 +108,29 @@ describe('SpanProcessor', () => {
       expect(serverEvents[0].track).toBe(EventTrack.SPANS);
     });
 
+    /**
+     * Guard, not an observation. dd-trace derives span starts from `performance.now()` and reports
+     * them in nanoseconds, so the count is essentially never a whole number of milliseconds. The
+     * intake decodes `date` into an int64 and Go drops the whole event on a fraction — silently,
+     * because the `202` is sent before decoding. Note that `createSpan()`'s round
+     * `1_000_000_000` is precisely what hid this: the division is exact there and never in
+     * production, so every other case in this file would stay green with the bug present.
+     *
+     * A realistic epoch-nanosecond value cannot be written as a literal here — it is past
+     * `Number.MAX_SAFE_INTEGER`, which is part of why these values are awkward. A small exact one
+     * carrying the same sub-millisecond remainder proves the same thing.
+     */
+    it('should emit a whole-millisecond date, since span starts do not divide evenly', () => {
+      const span = createSpan({ start: 1_000_700_000 as ExportedSpan['start'] });
+      publish([[span]]);
+
+      const rawEvent = collected.find((e) => e.kind === EventKind.RAW) as RawRumEvent;
+      const resource = rawEvent.data as { date: number };
+      expect(Number.isInteger(resource.date)).toBe(true);
+      expect(resource.date).toBe(1001); // 1000.7ms
+      expect(Number.isInteger(rawEvent.startTime)).toBe(true);
+    });
+
     it('should convert trace/span IDs to decimal in RUM resources', () => {
       const span = createSpan({ trace_id: BigInt(255), span_id: BigInt(16) });
       publish([[span]]);

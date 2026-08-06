@@ -5,7 +5,7 @@ import type { IntegrationFixtures } from './integration/lib/integrationFixture';
 // dd-trace's module hook, so each needs a packaged app to be verified at all. Upstream had seven
 // apps; the four dropped ones only varied the packager or the module format, at roughly twice the
 // CI cost. `forge-esbuild-esm` is kept over its CJS twin because it additionally exercises the
-// plugin's ESM path (`session.registerPreloadScript()`).
+// ESM path, where a static `import` bypasses dd-trace's hook on `require('electron')`.
 const INTEGRATION_APPS = [
   'forge-webpack', // webpack plugin
   'electron-vite', // vite plugin

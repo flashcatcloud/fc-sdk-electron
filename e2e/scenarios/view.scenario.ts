@@ -23,6 +23,18 @@ test('emits an initial active view event on SDK init', async ({ mainPage, intake
   expect(view.view.time_spent).toBeGreaterThanOrEqual(0);
 });
 
+test('carries the device anonymous id, and no user id, on the session opening view', async ({ mainPage, intake }) => {
+  await mainPage.flushTransport();
+  const events = await intake.getEventsByType('view');
+
+  // This synthetic view is normally the session's first, so the session takes its user identity
+  // from it — without this field a main-process-only session would have no identity at all.
+  const view = events[0].body as RumViewEvent;
+  expect(view.usr?.anonymous_id).toMatch(/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i);
+  // Never backfilled — see the comment in `registerCommonContext`.
+  expect(view.usr?.id).toBeUndefined();
+});
+
 test.describe('session renewal via user activity', () => {
   test.use({ rumBrowserSdk: {} });
 

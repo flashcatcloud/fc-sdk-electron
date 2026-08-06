@@ -3,7 +3,6 @@ import {
   Context,
   generateUUID,
   jsonStringify,
-  type TimeStamp,
   timeStampNow,
   toStackTraceString,
 } from '@flashcatcloud/browser-core';
@@ -11,6 +10,7 @@ import { EventFormat, EventKind, EventManager, EventSource } from '../../../even
 import type { RawRumError } from '../rawRumData.types';
 import { monitor } from '../../telemetry';
 import type { StackPathNormalizer } from '../../StackPathNormalizer';
+import { toIntakeTimeStamp } from '../../../tools/intakeTimeStamp';
 
 export interface ErrorOptions {
   /**
@@ -74,7 +74,11 @@ export class ErrorCollection {
     }
   ): void {
     const { message, stack, kind } = formatError(error, options.nonErrorPrefix, this.stackPathNormalizer);
-    const startTime = (options.startTime as TimeStamp) ?? timeStampNow();
+    // `startTime` is caller-supplied through the public `addError` options, so it arrives with
+    // whatever precision the caller had — `performance.timeOrigin + performance.now()`, say.
+    // `??` rather than an `undefined` check: JavaScript callers reach this API too, and rounding a
+    // `null` would date the error to the epoch instead of now.
+    const startTime = toIntakeTimeStamp(options.startTime ?? timeStampNow());
 
     const errorEvent: RawRumError = {
       type: 'error',

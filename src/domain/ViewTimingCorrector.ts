@@ -116,8 +116,14 @@ function rebasePaintTimings(view: ViewProperties, activationStart: number): void
   }
 }
 
+/**
+ * Rounded, not because either input is fractional today — `firstVisibleAt` and the renderer's
+ * `date` are both whole milliseconds — but because these fields are `int64` on the intake, which
+ * drops the entire event on a fraction without a word. Rounding here keeps that guarantee a
+ * property of this module rather than of whatever the renderer happens to send.
+ */
 function rebase(metric: number | undefined, activationStart: number): number | undefined {
-  return metric === undefined ? undefined : Math.max(0, metric - activationStart);
+  return metric === undefined ? undefined : Math.round(Math.max(0, metric - activationStart));
 }
 
 function discardPaintTimings(view: ViewProperties): void {

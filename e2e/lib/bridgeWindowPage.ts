@@ -1,5 +1,14 @@
 import type { Page, ElectronApplication } from '@playwright/test';
 
+/** The bridge the SDK's preload script exposes to every renderer. */
+interface BridgeWindow {
+  DatadogEventBridge: {
+    getCapabilities: () => string;
+    getSessionId: () => string;
+    getAnonymousId: () => string;
+  };
+}
+
 /**
  * Page Object for bridge windows (bridge-window.html).
  * Use static factory methods to open a window and wait for it to be bridge-ready.
@@ -26,6 +35,19 @@ export class BridgeWindowPage {
   async generateResource() {
     await this.page.evaluate(() => fetch('/'));
     await this.waitForIpcPropagation();
+  }
+
+  /** Reads the bridge the way the Browser SDK does: from the page's own world. */
+  async getSessionId(): Promise<string> {
+    return await this.page.evaluate(() => (globalThis as unknown as BridgeWindow).DatadogEventBridge.getSessionId());
+  }
+
+  async getAnonymousId(): Promise<string> {
+    return await this.page.evaluate(() => (globalThis as unknown as BridgeWindow).DatadogEventBridge.getAnonymousId());
+  }
+
+  async getCapabilities(): Promise<string> {
+    return await this.page.evaluate(() => (globalThis as unknown as BridgeWindow).DatadogEventBridge.getCapabilities());
   }
 
   private async waitForIpcPropagation() {
