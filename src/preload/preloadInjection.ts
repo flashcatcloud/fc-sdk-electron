@@ -2,8 +2,10 @@ import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { PreloadScriptRegistration, Session } from 'electron';
+import type { IpcMainEvent, PreloadScriptRegistration, Session } from 'electron';
 import { displayWarn } from '../tools/display';
+import { CONFIG_CHANNEL } from '../common';
+import type { BridgeConfig } from '../common';
 
 /**
  * dd-trace ships a bridge preload of its own and registers it from the `BrowserWindow` subclass it
@@ -30,7 +32,21 @@ export interface PreloadInjectionHost {
     once(event: 'ready', listener: () => void): unknown;
   };
   session: { readonly defaultSession: Session };
+  ipcMain: { on(channel: string, listener: (event: IpcMainEvent) => void): unknown };
 }
+
+/**
+ * What a renderer is told while the SDK's bridge is not up: no session, no device id, and the most
+ * private of the privacy levels. `BridgeHandler` replaces it over {@link CONFIG_PUSH_CHANNEL} as
+ * soon as it exists, so this is what a renderer holds only for the window between its own start and
+ * `init()` completing — or forever, when `init()` is never called or its configuration is rejected.
+ */
+const UNCONFIGURED: BridgeConfig = {
+  defaultPrivacyLevel: 'mask',
+  allowedWebViewHosts: [],
+  anonymousId: '',
+  sessionId: '',
+};
 
 let installed = false;
 
@@ -51,6 +67,12 @@ export function installBridgePreload(
     return;
   }
   installed = true;
+
+  // Before any registration, so no preload can ever run without someone to answer it: the request
+  // is synchronous, and an unanswered one deadlocks the renderer for good. See CONFIG_CHANNEL.
+  host.ipcMain.on(CONFIG_CHANNEL, (ipcEvent) => {
+    ipcEvent.returnValue = UNCONFIGURED;
+  });
 
   const registrations = new WeakMap<Session, string>();
 

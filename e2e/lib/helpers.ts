@@ -90,12 +90,16 @@ export const test = base.extend<TestFixtures>({
   rumBrowserSdk: [null, { option: true }],
 });
 
+/** How the test app sequences `init()` against window creation. See `getInitMode` in its main.ts. */
+export type InitMode = 'await' | 'race' | 'skip';
+
 async function launchApp(
   intake: Intake,
   userDataDir: string,
-  rumBrowserSdk: Record<string, unknown> | null = null
+  rumBrowserSdk: Record<string, unknown> | null = null,
+  initMode: InitMode = 'await'
 ): Promise<ElectronApplication> {
-  const env: Record<string, string> = {};
+  const env: Record<string, string> = { FC_ELECTRON_SDK_INIT_MODE: initMode };
   for (const key of HOST_ENV_ALLOWLIST) {
     const value = process.env[key];
     if (value !== undefined) {
@@ -148,9 +152,10 @@ async function waitForWindowLoaded(electronApp: ElectronApplication): Promise<{ 
 
 export async function launchAppManually(
   intake: Intake,
-  userDataDir: string
+  userDataDir: string,
+  initMode: InitMode = 'await'
 ): Promise<{ electronApp: ElectronApplication; window: Page; mainPage: MainPage }> {
-  const electronApp = await launchApp(intake, userDataDir);
+  const electronApp = await launchApp(intake, userDataDir, null, initMode);
   const { window } = await waitForWindowLoaded(electronApp);
   return { electronApp, window, mainPage: new MainPage(window) };
 }

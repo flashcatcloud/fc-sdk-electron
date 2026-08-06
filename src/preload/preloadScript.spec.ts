@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { BRIDGE_CHANNEL, CONFIG_CHANNEL, IDENTITY_CHANNEL } from '../common';
-import type { BridgeConfig, IdentityUpdate } from '../common';
+import { BRIDGE_CHANNEL, CONFIG_CHANNEL, CONFIG_PUSH_CHANNEL } from '../common';
+import type { BridgeConfig } from '../common';
 
 const { mockIpcRenderer, mockExposeInMainWorld } = vi.hoisted(() => ({
   mockIpcRenderer: { on: vi.fn(), send: vi.fn(), sendSync: vi.fn() },
@@ -38,11 +38,11 @@ describe('preload script', () => {
     return bridgeWindow.DatadogEventBridge as EventBridge;
   }
 
-  /** Replays an identity push from the main process. */
-  function pushIdentity(update: IdentityUpdate): void {
-    const listeners = mockIpcRenderer.on.mock.calls.filter(([channel]) => channel === IDENTITY_CHANNEL);
+  /** Replays a configuration push from the main process. */
+  function pushConfig(config: Partial<BridgeConfig>): void {
+    const listeners = mockIpcRenderer.on.mock.calls.filter(([channel]) => channel === CONFIG_PUSH_CHANNEL);
     for (const [, listener] of listeners) {
-      (listener as (event: unknown, update: IdentityUpdate) => void)({}, update);
+      (listener as (event: unknown, config: BridgeConfig) => void)({}, { ...DEFAULT_CONFIG, ...config });
     }
   }
 
@@ -131,7 +131,7 @@ describe('preload script', () => {
     it('should answer the renewed session id after the main process pushes it', async () => {
       const bridge = await runPreload();
 
-      pushIdentity({ sessionId: 'session-2' });
+      pushConfig({ sessionId: 'session-2' });
 
       expect(bridge.getSessionId()).toBe('session-2');
     });
@@ -139,7 +139,7 @@ describe('preload script', () => {
     it('should answer an empty session id once the session expired', async () => {
       const bridge = await runPreload();
 
-      pushIdentity({ sessionId: '' });
+      pushConfig({ sessionId: '' });
 
       expect(bridge.getSessionId()).toBe('');
     });
@@ -157,13 +157,54 @@ describe('preload script', () => {
     it('should keep a push that lands before the configuration answers', async () => {
       // The renewal races the initial handshake: the config's session id is the older of the two.
       mockIpcRenderer.sendSync.mockImplementation(() => {
-        pushIdentity({ sessionId: 'session-2' });
+        pushConfig({ sessionId: 'session-2' });
         return DEFAULT_CONFIG;
       });
 
       const bridge = await runPreload();
 
       expect(bridge.getSessionId()).toBe('session-2');
+    });
+  });
+
+  // A renderer that starts before the SDK is initialized is answered by the fallback listener
+  // `installBridgePreload` registers, and only later hears from the real handler.
+  describe('started before the SDK was initialized', () => {
+    const UNCONFIGURED: BridgeConfig = {
+      defaultPrivacyLevel: 'mask',
+      allowedWebViewHosts: [],
+      anonymousId: '',
+      sessionId: '',
+    };
+
+    beforeEach(() => {
+      mockIpcRenderer.sendSync.mockReturnValue(UNCONFIGURED);
+    });
+
+    it('should hold no identifiers until the main process pushes them', async () => {
+      const bridge = await runPreload();
+
+      expect(bridge.getSessionId()).toBe('');
+      expect(bridge.getAnonymousId()).toBe('');
+    });
+
+    it('should adopt every field of the configuration once it is pushed', async () => {
+      const bridge = await runPreload();
+
+      pushConfig(DEFAULT_CONFIG);
+
+      expect(bridge.getSessionId()).toBe('session-1');
+      expect(bridge.getAnonymousId()).toBe('anonymous-id');
+      expect(bridge.getPrivacyLevel()).toBe('allow');
+      expect(JSON.parse(bridge.getAllowedWebViewHosts())).toEqual(['app.example.com', 'example.com']);
+    });
+
+    it('should keep allowing its own host after a push that does not mention it', async () => {
+      const bridge = await runPreload();
+
+      pushConfig({ allowedWebViewHosts: [] });
+
+      expect(JSON.parse(bridge.getAllowedWebViewHosts())).toEqual(['app.example.com']);
     });
   });
 });

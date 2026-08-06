@@ -1,10 +1,10 @@
-import { ipcMain } from 'electron';
-import type { IpcMainEvent, WebContents } from 'electron';
+import { ipcMain, webContents } from 'electron';
+import type { IpcMainEvent } from 'electron';
 import { EventKind, EventSource, EventFormat, LifecycleKind } from '../event';
 import type { EventManager, LifecycleEvent, RawRumEvent } from '../event';
 import { monitor, addError as addTelemetryError } from '../domain/telemetry';
-import { BRIDGE_CHANNEL, CONFIG_CHANNEL, IDENTITY_CHANNEL } from '../common';
-import type { BridgeConfig, IdentityUpdate } from '../common';
+import { BRIDGE_CHANNEL, CONFIG_CHANNEL, CONFIG_PUSH_CHANNEL } from '../common';
+import type { BridgeConfig } from '../common';
 import type { RendererRegistry } from '../domain/RendererRegistry';
 import type { ViewTimingCorrector } from '../domain/ViewTimingCorrector';
 import type { StackPathNormalizer } from '../domain/StackPathNormalizer';
@@ -38,15 +38,11 @@ export type BridgeOptions = Omit<BridgeConfig, 'sessionId'>;
  * the future, a log / telemetry event) to the existing assembly & transport
  * chain.
  *
- * It also answers the renderers' identity questions. `anonymousId` never changes, so the
- * synchronous config channel carries it once; `sessionId` does, so it is pushed to every renderer
- * known to have a bridge whenever it changes — asking for it synchronously per event would be far
- * too slow.
+ * It also answers the renderers' configuration questions. A renderer's preload caches the answer —
+ * asking synchronously per event would be far too slow — so this class pushes a fresh configuration
+ * whenever the cached one goes stale.
  */
 export class BridgeHandler {
-  /** Renderers that asked for the configuration, and so hold a preload cache to keep up to date. */
-  private readonly bridgedRenderers = new Set<WebContents>();
-
   constructor(
     private readonly eventManager: EventManager,
     private readonly bridgeOptions: BridgeOptions,
@@ -62,10 +58,14 @@ export class BridgeHandler {
       })
     );
 
+    // Supersede the fallback listener `installBridgePreload` left on this channel, rather than
+    // adding to it: Electron answers a synchronous request with the *first* `returnValue` set, so
+    // a surviving fallback would keep answering with its unconfigured placeholder. The channel is
+    // private to the SDK, so there is nothing else here to remove.
+    ipcMain.removeAllListeners(CONFIG_CHANNEL);
     ipcMain.on(
       CONFIG_CHANNEL,
       monitor((ipcEvent: IpcMainEvent) => {
-        this.trackBridgedRenderer(ipcEvent.sender);
         ipcEvent.returnValue = this.buildConfig();
       })
     );
@@ -75,9 +75,15 @@ export class BridgeHandler {
         event.kind === EventKind.LIFECYCLE &&
         (event.lifecycle === LifecycleKind.SESSION_RENEW || event.lifecycle === LifecycleKind.SESSION_EXPIRED),
       handle: monitor(() => {
-        this.pushIdentity();
+        this.pushConfig();
       }),
     });
+
+    // Renderers that started before this point were answered by the fallback listener and cached
+    // its placeholder — no session, no device id. This is what corrects them, and it cannot arrive
+    // too early to be heard: a renderer holds the placeholder only if it asked before this
+    // constructor ran, and it subscribes to the push channel before it asks.
+    this.pushConfig();
   }
 
   private onBridgeMessage(msg: string, webContentsId: number | undefined): void {
@@ -142,25 +148,23 @@ export class BridgeHandler {
     return { ...this.bridgeOptions, sessionId: this.getSessionId() };
   }
 
-  private trackBridgedRenderer(sender: WebContents | undefined): void {
-    if (!sender || this.bridgedRenderers.has(sender)) {
-      return;
-    }
-    this.bridgedRenderers.add(sender);
-    sender.once('destroyed', () => this.bridgedRenderers.delete(sender));
-  }
+  /**
+   * Send the current configuration to every live renderer.
+   *
+   * Every one of them, rather than a set of those known to have asked: a renderer that started
+   * before this handler existed never reached it, and is exactly the one that most needs the
+   * update. Renderers without a bridge — devtools, say — simply have no listener on the channel and
+   * ignore the message, which costs nothing at the rate sessions change.
+   */
+  private pushConfig(): void {
+    const config = this.buildConfig();
 
-  private pushIdentity(): void {
-    const update: IdentityUpdate = { sessionId: this.getSessionId() };
-
-    for (const sender of this.bridgedRenderers) {
-      if (sender.isDestroyed()) {
-        // 'destroyed' does not always fire before the renderer goes away, so prune here as well.
-        this.bridgedRenderers.delete(sender);
+    for (const contents of webContents.getAllWebContents()) {
+      if (contents.isDestroyed()) {
         continue;
       }
       try {
-        sender.send(IDENTITY_CHANNEL, update);
+        contents.send(CONFIG_PUSH_CHANNEL, config);
       } catch (error) {
         addTelemetryError(error);
       }
