@@ -113,6 +113,20 @@ void app.whenReady().then(async () => {
     return res.status;
   });
 
+  /**
+   * Two requests in one IPC handler, one of which never comes back.
+   *
+   * dd-trace groups both under the handler's span, and a trace is only exported once every span in
+   * it is finished — unless partial flushing is on. This is the shape that used to take the
+   * completed request's resource event down with the pending one.
+   */
+  ipcMain.handle('mainFetchWithPendingSibling', async (_event, url: string, pendingUrl: string) => {
+    void fetch(pendingUrl).catch(noop);
+    const res = await fetch(url);
+    await res.text();
+    return res.status;
+  });
+
   ipcMain.handle(
     'mainHttpRequest',
     (_event, url: string) =>

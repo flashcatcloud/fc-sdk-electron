@@ -184,6 +184,8 @@ HTTP spans → Assembly → Transport → /api/v2/rum (as RUM resources)
 
 All spans are enriched with electron context (`_dd.application.id`, `_dd.session.id`, `_dd.view.id`) via the span assembly hook. Trace and span IDs are converted to **hexadecimal strings** for the spans intake.
 
+The instrument entry point sets `flushMinSpans: 1`, so a span reaches the exporter as soon as it finishes. dd-trace otherwise only exports a trace once every span in it has finished (its default partial-flush threshold, 1000 finished spans, is out of reach for a desktop app), which let one request that never returns withhold the resource events of every sibling request in the same IPC handler. Attribution is unaffected: a resource event is placed by its own span's start time, not the trace's.
+
 ### Preload injection
 
 The bridge preload is the SDK's own script (`dist/preload.js`, exported as `@flashcatcloud/electron-sdk/preload`). It is a standalone CJS file whose only dependency is `electron`, because preload scripts run in a sandbox where nothing else is guaranteed to be requireable.

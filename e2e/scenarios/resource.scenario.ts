@@ -84,6 +84,37 @@ test('emits a resource event for a main-process net.request', async ({ mainPage,
   expect(resource._dd.span_id).toBeDefined();
 });
 
+/**
+ * Guard for partial flushing, not an observation.
+ *
+ * dd-trace only hands a trace to its exporter once every span it started has finished, so one
+ * request that never comes back used to withhold the resource events of every sibling request made
+ * from the same IPC handler — silently and for the rest of the process' life. `flushMinSpans: 1`
+ * (see `src/entries/instrument.ts`) is what lets the finished ones leave on their own. Drop it and
+ * this test times out waiting for the resource event.
+ */
+test('emits the resource event of a completed request whose sibling never returns', async ({
+  mainPage,
+  intake,
+  testServer,
+}) => {
+  await mainPage.flushTransport();
+  await intake.getEventsByType('view');
+
+  const url = testServer.urlFor(200);
+  const status = await mainPage.mainFetchWithPendingSibling(url, testServer.urlForHang());
+  expect(status).toBe(200);
+  await mainPage.flushTransport();
+
+  const resourceEvents = await intake.getEventsByType('resource');
+  expect(resourceEvents).toHaveLength(1);
+
+  const resource = resourceEvents[0].body as RumResourceEvent;
+  expect(resource.resource.url).toBe(url);
+  expect(resource.resource.status_code).toBe(200);
+  expect(intake.getProtocolViolations()).toEqual([]);
+});
+
 test('does not emit a resource event for SDK intake traffic', async ({ mainPage, intake }) => {
   await mainPage.flushTransport();
   await intake.getEventsByType('view');

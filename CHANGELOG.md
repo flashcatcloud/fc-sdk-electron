@@ -22,6 +22,10 @@ First FlashCat release. Forked from `@datadog/electron-sdk` v0.3.0 and rebranded
 
 - New `normalizeStackPath` option: rewrite a frame's absolute path yourself, before the built-in normalization runs, for build layouts a single application root cannot express (e.g. emitting to `<app root>/public/dist` but uploading under `/dist`). Returning `undefined` falls through to `app:///`. It applies to main-process and renderer frames alike, and a callback that throws is reported as an SDK error and falls back to the built-in behaviour. See the README.
 
+### 🐛 Bug Fixes
+
+- Main-process HTTP calls no longer lose their `resource` events to a sibling request that never returns. dd-trace only exported a trace once every span in it had finished, so one hung request withheld the resource events of every other request made from the same `ipcMain.handle` invocation, for the rest of the process' life. Spans are now exported as they finish (`flushMinSpans: 1`).
+
 ### ⚠️ Breaking Changes / Notes
 
 - Package renamed to `@flashcatcloud/electron-sdk` (internal `dd-`/`Datadog` names and the `DatadogEventBridge` global are kept per the fork convention).
