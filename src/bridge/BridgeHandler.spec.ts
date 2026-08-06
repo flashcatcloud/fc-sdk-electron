@@ -47,9 +47,8 @@ const APP_ROOT = '/Applications/MyApp.app/Contents/Resources/app.asar';
 type IpcCallback = (event: { sender?: unknown; returnValue?: unknown }, msg: string) => void;
 
 /** Stand-in for a renderer's `webContents`, with the methods the handler touches. */
-function createSender(id = SENDER_ID) {
+function createSender() {
   const sender = {
-    id,
     send: vi.fn(),
     isDestroyed: vi.fn(() => false),
     destroy: () => sender.isDestroyed.mockReturnValue(true),
@@ -64,7 +63,7 @@ describe('BridgeHandler', () => {
   /** `senderId: null` simulates an IPC event without a `sender` (e.g. a destroyed webContents). */
   let simulateIpcMessage: (msg: string, senderId?: number | null) => void;
   /** Replays a renderer's synchronous configuration request, and returns what it got back. */
-  let simulateConfigRequest: (sender?: ReturnType<typeof createSender>) => unknown;
+  let simulateConfigRequest: () => unknown;
   /** The renderers Electron would report as alive. The handler pushes to all of them. */
   let liveRenderers: ReturnType<typeof createSender>[];
 
@@ -94,8 +93,8 @@ describe('BridgeHandler', () => {
           callback(senderId === null ? {} : { sender: { id: senderId } }, msg);
       }
       if (channel === CONFIG_CHANNEL) {
-        simulateConfigRequest = (sender = createSender()) => {
-          const ipcEvent = { sender, returnValue: undefined as unknown };
+        simulateConfigRequest = () => {
+          const ipcEvent = { returnValue: undefined as unknown };
           callback(ipcEvent, '');
           return ipcEvent.returnValue;
         };
@@ -145,16 +144,6 @@ describe('BridgeHandler', () => {
 
       expect(simulateConfigRequest()).toMatchObject({ sessionId: 'session-2' });
     });
-
-    it('should answer a renderer that has no sender', () => {
-      const ipcEvent = { returnValue: undefined as unknown };
-      const configHandler = mockIpcMainOn.mock.calls.find(([channel]) => channel === CONFIG_CHANNEL)![1] as (
-        event: unknown
-      ) => void;
-
-      expect(() => configHandler(ipcEvent)).not.toThrow();
-      expect(ipcEvent.returnValue).toMatchObject({ sessionId: 'session-1' });
-    });
   });
 
   describe('configuration pushes', () => {
@@ -166,8 +155,8 @@ describe('BridgeHandler', () => {
     };
 
     it('should push the renewed configuration to every live renderer', () => {
-      const first = createSender(1);
-      const second = createSender(2);
+      const first = createSender();
+      const second = createSender();
       liveRenderers = [first, second];
 
       sessionId = 'session-2';
@@ -230,8 +219,8 @@ describe('BridgeHandler', () => {
     });
 
     it('should keep pushing to the other renderers when one fails', () => {
-      const failing = createSender(1);
-      const healthy = createSender(2);
+      const failing = createSender();
+      const healthy = createSender();
       failing.send.mockImplementation(() => {
         throw new Error('Render frame was disposed');
       });
