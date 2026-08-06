@@ -212,8 +212,19 @@ Renderer events are left alone: the renderer reads the same id off the bridge it
 
 The renderer needs the main process's session id to attribute anything it uploads itself, and the same device id so both halves of a session count as one user. Both are answered synchronously by the bridge:
 
-- `getAnonymousId()` — the id above. It never changes, so the synchronous config channel carries it once.
-- `getSessionId()` — the session the main process considers active, or `''` while none is. Sessions expire and renew, so the main process **pushes** every change over `datadog:bridge-identity` to the renderers that asked for a configuration; the preload caches the value and answers from the cache. A synchronous IPC call per event would be far too slow.
+- `getAnonymousId()` — the id above. It never changes once the SDK is initialized.
+- `getSessionId()` — the session the main process considers active, or `''` while none is. Sessions expire and renew, so the main process **pushes** a fresh configuration over `datadog:bridge-config-push` on every change; the preload caches it and answers from the cache. A synchronous IPC call per event would be far too slow.
+
+#### The renderer must never be able to outrun `init()`
+
+The preload asks for its configuration over a **synchronous** channel, and Electron leaves a synchronous request that no `ipcMain` listener answers blocked forever — registering one afterwards does not release it. A renderer that starts before `BridgeHandler` exists would therefore hang before running a line of the page: a monitoring SDK bricking the application it monitors. `init()` is `async` and can be skipped entirely (it returns `false` on a configuration it rejects), so "the application initializes first" cannot be the thing that prevents this.
+
+Two pieces close it, and the order between them is what makes it work:
+
+- `installBridgePreload` registers a **fallback listener** on `datadog:bridge-config` before it registers any preload, answering with an unconfigured placeholder — no session, no device id, `mask` privacy. Nothing can ask before something can answer. `BridgeHandler` then _supersedes_ it (`removeAllListeners` first), because Electron answers a synchronous request with the **first** `returnValue` set, not the last.
+- `BridgeHandler` **pushes once on construction**, catching up renderers that hold the placeholder. That push cannot land too early to be heard: a renderer holds the placeholder only if it asked before the constructor ran, and the preload subscribes to the push channel _before_ it asks.
+
+`init-order.scenario.ts` pins both down — a window opened before the SDK is ready, and an application that never initializes at all.
 
 **`''` is load-bearing, and is not the same as not implementing the getter.** The Browser SDK reads an empty answer as "the host has no session right now" and stops attributing data until the host answers with an id again; it only falls back to its own placeholder session id for a host too old to implement `getSessionId()` at all. That distinction is what keeps Session Replay off a fake session: the renderer uploads its segments itself instead of handing them to the main process, so nothing here can discard them after the fact, and a placeholder id is a constant every application built on this SDK would share. It also means the main process must never answer with the id an expired session used to have — that would attach segments to a session that has ended. `getActiveSessionId` in `src/index.ts` answers `''` for anything but an active session, and `bridge-window.scenario.ts` pins both the expiry and the renewal down.
 

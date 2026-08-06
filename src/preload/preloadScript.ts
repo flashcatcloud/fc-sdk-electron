@@ -9,8 +9,8 @@
  * guaranteed to be requireable, so pulling in anything else here would break at runtime.
  */
 import { contextBridge, ipcRenderer } from 'electron';
-import { BRIDGE_CHANNEL, CONFIG_CHANNEL, IDENTITY_CHANNEL } from '../common';
-import type { BridgeConfig, IdentityUpdate } from '../common';
+import { BRIDGE_CHANNEL, CONFIG_CHANNEL, CONFIG_PUSH_CHANNEL } from '../common';
+import type { BridgeConfig } from '../common';
 
 // Renderer globals. The package is compiled without the DOM lib, so they are declared locally.
 declare const window: Record<string, unknown>;
@@ -31,25 +31,38 @@ const BRIDGE_INITIALIZED = '__dd_bridge_initialized';
 if (!window[BRIDGE_INITIALIZED]) {
   window[BRIDGE_INITIALIZED] = true;
 
+  let defaultPrivacyLevel: string = MASK;
+  let allowedHosts: string[] = [location.hostname];
+  let anonymousId = '';
   let sessionId = '';
-  let sessionIdPushed = false;
+  let configPushed = false;
 
-  // Subscribe before asking for the configuration: the main process can renew the session at any
-  // moment, and a pushed value must never be overwritten by the older one the config carries.
-  ipcRenderer.on(IDENTITY_CHANNEL, (_event, update: IdentityUpdate | undefined) => {
-    sessionIdPushed = true;
-    sessionId = update?.sessionId ?? '';
+  const apply = (config: BridgeConfig | undefined): void => {
+    defaultPrivacyLevel = config?.defaultPrivacyLevel ?? MASK;
+    anonymousId = config?.anonymousId ?? '';
+    sessionId = config?.sessionId ?? '';
+    // The renderer's own host is always allowed; the configured ones are additions to it.
+    allowedHosts = [...new Set([location.hostname, ...(config?.allowedWebViewHosts ?? [])])];
+  };
+
+  // Subscribe before asking, never after. Two things depend on this order:
+  //
+  // - The main process can push at any moment, and a pushed value must never be overwritten by the
+  //   older one the synchronous answer carries — hence `configPushed`.
+  // - It is what makes `BridgeHandler`'s catch-up push reliable. Getting the unconfigured
+  //   configuration back means the fallback listener answered, which means `BridgeHandler` did not
+  //   exist yet, which means its construction push is still to come — and this subscription is
+  //   already in place to receive it. Were the order reversed, that push could land in the gap.
+  ipcRenderer.on(CONFIG_PUSH_CHANNEL, (_event, config: BridgeConfig | undefined) => {
+    configPushed = true;
+    apply(config);
   });
 
   const config = ipcRenderer.sendSync(CONFIG_CHANNEL) as BridgeConfig | undefined;
 
-  if (!sessionIdPushed) {
-    sessionId = config?.sessionId ?? '';
+  if (!configPushed) {
+    apply(config);
   }
-
-  const defaultPrivacyLevel: string = config?.defaultPrivacyLevel ?? MASK;
-  const anonymousId = config?.anonymousId ?? '';
-  const allowedHosts = [...new Set([location.hostname, ...(config?.allowedWebViewHosts ?? [])])];
 
   const bridge = {
     /**
@@ -67,8 +80,8 @@ if (!window[BRIDGE_INITIALIZED]) {
     },
     /**
      * Id of the session the main process considers active, or `''` when none is. Answered from a
-     * cache kept up to date by {@link IDENTITY_CHANNEL} pushes, so it stays correct across session
-     * expiry and renewal without a synchronous IPC call per read.
+     * cache kept up to date by {@link CONFIG_PUSH_CHANNEL} pushes, so it stays correct across
+     * session expiry and renewal without a synchronous IPC call per read.
      */
     getSessionId() {
       return sessionId;
