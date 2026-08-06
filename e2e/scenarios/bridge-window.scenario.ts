@@ -164,6 +164,21 @@ test.describe('bridge window — identifiers', () => {
   });
 });
 
+test.describe('bridge window — session expiry', () => {
+  test('an expired session is reported to renderers as no session at all', async ({ electronApp, mainPage }) => {
+    const bridgeWindowPage = await mainPage.openBridgeFileWindow(electronApp);
+    expect(await bridgeWindowPage.getSessionId()).toMatch(UUID_PATTERN);
+
+    await mainPage.stopSession();
+
+    // An empty answer, never the id the session had a moment ago. The renderer's Browser SDK reads
+    // it as "the host has no session right now" and stops attributing data — Session Replay
+    // segments in particular, which it uploads itself rather than handing to the main process, so
+    // nothing here could discard them after the fact.
+    await expect.poll(() => bridgeWindowPage.getSessionId()).toBe('');
+  });
+});
+
 test.describe('bridge window — session renewal', () => {
   // Renewal is driven by a real click in the main window, which only becomes an end-user activity
   // once browser-rum runs there.
