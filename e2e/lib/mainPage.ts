@@ -1,5 +1,5 @@
 import type { ElectronApplication, Page } from '@playwright/test';
-import type { FailureReason, FeatureOperationOptions } from '@flashcatcloud/electron-sdk';
+import type { FailureReason, FeatureOperationOptions, User } from '@flashcatcloud/electron-sdk';
 import { BridgeWindowPage } from './bridgeWindowPage';
 
 // declare exposed IPC methods called directly in tests
@@ -7,6 +7,9 @@ interface ElectronAppWindow {
   electronAPI: {
     generateTelemetryErrors: (count: number) => Promise<void>;
     generateManualError: (startTime?: number) => Promise<void>;
+    setUser: (user: User) => Promise<void>;
+    getUser: () => Promise<User | undefined>;
+    clearUser: () => Promise<void>;
     startOperation: (name: string, options?: FeatureOperationOptions) => Promise<void>;
     succeedOperation: (name: string, options?: FeatureOperationOptions) => Promise<void>;
     failOperation: (name: string, failureReason: FailureReason, options?: FeatureOperationOptions) => Promise<void>;
@@ -71,6 +74,18 @@ export class MainPage {
       (ts) => (globalThis as unknown as ElectronAppWindow).electronAPI.generateManualError(ts),
       startTime
     );
+  }
+
+  async setUser(user: User) {
+    await this.page.evaluate((u) => (globalThis as unknown as ElectronAppWindow).electronAPI.setUser(u), user);
+  }
+
+  async getUser(): Promise<User | undefined> {
+    return this.page.evaluate(() => (globalThis as unknown as ElectronAppWindow).electronAPI.getUser());
+  }
+
+  async clearUser() {
+    await this.page.evaluate(() => (globalThis as unknown as ElectronAppWindow).electronAPI.clearUser());
   }
 
   async startOperation(name: string, options?: FeatureOperationOptions) {

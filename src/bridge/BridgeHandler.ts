@@ -6,6 +6,7 @@ import { monitor, addError as addTelemetryError } from '../domain/telemetry';
 import { BRIDGE_CHANNEL, CONFIG_CHANNEL, IDENTITY_CHANNEL } from '../common';
 import type { BridgeConfig, IdentityUpdate } from '../common';
 import type { RendererRegistry } from '../domain/RendererRegistry';
+import type { User } from '../domain/UserContext';
 import type { ViewTimingCorrector } from '../domain/ViewTimingCorrector';
 import type { StackPathNormalizer } from '../domain/StackPathNormalizer';
 
@@ -23,10 +24,10 @@ interface BridgedRumEvent {
 
 /**
  * The part of the bridge configuration that is fixed for the lifetime of the SDK — everything the
- * preload reads except the session id, which `buildConfig` adds as of the moment it is asked.
- * Derived from `BridgeConfig` so the two cannot drift as fields are added.
+ * preload reads except the session id and the user, which `buildConfig` adds as of the moment it
+ * is asked. Derived from `BridgeConfig` so the two cannot drift as fields are added.
  */
-export type BridgeOptions = Omit<BridgeConfig, 'sessionId'>;
+export type BridgeOptions = Omit<BridgeConfig, 'sessionId' | 'user'>;
 
 /**
  * Receives events from renderer processes via IPC and routes them through the
@@ -39,9 +40,13 @@ export type BridgeOptions = Omit<BridgeConfig, 'sessionId'>;
  * chain.
  *
  * It also answers the renderers' identity questions. `anonymousId` never changes, so the
- * synchronous config channel carries it once; `sessionId` does, so it is pushed to every renderer
- * known to have a bridge whenever it changes — asking for it synchronously per event would be far
- * too slow.
+ * synchronous config channel carries it once; `sessionId` and the `setUser` identity do, so they
+ * are pushed to every renderer known to have a bridge whenever they change — asking for them
+ * synchronously per event would be far too slow.
+ *
+ * The identity push is what renderers *read*; it is not how bridged renderer events get their
+ * identity. Those are stamped in `Assembly.assembleRendererRumEvent`, because the Browser SDK's
+ * bridge contract has no user getter yet and an event must not depend on one existing.
  */
 export class BridgeHandler {
   /** Renderers that asked for the configuration, and so hold a preload cache to keep up to date. */
@@ -51,6 +56,7 @@ export class BridgeHandler {
     private readonly eventManager: EventManager,
     private readonly bridgeOptions: BridgeOptions,
     private readonly getSessionId: () => string,
+    private readonly getUser: () => User | undefined,
     private readonly rendererRegistry: RendererRegistry,
     private readonly viewTimingCorrector: ViewTimingCorrector,
     private readonly stackPathNormalizer: StackPathNormalizer
@@ -73,7 +79,9 @@ export class BridgeHandler {
     this.eventManager.registerHandler<LifecycleEvent>({
       canHandle: (event): event is LifecycleEvent =>
         event.kind === EventKind.LIFECYCLE &&
-        (event.lifecycle === LifecycleKind.SESSION_RENEW || event.lifecycle === LifecycleKind.SESSION_EXPIRED),
+        (event.lifecycle === LifecycleKind.SESSION_RENEW ||
+          event.lifecycle === LifecycleKind.SESSION_EXPIRED ||
+          event.lifecycle === LifecycleKind.USER_CHANGED),
       handle: monitor(() => {
         this.pushIdentity();
       }),
@@ -139,7 +147,7 @@ export class BridgeHandler {
    * which carries structured-cloneable values only — a function would throw there.
    */
   private buildConfig(): BridgeConfig {
-    return { ...this.bridgeOptions, sessionId: this.getSessionId() };
+    return { ...this.bridgeOptions, sessionId: this.getSessionId(), user: this.getUser() };
   }
 
   private trackBridgedRenderer(sender: WebContents | undefined): void {
@@ -151,7 +159,7 @@ export class BridgeHandler {
   }
 
   private pushIdentity(): void {
-    const update: IdentityUpdate = { sessionId: this.getSessionId() };
+    const update: IdentityUpdate = { sessionId: this.getSessionId(), user: this.getUser() };
 
     for (const sender of this.bridgedRenderers) {
       if (sender.isDestroyed()) {

@@ -138,16 +138,20 @@ retry.
 
 ##### Identifiers the bridge answers
 
-`window.DatadogEventBridge` exposes the two identifiers the main process owns, so a renderer can
-attribute anything it uploads itself to the same session and device:
+`window.DatadogEventBridge` exposes the identifiers the main process owns, so a renderer can
+attribute anything it uploads itself to the same session, device and user:
 
 | Method             | Returns                                                                                               |
 | ------------------ | ----------------------------------------------------------------------------------------------------- |
 | `getSessionId()`   | Id of the session the main process considers active, or `''` while none is (expired, not renewed yet) |
 | `getAnonymousId()` | Device-scoped id, generated once and kept under `app.getPath('userData')` across restarts             |
+| `getUser()`        | Identity set through [`setUser`](#setuseruser-user-void) as JSON, or `'{}'` when nobody is logged in  |
 
-Both answer synchronously and without IPC: the anonymous id is delivered when the bridge is set up,
-and the main process pushes every session change to open renderers.
+All three answer synchronously and without IPC: the anonymous id is delivered when the bridge is set
+up, and the main process pushes every session and identity change to open renderers.
+
+Renderer events do not need `getUser()` — the main process stamps the identity on them as they pass
+through. It is there for what a renderer uploads itself, such as Session Replay segments.
 
 ##### How to find your events
 
@@ -332,6 +336,58 @@ try {
   addError(error, { context: { component: 'sync' } });
 }
 ```
+
+### `setUser(user: User): void`
+
+Identify the logged-in user. The identity is attached to every subsequent main-process event, and
+to the renderer events that reach the main process over the bridge.
+
+```ts
+import { setUser, getUser, clearUser } from '@flashcatcloud/electron-sdk';
+
+setUser({ id: 'user-123', name: 'Alice', email: 'alice@example.com' });
+
+// Later, when the user logs out:
+clearUser();
+```
+
+```ts
+interface User {
+  /** Required. */
+  id: string;
+  name?: string;
+  email?: string;
+}
+```
+
+`id` is required: a call without one is ignored with a warning, as is one whose `name` or `email` is
+not a string — a half-applied identity is harder to notice than none at all. Only `id`, `name` and
+`email` are read; any other property is dropped.
+
+This does **not** touch `usr.anonymous_id`. The two identifiers coexist by design: the anonymous id
+is device-scoped and stable across logins, and unique users are counted off it first. Before the
+first `setUser`, events carry `usr.anonymous_id` and no `usr.id` at all — the SDK never backfills
+one with the other.
+
+The name matches `flashcatRum.setUser()` in `@flashcatcloud/browser-rum`, so both processes of the
+same application use one vocabulary. When the main process has an identity, it takes precedence over
+one set in a renderer, and it **replaces** it rather than merging field by field — see
+`docs/ARCHITECTURE.md`. When it has none, renderer identities are left exactly as they arrive.
+
+### `getUser(): User | undefined`
+
+The identity currently set through `setUser`, or `undefined` when nobody is logged in. Returns a
+copy — mutating it changes nothing.
+
+### `clearUser(): void`
+
+Forget the identity, for instance on logout. Subsequent events carry no `usr.id` **at all**, rather
+than an empty one: unique users are counted off `NULLIF(usr_id, '')`, where an absent field and an
+empty string are different rows. `usr.anonymous_id` is unaffected — the device is still the same
+device.
+
+Events already reported keep the identity they were reported with, and events describing a moment
+before the logout still resolve to the user who was logged in then.
 
 ### `startOperation(name: string, options?: FeatureOperationOptions): void`
 

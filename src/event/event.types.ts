@@ -64,7 +64,13 @@ export interface SessionRenewEvent {
   lifecycle: typeof LifecycleKind.SESSION_RENEW;
 }
 
-export type LifecycleEvent = EndUserActivityEvent | SessionExpiredEvent | SessionRenewEvent;
+/** `setUser` or `clearUser` changed the identity, and renderers holding a cache have to be told. */
+export interface UserChangedEvent {
+  kind: typeof EventKind.LIFECYCLE;
+  lifecycle: typeof LifecycleKind.USER_CHANGED;
+}
+
+export type LifecycleEvent = EndUserActivityEvent | SessionExpiredEvent | SessionRenewEvent | UserChangedEvent;
 export type Event = RawEvent | ServerEvent | LifecycleEvent;
 
 export interface EventHandler<T extends Event> {

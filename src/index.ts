@@ -1,9 +1,11 @@
+import type { TimeStamp } from '@flashcatcloud/browser-core';
 import { Assembly, createFormatHooks, registerCommonContext } from './assembly';
 import type { InitConfiguration } from './config';
 import { buildConfiguration } from './config';
 import { RumCollection } from './domain/rum';
 import { SessionManager } from './domain/session';
 import { initAnonymousId } from './domain/AnonymousId';
+import { UserContext, type User } from './domain/UserContext';
 import { UserActivityTracker } from './domain/UserActivityTracker';
 import { RendererRegistry } from './domain/RendererRegistry';
 import { ViewTimingCorrector } from './domain/ViewTimingCorrector';
@@ -22,6 +24,7 @@ let eventManager: EventManager | undefined;
 let transport: Transport | undefined;
 let rumApi: ReturnType<RumCollection['getApi']> | undefined;
 let tracing: Tracing | undefined;
+let userContext: UserContext | undefined;
 
 /**
  * Initialize the Electron SDK
@@ -39,8 +42,14 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
   const hooks = createFormatHooks();
 
   const anonymousId = await initAnonymousId();
+  const context = await UserContext.init(eventManager);
+  userContext = context;
+  // Looked up per event by start time rather than captured: a native crash is assembled on the
+  // next startup carrying the crash's own timestamp, so "who is logged in now" is the wrong
+  // question to ask of it. See `UserContext`.
+  const getUserAt = (startTime: TimeStamp) => context.find(startTime);
 
-  registerCommonContext(config, hooks, anonymousId);
+  registerCommonContext(config, hooks, anonymousId, getUserAt);
   startTelemetry(eventManager, config);
   const manager = await SessionManager.start(eventManager, hooks);
   sessionManager = manager;
@@ -53,7 +62,7 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
     new WindowVisibilityTracker(rendererRegistry);
   }
 
-  new Assembly(eventManager, hooks);
+  new Assembly(eventManager, hooks, getUserAt);
   // Only the fields the renderer bridge reads: they are returned over a synchronous IPC channel,
   // which can carry structured-cloneable data only — a callback would throw there. The session id
   // is read through a getter rather than captured, because it changes as the session is renewed.
@@ -65,6 +74,7 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
       anonymousId,
     },
     () => getActiveSessionId(manager),
+    () => context.get(),
     rendererRegistry,
     new ViewTimingCorrector(rendererRegistry, config.correctPrewarmedViewTimings),
     stackPathNormalizer
@@ -96,6 +106,51 @@ function getActiveSessionId(manager: SessionManager): string {
  */
 export function stopSession(): void {
   callMonitored(() => sessionManager?.expire());
+}
+
+/**
+ * Identify the logged-in user. The identity is attached to every subsequent main-process event and
+ * to the renderer events that reach the main process over the bridge.
+ *
+ * An `id` is required; a call without one is ignored with a warning, as is one whose `name` or
+ * `email` is not a string — a half-applied identity is harder to notice than none at all. Only
+ * `id`, `name` and `email` are read; any other property is dropped.
+ *
+ * This does **not** touch `usr.anonymous_id`. The two identifiers coexist by design: the anonymous
+ * id is device-scoped and stable across logins, and unique users are counted off it first.
+ *
+ * The name matches `flashcatRum.setUser()` in `@flashcatcloud/browser-rum`, so both processes of
+ * the same application use one vocabulary.
+ *
+ * @example
+ * setUser({ id: 'user-123', name: 'Alice', email: 'alice@example.com' });
+ * // Later, when the user logs out:
+ * clearUser();
+ */
+export function setUser(user: User): void {
+  callMonitored(() => userContext?.set(user));
+}
+
+/**
+ * The identity currently set through {@link setUser}, or `undefined` when nobody is logged in.
+ * Returns a copy — mutating it changes nothing.
+ */
+export function getUser(): User | undefined {
+  return callMonitored(() => userContext?.get());
+}
+
+/**
+ * Forget the identity set through {@link setUser}, for instance on logout.
+ *
+ * Subsequent events carry no `usr.id` **at all**, rather than an empty one: unique users are
+ * counted off `NULLIF(usr_id, '')`, where an absent field and an empty string are different rows.
+ * Events already reported keep the identity they were reported with, and events describing a
+ * moment before the logout still resolve to the user who was logged in then.
+ *
+ * `usr.anonymous_id` is unaffected — the device is still the same device.
+ */
+export function clearUser(): void {
+  callMonitored(() => userContext?.clear());
 }
 
 /**
@@ -198,6 +253,7 @@ export function _generateTelemetryError() {
 }
 
 export type { InitConfiguration } from './config';
+export type { User } from './domain/UserContext';
 export type {
   FailureReason,
   FeatureOperationOptions,

@@ -1,4 +1,5 @@
 import type { DefaultPrivacyLevel } from '@flashcatcloud/browser-core';
+import type { User } from '../domain/UserContext';
 
 /**
  * Payload the main process returns over the synchronous {@link CONFIG_CHANNEL}.
@@ -14,10 +15,18 @@ export interface BridgeConfig {
   anonymousId: string;
   /** Id of the session active when the renderer asked, or `''` when no session is active. */
   sessionId: string;
+  /** Identity set through `setUser` in the main process, or `undefined` when nobody is logged in. */
+  user?: User;
 }
 
 /** Payload the main process pushes over {@link IDENTITY_CHANNEL} whenever an identifier changes. */
 export interface IdentityUpdate {
   /** Id of the session now active, or `''` when the session expired without a replacement yet. */
   sessionId: string;
+  /**
+   * Identity now in force, or `undefined` after `clearUser`. Absent and empty are distinct: the
+   * backend counts users off `NULLIF(usr_id, '')`, so a cleared identity has to remove the field
+   * rather than blank it.
+   */
+  user?: User;
 }

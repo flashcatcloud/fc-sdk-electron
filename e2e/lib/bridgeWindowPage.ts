@@ -6,6 +6,7 @@ interface BridgeWindow {
     getCapabilities: () => string;
     getSessionId: () => string;
     getAnonymousId: () => string;
+    getUser: () => string;
   };
 }
 
@@ -44,6 +45,11 @@ export class BridgeWindowPage {
 
   async getAnonymousId(): Promise<string> {
     return await this.page.evaluate(() => (globalThis as unknown as BridgeWindow).DatadogEventBridge.getAnonymousId());
+  }
+
+  /** The identity the main process set, as the bridge hands it over: JSON, `'{}'` when none. */
+  async getUser(): Promise<string> {
+    return await this.page.evaluate(() => (globalThis as unknown as BridgeWindow).DatadogEventBridge.getUser());
   }
 
   async getCapabilities(): Promise<string> {

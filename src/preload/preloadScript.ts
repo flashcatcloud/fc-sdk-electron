@@ -32,19 +32,23 @@ if (!window[BRIDGE_INITIALIZED]) {
   window[BRIDGE_INITIALIZED] = true;
 
   let sessionId = '';
-  let sessionIdPushed = false;
+  let user: BridgeConfig['user'];
+  let identityPushed = false;
 
-  // Subscribe before asking for the configuration: the main process can renew the session at any
-  // moment, and a pushed value must never be overwritten by the older one the config carries.
+  // Subscribe before asking for the configuration: the main process can renew the session or
+  // change the user at any moment, and a pushed value must never be overwritten by the older one
+  // the config carries. Both travel in the same update, so one flag covers them.
   ipcRenderer.on(IDENTITY_CHANNEL, (_event, update: IdentityUpdate | undefined) => {
-    sessionIdPushed = true;
+    identityPushed = true;
     sessionId = update?.sessionId ?? '';
+    user = update?.user;
   });
 
   const config = ipcRenderer.sendSync(CONFIG_CHANNEL) as BridgeConfig | undefined;
 
-  if (!sessionIdPushed) {
+  if (!identityPushed) {
     sessionId = config?.sessionId ?? '';
+    user = config?.user;
   }
 
   const defaultPrivacyLevel: string = config?.defaultPrivacyLevel ?? MASK;
@@ -76,6 +80,18 @@ if (!window[BRIDGE_INITIALIZED]) {
     /** Device-scoped identifier, stable across app restarts. */
     getAnonymousId() {
       return anonymousId;
+    },
+    /**
+     * Identity the main process set through `setUser`, as JSON, or `'{}'` when nobody is logged
+     * in. A JSON string rather than an object, to match `getCapabilities` and
+     * `getAllowedWebViewHosts` — the bridge only ever hands strings across.
+     *
+     * Kept up to date by {@link IDENTITY_CHANNEL} pushes, like the session id. Note that renderer
+     * events do not need this: the main process stamps the identity on them as they pass through.
+     * It is here so a renderer can attribute anything it uploads itself to the same user.
+     */
+    getUser() {
+      return user ? JSON.stringify(user) : '{}';
     },
     send(msg: string) {
       ipcRenderer.send(BRIDGE_CHANNEL, msg);
