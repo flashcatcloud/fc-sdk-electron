@@ -56,6 +56,15 @@ test('emits a crash error event after a native crash', async ({ intake }) => {
     expect(error.error.threads).toBeDefined();
     expect(error.error.binary_images).toBeDefined();
     expect(error.error.meta).toBeDefined();
+
+    // The exception type is the processor's name for the fault, e.g.
+    // `EXC_BAD_ACCESS / KERN_INVALID_ADDRESS` on macOS or `SIGSEGV` on Linux. `unknown 0x… / 0x…`
+    // is what it falls back to when the minidump carries no real exception record — which is a
+    // property of how the process died, not a gap in the SDK. `process.crash()` faults for real
+    // (it writes through a null pointer), so it must produce a named type here.
+    expect(error.error.type).toBeTruthy();
+    expect(error.error.type).not.toMatch(/^unknown 0x/);
+    expect(error.error.meta!.exception_codes).toMatch(/^0x[\da-f]{16}$/);
   } finally {
     await secondElectronApp.close();
     await cleanupUserDataDir(userDataDir);

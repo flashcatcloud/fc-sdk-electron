@@ -30,6 +30,8 @@ First FlashCat release. Forked from `@datadog/electron-sdk` v0.3.0 and rebranded
 
   > **Self-hosted deployments will see more `resource` events.** Application requests that share a host with the intake and differ only by port were being dropped and are now reported. This is data coming back, not new data.
 
+- Native crash reports now carry the faulting address in `error.meta.exception_codes`. The minidump processor had always resolved it and the SDK dropped it. It is often the only usable lead when the exception type has no name: a process killed from the outside produces a dump with no exception record, reported as `unknown 0x00000000 / 0x00000000`.
+
 ### ⚠️ Breaking Changes / Notes
 
 - Package renamed to `@flashcatcloud/electron-sdk` (internal `dd-`/`Datadog` names and the `DatadogEventBridge` global are kept per the fork convention).

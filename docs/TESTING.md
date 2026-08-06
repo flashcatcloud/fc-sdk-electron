@@ -77,6 +77,13 @@ event type, assert `intake.getProtocolViolations()` is empty.
   tests only. `render-process-gone` is covered by `process-gone.scenario.ts`.
 - **Native crash symbolication.** `crash.scenario.ts` asserts a raw minidump-derived stack; there is
   no desktop symbolicator route yet.
+- **Crashes the process does not cause itself.** `crash.scenario.ts` uses `process.crash()`, which
+  writes through a null pointer — a genuine fault, reported as
+  `EXC_BAD_ACCESS / KERN_INVALID_ADDRESS` on macOS. A process killed from the outside is a
+  different shape: on macOS, a signal delivered with `kill()` produces a minidump whose exception
+  record is all zeros, which the processor can only name `unknown 0x00000000 / 0x00000000`. Reach
+  for `error.meta.exception_codes` (the faulting address) when reading such a report — an
+  `unknown 0x…` type means the dump carried no exception, not that the SDK failed to name one.
 
 ## Integration Testing
 
