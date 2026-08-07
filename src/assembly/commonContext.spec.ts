@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Assembly } from './Assembly';
 import { createFormatHooks, type FormatHooks } from './hooks';
 import { registerCommonContext } from './commonContext';
@@ -14,6 +14,13 @@ import {
 import type { RumEvent, RawRumData } from '../domain/rum';
 import type { User } from '../domain/UserContext';
 import { createTestConfiguration } from '../mocks.specUtil';
+
+// `commonContext` and `Assembly` reach `UserContext` for the identity in force, and it imports
+// `electron` at module load for the path its history file lives at. Nothing here touches that
+// history, but the import alone needs an Electron install these tests do not have.
+vi.mock('electron', () => ({
+  app: { getPath: vi.fn(() => '/mock/user-data') },
+}));
 
 const ANONYMOUS_ID = 'device-anonymous-id';
 const ALICE: User = { id: 'alice', name: 'Alice', email: 'alice@example.com' };
