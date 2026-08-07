@@ -2,6 +2,32 @@
 
 All notable changes to `@flashcatcloud/electron-sdk` are documented here.
 
+## [0.2.0]
+
+### 🐛 Bug Fixes
+
+- A renderer no longer hangs when it starts before the SDK is ready. The bridge preload asks the main process for its configuration over a **synchronous** channel, and Electron leaves a synchronous request that no listener answers blocked forever — registering one afterwards does not release it. The window never ran a line of the page: blank, unresponsive, for the rest of its life.
+
+  > **This affects 0.1.0 as well**, through the preload dd-trace ships. It is reachable four ways, and the last two need no mistake in ordering at all: a window created without awaiting `init()`, a window created while `init()` is still running, **`init()` returning `false` because it rejected the configuration** — a mistyped `clientToken` was enough to hang every window in the application — and **`init()` never being called**.
+
+  A fallback listener now answers from the moment a preload can run, so nothing can ask before something can answer, and `BridgeHandler` supersedes it and pushes the real configuration to renderers that got the placeholder.
+
+- A session that timed out can be renewed again. Renewal ran on click actions forwarded over the bridge, which made it depend on the Browser SDK still collecting — and from `@flashcatcloud/browser-rum` 0.0.7 the Browser SDK stops collecting while the host reports no session. The host waited for a click to renew; the renderer would not report the click because the host had no session. The application went quiet until it was restarted.
+
+  Renewal now reads input from `webContents` directly, so it does not depend on what a renderer reports. It is wider than what it replaces: keyboard counts, windows that never loaded the Browser SDK count, and it no longer quietly requires `trackUserInteractions` — **with that option off, a session could not be renewed at all**, in 0.1.0 too.
+
+- Main-process HTTP calls no longer lose their `resource` events to a sibling request that never returns. dd-trace only exported a trace once every span in it had finished, so one hung request withheld the resource events of every other request made from the same `ipcMain.handle` invocation, for the rest of the process' life. Spans are now exported as they finish (`flushMinSpans: 1`).
+
+- The SDK's own uploads are now excluded from tracing by **origin** — scheme, host and port — and at the instrumentation layer, so they never produce a span in the first place. The previous exclusion compared hostnames only and was wrong in both directions: with a `proxy` set, it dropped every application request sharing the proxy's host, whatever its port; and when `site` carried a port of its own (`rum.example.internal:8443`), it matched nothing at all, so the SDK reported its own uploads as resources — which produced more uploads.
+
+  > **Self-hosted deployments will see more `resource` events.** Application requests that share a host with the intake and differ only by port were being dropped and are now reported. This is data coming back, not new data.
+
+- Native crash reports now carry the faulting address in `error.meta.exception_codes`. The minidump processor had always resolved it and the SDK dropped it. It is often the only usable lead when the exception type has no name: a process killed from the outside produces a dump with no exception record, reported as `unknown 0x00000000 / 0x00000000`.
+
+### ⚠️ Breaking Changes / Notes
+
+- The renderer's `@flashcatcloud/browser-rum` must be **0.0.7 or newer**. `sessionReplayDirectUpload` landed there, and the Browser SDK drops options it does not recognise — on anything earlier Session Replay records nothing and reports no reason for it.
+
 ## [0.1.0]
 
 First FlashCat release. Forked from `@datadog/electron-sdk` v0.3.0 and rebranded to report to the FlashCat platform.
@@ -27,16 +53,6 @@ First FlashCat release. Forked from `@datadog/electron-sdk` v0.3.0 and rebranded
   `usr.anonymous_id` is untouched by all three, and `usr.id` is still never backfilled with it: the two coexist so unique users can be counted off `COALESCE(NULLIF(usr_anonymous_id, ''), NULLIF(usr_id, ''))` across a login. `clearUser` removes `usr.id` rather than blanking it, since `NULLIF(usr_id, '')` distinguishes an absent field from an empty string.
 
   An identity set in the main process takes precedence over one set in a renderer, and replaces it wholesale rather than merging field by field — a merge could emit one person's id beside another's email. Applications that only call `flashcatRum.setUser()` in their renderers are unaffected.
-
-### 🐛 Bug Fixes
-
-- Main-process HTTP calls no longer lose their `resource` events to a sibling request that never returns. dd-trace only exported a trace once every span in it had finished, so one hung request withheld the resource events of every other request made from the same `ipcMain.handle` invocation, for the rest of the process' life. Spans are now exported as they finish (`flushMinSpans: 1`).
-
-- The SDK's own uploads are now excluded from tracing by **origin** — scheme, host and port — and at the instrumentation layer, so they never produce a span in the first place. The previous exclusion compared hostnames only and was wrong in both directions: with a `proxy` set, it dropped every application request sharing the proxy's host, whatever its port; and when `site` carried a port of its own (`rum.example.internal:8443`), it matched nothing at all, so the SDK reported its own uploads as resources — which produced more uploads.
-
-  > **Self-hosted deployments will see more `resource` events.** Application requests that share a host with the intake and differ only by port were being dropped and are now reported. This is data coming back, not new data.
-
-- Native crash reports now carry the faulting address in `error.meta.exception_codes`. The minidump processor had always resolved it and the SDK dropped it. It is often the only usable lead when the exception type has no name: a process killed from the outside produces a dump with no exception record, reported as `unknown 0x00000000 / 0x00000000`.
 
 ### ⚠️ Breaking Changes / Notes
 
