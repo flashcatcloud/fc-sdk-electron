@@ -2,31 +2,27 @@ import type { DefaultPrivacyLevel } from '@flashcatcloud/browser-core';
 import type { User } from '../domain/UserContext';
 
 /**
- * Payload the main process returns over the synchronous {@link CONFIG_CHANNEL}.
+ * Everything the preload needs to answer the Browser SDK's bridge calls.
  *
- * Everything here crosses a synchronous IPC boundary, so it must stay structured-cloneable: plain
- * data only, never a function. Anything that can change while the app runs is pushed afterwards
- * over {@link IDENTITY_CHANNEL} instead — the values below are only the starting point.
+ * Carried by both bridge configuration channels: {@link CONFIG_CHANNEL} answers the preload's
+ * initial request with it, and {@link CONFIG_PUSH_CHANNEL} replaces it wholesale whenever it goes
+ * stale. One payload for both directions is deliberate — a partial update would leave the preload
+ * having to merge, and the fields do not change independently enough to be worth it.
+ *
+ * It crosses a synchronous IPC boundary, so it must stay structured-cloneable: plain data only,
+ * never a function.
  */
 export interface BridgeConfig {
   defaultPrivacyLevel: DefaultPrivacyLevel;
   allowedWebViewHosts: string[];
-  /** Device-scoped identifier, stable across app restarts. */
+  /** Device-scoped identifier, stable across app restarts. `''` before the SDK is initialized. */
   anonymousId: string;
-  /** Id of the session active when the renderer asked, or `''` when no session is active. */
-  sessionId: string;
-  /** Identity set through `setUser` in the main process, or `undefined` when nobody is logged in. */
-  user?: User;
-}
-
-/** Payload the main process pushes over {@link IDENTITY_CHANNEL} whenever an identifier changes. */
-export interface IdentityUpdate {
-  /** Id of the session now active, or `''` when the session expired without a replacement yet. */
+  /** Id of the active session, or `''` when none is — before initialization, or after expiry. */
   sessionId: string;
   /**
-   * Identity now in force, or `undefined` after `clearUser`. Absent and empty are distinct: the
-   * backend counts users off `NULLIF(usr_id, '')`, so a cleared identity has to remove the field
-   * rather than blank it.
+   * Identity set through `setUser`, or `undefined` when nobody is logged in. Absent and empty are
+   * distinct: the backend counts users off `NULLIF(usr_id, '')`, so `clearUser` has to remove the
+   * field rather than blank it.
    */
   user?: User;
 }

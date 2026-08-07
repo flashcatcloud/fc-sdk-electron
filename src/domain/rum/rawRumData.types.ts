@@ -35,6 +35,8 @@ export interface RawRumError extends RecursivePartial<RumErrorEvent> {
       code_type?: string;
       process?: string;
       exception_type?: string;
+      /** Faulting address of a native crash, as a 64-bit hexadecimal string. */
+      exception_codes?: string;
       path?: string;
       /** Electron exit reason of a terminated renderer / child process. */
       exit_reason?: string;

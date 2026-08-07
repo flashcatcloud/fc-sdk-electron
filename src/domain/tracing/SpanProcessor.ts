@@ -3,7 +3,7 @@ import * as DiagnosticsChannel from 'node:diagnostics_channel';
 import { type FormatHooks } from '../../assembly';
 import { type Configuration } from '../../config';
 import { EventFormat, EventKind, EventManager, EventSource, EventTrack } from '../../event';
-import { computeIntakeHostname } from '../../transport';
+import { computeIntakeOrigin } from '../../transport';
 import { RawRumResource } from '../rum';
 import { monitor } from '../telemetry';
 import { NsTimeStamp, RawSpanData, RawTraceData } from './rawTracingData.types';
@@ -40,7 +40,7 @@ const DD_TRACE_SPAN_CHANNEL = 'datadog:apm:electron:export';
 export class SpanProcessor {
   private channel: DiagnosticsChannel.Channel;
   private onMessage: (message: unknown) => void;
-  private intakeHostname: string;
+  private intakeOrigin: string | undefined;
   private env: string;
   private service: string;
 
@@ -51,7 +51,7 @@ export class SpanProcessor {
   ) {
     this.env = config.env ?? '';
     this.service = config.service;
-    this.intakeHostname = computeIntakeHostname(config.site, config.proxy);
+    this.intakeOrigin = computeIntakeOrigin(config.site, config.proxy);
     this.channel = DiagnosticsChannel.channel(DD_TRACE_SPAN_CHANNEL);
 
     this.onMessage = monitor((message: unknown) => {
@@ -88,14 +88,20 @@ export class SpanProcessor {
     this.emitServerSpansEvent(processedTrace);
   }
 
+  /**
+   * Second line of defense against the SDK reporting its own uploads. `Tracing` keeps them from
+   * being instrumented in the first place; this catches anything that produced a span anyway.
+   *
+   * Compares origins, port included: a hostname comparison drops the application's own traffic
+   * whenever the intake shares a host with it, which is the normal shape of a self-hosted
+   * deployment. There is deliberately no match on `span.resource` — dd-trace sets it to the HTTP
+   * method (`GET`, `POST`) for client spans, so it never carries a host to match on.
+   */
   private isIntakeRequest(span: ExportedSpan): boolean {
-    if (span.resource?.includes(this.intakeHostname)) {
-      return true;
-    }
     const url = span.meta['http.url'];
-    if (!url) return false;
+    if (!url || this.intakeOrigin === undefined) return false;
     try {
-      return new URL(url).hostname === this.intakeHostname;
+      return new URL(url).origin === this.intakeOrigin;
     } catch {
       return false;
     }

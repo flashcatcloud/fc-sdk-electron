@@ -30,6 +30,17 @@ try {
   tracer.init({
     // TODO: remove cast when dd-trace releases a fix
     experimental: { exporter: 'electron' as 'datadog' },
+    // Export each span as soon as it finishes instead of holding it until every span of its trace
+    // has. dd-trace's default is 1000 finished spans, which a desktop app never reaches, so in
+    // practice a trace was only ever exported once complete — and the SDK derives RUM resource
+    // events from exported spans. One request that never comes back (a hung endpoint, a socket
+    // that stays open) therefore withheld the resource events of every other request made from the
+    // same IPC handler, for as long as the process lived.
+    //
+    // Partial flushing is safe here because a resource event is attributed from its own span's
+    // start time, not from the trace's: exporting earlier changes when the event is produced, not
+    // which view it lands in.
+    flushMinSpans: 1,
   });
 } catch {
   console.warn('[datadog] dd-trace not found — monitoring will not work');

@@ -162,9 +162,11 @@ This entry point initializes dd-trace with the `electron` exporter and silently 
 
 ### How tracing works
 
+The SDK's own uploads are kept out of the data it collects at the **instrumentation** layer: `Tracing` passes dd-trace a `blocklist` matching the intake origin, and every path that produces an outbound HTTP span (`node:http`/`https`, global `fetch`, Electron `net.request`) derives from `HttpClientPlugin`, which applies it before recording. A blocked request produces no span at all, so it cannot become a resource event and generate the next upload. The origin comparison includes the **port**, which is what makes it correct when the intake shares a host with the application's own services.
+
 dd-trace's `electron` exporter publishes normalized spans to a Node.js diagnostics channel (`datadog:apm:electron:export`) instead of sending them to a local Datadog Agent. The `SpanProcessor` subscribes to this channel and:
 
-1. **Filters** SDK-internal requests (intake/proxy) to prevent self-reporting loops
+1. **Filters** SDK-internal requests, as a second line of defense behind the blocklist above
 2. **Enriches** all spans with electron context (application, session, view)
 3. **Emits** RUM resource events for HTTP spans
 4. **Forwards** all spans to the spans intake grouped per trace
@@ -183,6 +185,8 @@ HTTP spans → Assembly → Transport → /api/v2/rum (as RUM resources)
 ```
 
 All spans are enriched with electron context (`_dd.application.id`, `_dd.session.id`, `_dd.view.id`) via the span assembly hook. Trace and span IDs are converted to **hexadecimal strings** for the spans intake.
+
+The instrument entry point sets `flushMinSpans: 1`, so a span reaches the exporter as soon as it finishes. dd-trace otherwise only exports a trace once every span in it has finished (its default partial-flush threshold, 1000 finished spans, is out of reach for a desktop app), which let one request that never returns withhold the resource events of every sibling request in the same IPC handler. Attribution is unaffected: a resource event is placed by its own span's start time, not the trace's.
 
 ### Preload injection
 
@@ -230,13 +234,25 @@ Persistence has a consequence worth knowing: the identity is written to `userDat
 
 The renderer needs the main process's session id to attribute anything it uploads itself, and the same device id so both halves of a session count as one user. Both are answered synchronously by the bridge:
 
-- `getAnonymousId()` — the id above. It never changes, so the synchronous config channel carries it once.
-- `getSessionId()` — the session the main process considers active, or `''` while none is. Sessions expire and renew, so the main process **pushes** every change over `datadog:bridge-identity` to the renderers that asked for a configuration; the preload caches the value and answers from the cache. A synchronous IPC call per event would be far too slow.
-- `getUser()` — the identity set through `setUser`, as JSON, or `'{}'` when nobody is logged in. A string rather than an object, matching `getCapabilities` and `getAllowedWebViewHosts`; it rides the same identity channel and the same preload cache as the session id.
+- `getAnonymousId()` — the id above. It never changes once the SDK is initialized.
+- `getSessionId()` — the session the main process considers active, or `''` while none is. Sessions expire and renew, so the main process **pushes** a fresh configuration over `datadog:bridge-config-push` on every change; the preload caches it and answers from the cache. A synchronous IPC call per event would be far too slow.
+
+- `getUser()` — the identity set through `setUser`, as JSON, or `'{}'` when nobody is logged in. A string rather than an object, matching `getCapabilities` and `getAllowedWebViewHosts`; it rides the same configuration push and the same preload cache as the session id.
 
 **The bridge getter is not how bridged renderer events get their identity.** The Browser SDK's bridge contract has no user getter, so nothing would read it today; `Assembly.assembleRendererRumEvent` stamps the identity on renderer events as they pass through the main process instead, which needs no Browser SDK change. The getter is there so a renderer can attribute what it uploads _itself_ — Session Replay segments — to the same person, and is what a future Browser SDK would consume.
 
 **The main process wins, and it replaces rather than merges.** `combine` merges per key and skips `undefined`, so merging a main-process `{ id, name }` over a renderer's `{ id, name, email }` would emit one person's id and name beside another's email — an identity belonging to nobody, and worse than either source alone. The deciding reason for main-process precedence is `clearUser()`: if a stale renderer-side identity could survive it, logging out would leave the user's name and email on everything that window kept reporting, so a logout has to be enforceable from one place. `usr.anonymous_id` is carried across the replacement untouched, and when no user is set nothing is touched at all — an application that only calls `flashcatRum.setUser()` in its renderers keeps the behaviour it had.
+
+#### The renderer must never be able to outrun `init()`
+
+The preload asks for its configuration over a **synchronous** channel, and Electron leaves a synchronous request that no `ipcMain` listener answers blocked forever — registering one afterwards does not release it. A renderer that starts before `BridgeHandler` exists would therefore hang before running a line of the page: a monitoring SDK bricking the application it monitors. `init()` is `async` and can be skipped entirely (it returns `false` on a configuration it rejects), so "the application initializes first" cannot be the thing that prevents this.
+
+Two pieces close it, and the order between them is what makes it work:
+
+- `installBridgePreload` registers a **fallback listener** on `datadog:bridge-config` before it registers any preload, answering with an unconfigured placeholder — no session, no device id, `mask` privacy. Nothing can ask before something can answer. `BridgeHandler` then _supersedes_ it (`removeAllListeners` first), because Electron answers a synchronous request with the **first** `returnValue` set, not the last.
+- `BridgeHandler` **pushes once on construction**, catching up renderers that hold the placeholder. That push cannot land too early to be heard: a renderer holds the placeholder only if it asked before the constructor ran, and the preload subscribes to the push channel _before_ it asks.
+
+`init-order.scenario.ts` pins both down — a window opened before the SDK is ready, and an application that never initializes at all.
 
 **`''` is load-bearing, and is not the same as not implementing the getter.** The Browser SDK reads an empty answer as "the host has no session right now" and stops attributing data until the host answers with an id again; it only falls back to its own placeholder session id for a host too old to implement `getSessionId()` at all. That distinction is what keeps Session Replay off a fake session: the renderer uploads its segments itself instead of handing them to the main process, so nothing here can discard them after the fact, and a placeholder id is a constant every application built on this SDK would share. It also means the main process must never answer with the id an expired session used to have — that would attach segments to a session that has ended. `getActiveSessionId` in `src/index.ts` answers `''` for anything but an active session, and `bridge-window.scenario.ts` pins both the expiry and the renewal down.
 

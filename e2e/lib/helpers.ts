@@ -90,12 +90,16 @@ export const test = base.extend<TestFixtures>({
   rumBrowserSdk: [null, { option: true }],
 });
 
+/** How the test app sequences `init()` against window creation. See `getInitMode` in its main.ts. */
+export type InitMode = 'await' | 'race' | 'skip';
+
 async function launchApp(
   intake: Intake,
   userDataDir: string,
-  rumBrowserSdk: Record<string, unknown> | null = null
+  rumBrowserSdk: Record<string, unknown> | null = null,
+  initMode: InitMode = 'await'
 ): Promise<ElectronApplication> {
-  const env: Record<string, string> = {};
+  const env: Record<string, string> = { FC_ELECTRON_SDK_INIT_MODE: initMode };
   for (const key of HOST_ENV_ALLOWLIST) {
     const value = process.env[key];
     if (value !== undefined) {
@@ -106,8 +110,13 @@ async function launchApp(
   const electronSdkConfig: InitConfiguration = {
     // `site` is deliberately omitted: it is optional and resolves to DEFAULT_SITE. Leaving it out
     // keeps the default-resolution path under test. It is unused here anyway — `proxy` decides
-    // both the upload URL and the hostname SpanProcessor filters its own intake traffic on.
-    proxy: `http://localhost:${intake.getPort()}`,
+    // both the upload URL and the origin the SDK excludes its own intake traffic on.
+    //
+    // The host has to be written the same way `TestServer` writes it. Pointing the intake at
+    // `localhost` while the test server answered on `127.0.0.1` made the two look like different
+    // hosts, which is what let a host-only exclusion pass every scenario in this suite while it
+    // dropped application traffic in any deployment where the intake shares a host with it.
+    proxy: `http://127.0.0.1:${intake.getPort()}`,
     clientToken: 'test-client-token',
     service: 'e2e-test-app',
     applicationId: 'e2e-test-app-id',
@@ -148,9 +157,10 @@ async function waitForWindowLoaded(electronApp: ElectronApplication): Promise<{ 
 
 export async function launchAppManually(
   intake: Intake,
-  userDataDir: string
+  userDataDir: string,
+  initMode: InitMode = 'await'
 ): Promise<{ electronApp: ElectronApplication; window: Page; mainPage: MainPage }> {
-  const electronApp = await launchApp(intake, userDataDir);
+  const electronApp = await launchApp(intake, userDataDir, null, initMode);
   const { window } = await waitForWindowLoaded(electronApp);
   return { electronApp, window, mainPage: new MainPage(window) };
 }

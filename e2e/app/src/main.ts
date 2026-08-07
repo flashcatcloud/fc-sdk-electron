@@ -68,9 +68,25 @@ function startRendererHttpServer(): Promise<number> {
 
 void app.whenReady().then(async () => {
   const config = getConfiguration();
-  console.log('Initializing SDK with config:', config);
-  const initialized = await init(config);
-  console.log('SDK initialized:', initialized);
+  const initMode = getInitMode();
+  console.log('Initializing SDK with config:', config, 'mode:', initMode);
+
+  // `race` and `skip` reproduce applications that get the initialization order wrong: the window is
+  // opened before the SDK is ready, or `init()` never runs at all. The bridge preload asks the main
+  // process for its configuration over a *synchronous* IPC channel, so in both cases it asks before
+  // `BridgeHandler` exists — and Electron leaves a synchronous request that nobody answers blocked
+  // for good. Either mode must still produce a window that loads.
+  if (initMode === 'race') {
+    // Waiting for the window to finish loading is what makes this deterministic rather than a
+    // genuine race: the preload has certainly run, and been answered by the fallback listener, by
+    // the time `init()` starts. Only the catch-up push can give that window its identifiers.
+    createWindow();
+    await new Promise<void>((resolve) => mainWindow!.webContents.once('did-finish-load', () => resolve()));
+  }
+
+  if (initMode !== 'skip') {
+    console.log('SDK initialized:', await init(config));
+  }
 
   ipcMain.handle('generateTelemetryErrors', (_event, count: number) => {
     for (let i = 0; i < count; i++) {
@@ -122,6 +138,20 @@ void app.whenReady().then(async () => {
   );
 
   ipcMain.handle('mainFetch', async (_event, url: string) => {
+    const res = await fetch(url);
+    await res.text();
+    return res.status;
+  });
+
+  /**
+   * Two requests in one IPC handler, one of which never comes back.
+   *
+   * dd-trace groups both under the handler's span, and a trace is only exported once every span in
+   * it is finished — unless partial flushing is on. This is the shape that used to take the
+   * completed request's resource event down with the pending one.
+   */
+  ipcMain.handle('mainFetchWithPendingSibling', async (_event, url: string, pendingUrl: string) => {
+    void fetch(pendingUrl).catch(noop);
     const res = await fetch(url);
     await res.text();
     return res.status;
@@ -220,7 +250,9 @@ void app.whenReady().then(async () => {
     process.kill(pid, 'SIGKILL');
   });
 
-  createWindow();
+  if (initMode !== 'race') {
+    createWindow();
+  }
 });
 
 app.on('window-all-closed', () => {
@@ -248,6 +280,20 @@ function createWindow() {
   });
 
   void mainWindow.loadFile(join(__dirname, 'main-window.html'));
+}
+
+/**
+ * How the app sequences `init()` against window creation:
+ * - `await` (default): the documented order — initialize fully, then create windows.
+ * - `race`: create the window without waiting for `init()` to resolve.
+ * - `skip`: never call `init()`, as when its configuration is rejected or the call is forgotten.
+ */
+function getInitMode(): 'await' | 'race' | 'skip' {
+  const mode = process.env.FC_ELECTRON_SDK_INIT_MODE ?? 'await';
+  if (mode !== 'await' && mode !== 'race' && mode !== 'skip') {
+    throw new Error(`Unknown FC_ELECTRON_SDK_INIT_MODE: ${mode}`);
+  }
+  return mode;
 }
 
 function getConfiguration(): InitConfiguration {

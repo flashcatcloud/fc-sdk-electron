@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PreloadScriptRegistration, Session } from 'electron';
+import { CONFIG_CHANNEL } from '../common';
 import type { PreloadInjectionHost } from './preloadInjection';
 
 vi.mock('../tools/display', () => ({
@@ -33,12 +34,15 @@ interface FakeHost {
   defaultSession: FakeSession;
   createSession: () => FakeSession;
   emitReady: () => void;
+  /** Replays a preload's synchronous configuration request, and returns what it got back. */
+  requestConfig: (channel: string) => unknown;
 }
 
 function createHost({ readyUpfront = false } = {}): FakeHost {
   const defaultSession = createSession();
   const sessionListeners: ((session: Session) => void)[] = [];
   const readyListeners: (() => void)[] = [];
+  const ipcListeners = new Map<string, (event: { returnValue?: unknown }) => void>();
 
   return {
     host: {
@@ -48,8 +52,16 @@ function createHost({ readyUpfront = false } = {}): FakeHost {
         once: (_event, listener) => readyListeners.push(listener),
       },
       session: { defaultSession: defaultSession.session },
+      ipcMain: {
+        on: (channel, listener) => ipcListeners.set(channel, listener as (event: { returnValue?: unknown }) => void),
+      },
     },
     defaultSession,
+    requestConfig: (channel: string) => {
+      const ipcEvent: { returnValue?: unknown } = {};
+      ipcListeners.get(channel)?.(ipcEvent);
+      return ipcEvent.returnValue;
+    },
     createSession: () => {
       const created = createSession();
       for (const listener of sessionListeners) {
@@ -181,5 +193,53 @@ describe('installBridgePreload', () => {
     emitReady();
 
     expect(defaultSession.registered).toEqual([]);
+  });
+
+  /**
+   * Electron answers a synchronous request only if a listener is registered when it is made, and
+   * blocks the renderer for good when none is — registering one afterwards does not release it. So
+   * a preload must never be able to run before something can answer, whatever `init()` is doing.
+   */
+  describe('fallback configuration listener', () => {
+    it('should answer the configuration channel from the moment the preload is registered', async () => {
+      const { host, requestConfig } = createHost({ readyUpfront: true });
+
+      await install(host);
+
+      expect(requestConfig(CONFIG_CHANNEL)).toEqual({
+        defaultPrivacyLevel: 'mask',
+        allowedWebViewHosts: [],
+        anonymousId: '',
+        sessionId: '',
+      });
+    });
+
+    it('should be listening before the app is ready, ahead of any window', async () => {
+      const { host, requestConfig } = createHost();
+
+      await install(host);
+
+      expect(requestConfig(CONFIG_CHANNEL)).toBeDefined();
+    });
+
+    it('should answer with plain data — the channel is synchronous, so it is structured-cloned', async () => {
+      const { host, requestConfig } = createHost({ readyUpfront: true });
+
+      await install(host);
+
+      expect(() => structuredClone(requestConfig(CONFIG_CHANNEL))).not.toThrow();
+    });
+
+    it('should not register when the preload script cannot be located', async () => {
+      const { host, requestConfig } = createHost({ readyUpfront: true });
+
+      vi.resetModules();
+      const { installBridgePreload } = await import('./preloadInjection');
+      installBridgePreload(host, () => undefined);
+
+      // No preload means nothing will ever ask, and an unused listener would only be able to
+      // shadow the real one that `BridgeHandler` registers.
+      expect(requestConfig(CONFIG_CHANNEL)).toBeUndefined();
+    });
   });
 });

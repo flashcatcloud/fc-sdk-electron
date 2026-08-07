@@ -583,6 +583,26 @@ describe('CrashCollection', () => {
       code_type: 'amd64',
       process: 'TestApp',
       exception_type: 'SIGSEGV',
+      exception_codes: '0x0000000000000000',
     });
+  });
+
+  /**
+   * The processor reports the faulting address and it used to be dropped here. It is often the
+   * only usable lead: a minidump written without a real exception record names its type
+   * `unknown 0x00000000 / 0x00000000` while still recording where the process faulted.
+   */
+  it('reports the faulting address as a 64-bit exception code', async () => {
+    mockDmpFile();
+    vi.mocked(processMinidump).mockResolvedValue(
+      createMinidumpResult({
+        crash_info: { type: 'EXC_BAD_ACCESS / KERN_INVALID_ADDRESS', address: '0x7fff6f41333a', crashing_thread: 0 },
+      })
+    );
+
+    await startAndFlush(eventManager);
+
+    const data = rawRumEvents[0].data as RawRumError;
+    expect(data.error.meta!.exception_codes).toBe('0x00007fff6f41333a');
   });
 });
