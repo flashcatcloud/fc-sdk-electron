@@ -11,7 +11,7 @@
     "build:bridge-window": "esbuild src/bridge-window.ts --bundle --format=esm --outfile=dist/bridge-window.js --sourcemap && cp src/bridge-window.html dist/"
   },
   "dependencies": {
-    "@flashcatcloud/browser-rum": "0.0.6",
+    "@flashcatcloud/browser-rum": "0.0.7",
     "@flashcatcloud/electron-sdk": "portal:../.."
   },
   "devDependencies": {
