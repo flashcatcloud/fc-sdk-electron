@@ -316,34 +316,34 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@flashcatcloud/browser-core@npm:0.0.6":
-  version: 0.0.6
-  resolution: "@flashcatcloud/browser-core@npm:0.0.6"
-  checksum: 10c0/cd4005b5ae79c7f760cd148f97e5c8ac8277e19585866cca3f2d81270d7824c589d3823ec1f3c63cc3311e5e0cf58597ef8537d50ef22128fe6f36df2dc1856a
+"@flashcatcloud/browser-core@npm:0.0.7":
+  version: 0.0.7
+  resolution: "@flashcatcloud/browser-core@npm:0.0.7"
+  checksum: 10c0/dc78b474e9116278509bce9fe0989b31b8c0bc272ec7cd84c3600ecd6aa6ff95363e28855aaf057cb7025acda3f329398ddf74531bbc7352b6763f49b6724473
   languageName: node
   linkType: hard
 
-"@flashcatcloud/browser-rum-core@npm:0.0.6":
-  version: 0.0.6
-  resolution: "@flashcatcloud/browser-rum-core@npm:0.0.6"
+"@flashcatcloud/browser-rum-core@npm:0.0.7":
+  version: 0.0.7
+  resolution: "@flashcatcloud/browser-rum-core@npm:0.0.7"
   dependencies:
-    "@flashcatcloud/browser-core": "npm:0.0.6"
-  checksum: 10c0/fe5fb95337948e5a106021680c4eb1bfec7706c086c57eb7ce81daf8405be30dad3e8f787c5b8d0229fb25af48457248c0a26966526fe6a45d6d44b39cbf8393
+    "@flashcatcloud/browser-core": "npm:0.0.7"
+  checksum: 10c0/4f3e10cf126c554991fcbb3b476616f43aac9d44abec14b00b51b1150899eb8df0ea3d1c2e2b76089412dec272f11033bdccd5192141389c5a0edbb56dc396ed
   languageName: node
   linkType: hard
 
-"@flashcatcloud/browser-rum@npm:0.0.6":
-  version: 0.0.6
-  resolution: "@flashcatcloud/browser-rum@npm:0.0.6"
+"@flashcatcloud/browser-rum@npm:0.0.7":
+  version: 0.0.7
+  resolution: "@flashcatcloud/browser-rum@npm:0.0.7"
   dependencies:
-    "@flashcatcloud/browser-core": "npm:0.0.6"
-    "@flashcatcloud/browser-rum-core": "npm:0.0.6"
+    "@flashcatcloud/browser-core": "npm:0.0.7"
+    "@flashcatcloud/browser-rum-core": "npm:0.0.7"
   peerDependencies:
-    "@flashcatcloud/browser-logs": 0.0.6
+    "@flashcatcloud/browser-logs": 0.0.7
   peerDependenciesMeta:
     "@flashcatcloud/browser-logs":
       optional: true
-  checksum: 10c0/9c6833e5a797d295fd93c19f3198800ec667868d99a13c7188dbab4802da174dcef8a51ed5e0885f304c32db487e10c8f1a56fa131713bcf0dd92f8dfdc91b3a
+  checksum: 10c0/de857be6c9b0b6f43d2409965776048792beead6d84acf2b5b16e90aed686285da5fe31befa7eae3a767cfbddd178f42b90384b24899adfabbc3d947b0497e67
   languageName: node
   linkType: hard
 
@@ -1060,7 +1060,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "electron-sdk-playground@workspace:."
   dependencies:
-    "@flashcatcloud/browser-rum": "npm:0.0.6"
+    "@flashcatcloud/browser-rum": "npm:0.0.7"
     "@flashcatcloud/electron-sdk": "portal:.."
     "@types/node": "npm:25.5.0"
     chokidar: "npm:5.0.0"

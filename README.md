@@ -89,8 +89,12 @@ Renderer processes are monitored by the FlashCat Browser SDK. Install it in the 
 your renderer:
 
 ```bash
-yarn add @flashcatcloud/browser-rum
+yarn add @flashcatcloud/browser-rum@^0.0.7
 ```
+
+> **`0.0.7` is a minimum, not a suggestion.** Earlier versions have no `sessionReplayDirectUpload`,
+> and the Browser SDK ignores options it does not know — so Session Replay would silently record
+> nothing, with no error to tell you why. See [Session Replay](#session-replay) below.
 
 ```ts
 // src/renderer.ts
@@ -128,9 +132,15 @@ page, uploading straight to the intake:
 flashcatRum.init({
   // ...
   sessionReplaySampleRate: 100, // defaults to 0 — the option alone records nothing
-  sessionReplayDirectUpload: true,
+  sessionReplayDirectUpload: true, // requires @flashcatcloud/browser-rum >= 0.0.7
 });
 ```
+
+> **Check the renderer's `@flashcatcloud/browser-rum` version before assuming this is wired up.**
+> `sessionReplayDirectUpload` landed in `0.0.7`. On anything earlier the option is simply an
+> unknown key: the Browser SDK drops it without complaint, hands recording to the host as usual,
+> and captures nothing. There is no warning in the console and no error at the intake — the only
+> symptom is a session with no replay.
 
 Segments then bypass the main process entirely, so they need a Content Security Policy that allows
 `worker-src blob:` and the intake origin, and they do not share the main process's disk-backed
