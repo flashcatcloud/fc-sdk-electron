@@ -110,8 +110,13 @@ async function launchApp(
   const electronSdkConfig: InitConfiguration = {
     // `site` is deliberately omitted: it is optional and resolves to DEFAULT_SITE. Leaving it out
     // keeps the default-resolution path under test. It is unused here anyway — `proxy` decides
-    // both the upload URL and the hostname SpanProcessor filters its own intake traffic on.
-    proxy: `http://localhost:${intake.getPort()}`,
+    // both the upload URL and the origin the SDK excludes its own intake traffic on.
+    //
+    // The host has to be written the same way `TestServer` writes it. Pointing the intake at
+    // `localhost` while the test server answered on `127.0.0.1` made the two look like different
+    // hosts, which is what let a host-only exclusion pass every scenario in this suite while it
+    // dropped application traffic in any deployment where the intake shares a host with it.
+    proxy: `http://127.0.0.1:${intake.getPort()}`,
     clientToken: 'test-client-token',
     service: 'e2e-test-app',
     applicationId: 'e2e-test-app-id',

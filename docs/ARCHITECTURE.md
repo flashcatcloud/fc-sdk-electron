@@ -162,9 +162,11 @@ This entry point initializes dd-trace with the `electron` exporter and silently 
 
 ### How tracing works
 
+The SDK's own uploads are kept out of the data it collects at the **instrumentation** layer: `Tracing` passes dd-trace a `blocklist` matching the intake origin, and every path that produces an outbound HTTP span (`node:http`/`https`, global `fetch`, Electron `net.request`) derives from `HttpClientPlugin`, which applies it before recording. A blocked request produces no span at all, so it cannot become a resource event and generate the next upload. The origin comparison includes the **port**, which is what makes it correct when the intake shares a host with the application's own services.
+
 dd-trace's `electron` exporter publishes normalized spans to a Node.js diagnostics channel (`datadog:apm:electron:export`) instead of sending them to a local Datadog Agent. The `SpanProcessor` subscribes to this channel and:
 
-1. **Filters** SDK-internal requests (intake/proxy) to prevent self-reporting loops
+1. **Filters** SDK-internal requests, as a second line of defense behind the blocklist above
 2. **Enriches** all spans with electron context (application, session, view)
 3. **Emits** RUM resource events for HTTP spans
 4. **Forwards** all spans to the spans intake grouped per trace
@@ -183,6 +185,8 @@ HTTP spans → Assembly → Transport → /api/v2/rum (as RUM resources)
 ```
 
 All spans are enriched with electron context (`_dd.application.id`, `_dd.session.id`, `_dd.view.id`) via the span assembly hook. Trace and span IDs are converted to **hexadecimal strings** for the spans intake.
+
+The instrument entry point sets `flushMinSpans: 1`, so a span reaches the exporter as soon as it finishes. dd-trace otherwise only exports a trace once every span in it has finished (its default partial-flush threshold, 1000 finished spans, is out of reach for a desktop app), which let one request that never returns withhold the resource events of every sibling request in the same IPC handler. Attribution is unaffected: a resource event is placed by its own span's start time, not the trace's.
 
 ### Preload injection
 

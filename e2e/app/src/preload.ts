@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   failOperation: (name: string, failureReason: string, options?: Record<string, unknown>) =>
     ipcRenderer.invoke('failOperation', name, failureReason, options),
   mainFetch: (url: string) => ipcRenderer.invoke('mainFetch', url),
+  mainFetchWithPendingSibling: (url: string, pendingUrl: string) =>
+    ipcRenderer.invoke('mainFetchWithPendingSibling', url, pendingUrl),
   mainHttpRequest: (url: string) => ipcRenderer.invoke('mainHttpRequest', url),
   mainNetRequest: (url: string) => ipcRenderer.invoke('mainNetRequest', url),
   flushTransport: () => ipcRenderer.invoke('flushTransport'),

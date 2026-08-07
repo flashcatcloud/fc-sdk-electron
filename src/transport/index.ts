@@ -1,2 +1,2 @@
 export { Transport } from './Transport';
-export { computeIntakeHostname } from './utils';
+export { computeIntakeOrigin } from './utils';

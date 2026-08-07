@@ -11,6 +11,7 @@ interface ElectronAppWindow {
     succeedOperation: (name: string, options?: FeatureOperationOptions) => Promise<void>;
     failOperation: (name: string, failureReason: FailureReason, options?: FeatureOperationOptions) => Promise<void>;
     mainFetch: (url: string) => Promise<number>;
+    mainFetchWithPendingSibling: (url: string, pendingUrl: string) => Promise<number>;
     mainHttpRequest: (url: string) => Promise<number>;
     mainNetRequest: (url: string) => Promise<number>;
     flushTransport: () => Promise<void>;
@@ -97,6 +98,15 @@ export class MainPage {
 
   async mainFetch(url: string): Promise<number> {
     return await this.page.evaluate((u) => (globalThis as unknown as ElectronAppWindow).electronAPI.mainFetch(u), url);
+  }
+
+  /** Issues `url` from the main process alongside a request to `pendingUrl` that never returns. */
+  async mainFetchWithPendingSibling(url: string, pendingUrl: string): Promise<number> {
+    return await this.page.evaluate(
+      ({ url, pendingUrl }) =>
+        (globalThis as unknown as ElectronAppWindow).electronAPI.mainFetchWithPendingSibling(url, pendingUrl),
+      { url, pendingUrl }
+    );
   }
 
   async mainHttpRequest(url: string): Promise<number> {

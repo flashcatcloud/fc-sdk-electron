@@ -115,13 +115,20 @@ function calculateMaxAddress(baseAddress: string | undefined, size: number | und
  *
  * `crash_info` is absent for dumps taken from a process that was terminated
  * without raising an exception. The event is still worth reporting: threads,
- * binary images and system info are all available, only the exception type and
- * the crashed thread are unknown.
+ * binary images and system info are all available, only the exception type, the
+ * faulting address and the crashed thread are unknown.
  */
 function buildCrashErrorEvent(crashReport: CrashReport, crashTime: TimeStamp): RawRumError {
   const threads = formatThreads(crashReport);
   const crashedThread = threads.find((t) => t.crashed);
   const exceptionType = crashReport.crash_info?.type;
+  // The faulting address, under the RUM schema's field for "CPU specific information about the
+  // exception encoded into 64-bit hexadecimal number". It goes here rather than under a name of
+  // our own because the intake decodes `error.meta` into a fixed set of fields and drops the rest,
+  // so an invented key would never reach the console. It is often the only usable lead when the
+  // exception type itself carries no name — a minidump written without a real exception record
+  // reports its type as `unknown 0x00000000 / 0x00000000`, but still records where it faulted.
+  const exceptionCodes = formatAddress64(crashReport.crash_info?.address);
 
   return {
     date: crashTime,
@@ -139,6 +146,7 @@ function buildCrashErrorEvent(crashReport: CrashReport, crashTime: TimeStamp): R
         code_type: crashReport.system_info.cpu,
         process: app.getName(),
         exception_type: exceptionType,
+        exception_codes: exceptionCodes,
       },
       source_type: mapOsToSourceType(crashReport.system_info.os),
       stack: crashedThread?.stack,

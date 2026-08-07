@@ -22,6 +22,16 @@ First FlashCat release. Forked from `@datadog/electron-sdk` v0.3.0 and rebranded
 
 - New `normalizeStackPath` option: rewrite a frame's absolute path yourself, before the built-in normalization runs, for build layouts a single application root cannot express (e.g. emitting to `<app root>/public/dist` but uploading under `/dist`). Returning `undefined` falls through to `app:///`. It applies to main-process and renderer frames alike, and a callback that throws is reported as an SDK error and falls back to the built-in behaviour. See the README.
 
+### 🐛 Bug Fixes
+
+- Main-process HTTP calls no longer lose their `resource` events to a sibling request that never returns. dd-trace only exported a trace once every span in it had finished, so one hung request withheld the resource events of every other request made from the same `ipcMain.handle` invocation, for the rest of the process' life. Spans are now exported as they finish (`flushMinSpans: 1`).
+
+- The SDK's own uploads are now excluded from tracing by **origin** — scheme, host and port — and at the instrumentation layer, so they never produce a span in the first place. The previous exclusion compared hostnames only and was wrong in both directions: with a `proxy` set, it dropped every application request sharing the proxy's host, whatever its port; and when `site` carried a port of its own (`rum.example.internal:8443`), it matched nothing at all, so the SDK reported its own uploads as resources — which produced more uploads.
+
+  > **Self-hosted deployments will see more `resource` events.** Application requests that share a host with the intake and differ only by port were being dropped and are now reported. This is data coming back, not new data.
+
+- Native crash reports now carry the faulting address in `error.meta.exception_codes`. The minidump processor had always resolved it and the SDK dropped it. It is often the only usable lead when the exception type has no name: a process killed from the outside produces a dump with no exception record, reported as `unknown 0x00000000 / 0x00000000`.
+
 ### ⚠️ Breaking Changes / Notes
 
 - Package renamed to `@flashcatcloud/electron-sdk` (internal `dd-`/`Datadog` names and the `DatadogEventBridge` global are kept per the fork convention).

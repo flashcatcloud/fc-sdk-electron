@@ -454,3 +454,7 @@ await init({
 The SDK then POSTs to `<proxy>?ddforward=%2Fapi%2Fv2%2Frum`. Your endpoint must forward the request
 body to `/api/v2/rum` on your FlashCat instance, preserving the `DD-API-KEY` and `Content-Type`
 headers.
+
+The SDK never reports its own uploads: it excludes exactly the **origin** it uploads to — scheme,
+host and port — from instrumentation. Application requests to the same host on a different port,
+which is the usual shape of a self-hosted deployment, are reported normally.
