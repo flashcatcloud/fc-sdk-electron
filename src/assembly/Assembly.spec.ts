@@ -1,4 +1,4 @@
-import { beforeEach, describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { DISCARDED, SKIPPED, type TimeStamp } from '@flashcatcloud/browser-core';
 import { Assembly } from './Assembly';
 import { createFormatHooks, type FormatHooks } from './hooks';
@@ -13,7 +13,15 @@ import {
   type ServerEvent,
 } from '../event';
 import type { RumEvent, RawRumData } from '../domain/rum';
+import type { User } from '../domain/UserContext';
 import { createTestConfiguration } from '../mocks.specUtil';
+
+// `commonContext` and `Assembly` reach `UserContext` for the identity in force, and it imports
+// `electron` at module load for the path its history file lives at. Nothing here touches that
+// history, but the import alone needs an Electron install these tests do not have.
+vi.mock('electron', () => ({
+  app: { getPath: vi.fn(() => '/mock/user-data') },
+}));
 
 const RAW_ERROR_DATA: RawRumData = {
   type: 'error',
@@ -90,7 +98,7 @@ describe('Assembly', () => {
 });
 
 describe('Assembly — renderer events', () => {
-  function setup() {
+  function setup(getUser: () => User | undefined = () => undefined) {
     const config = createTestConfiguration({ applicationId: 'main-app-id', service: 'main-service' });
     const eventManager = new EventManager();
     const hooks = createFormatHooks();
@@ -98,7 +106,7 @@ describe('Assembly — renderer events', () => {
     registerCommonContext(config, hooks, 'device-anonymous-id');
     hooks.registerRum(() => ({ session: { id: 'main-session-id' }, view: { id: 'main-view-id' } }));
 
-    new Assembly(eventManager, hooks);
+    new Assembly(eventManager, hooks, getUser);
     return { eventManager, hooks };
   }
 
@@ -171,6 +179,142 @@ describe('Assembly — renderer events', () => {
     expect(data.application.id).toBe('main-app-id');
     expect(data.view.id).toBe('renderer-view-456');
     expect(collected[0].track).toBe(EventTrack.RUM);
+  });
+
+  describe('user identity', () => {
+    const ALICE: User = { id: 'alice', name: 'Alice', email: 'alice@example.com' };
+
+    function assembleRendererEvent(getUser: () => User | undefined, usr?: Record<string, unknown>): RumEvent {
+      const { eventManager } = setup(getUser);
+      const collected: ServerEvent[] = [];
+      eventManager.registerHandler<ServerEvent>({
+        canHandle: (event): event is ServerEvent => event.kind === EventKind.SERVER,
+        handle: (event) => collected.push(event),
+      });
+
+      eventManager.notify({
+        kind: EventKind.RAW,
+        source: EventSource.RENDERER,
+        format: EventFormat.RUM,
+        data: {
+          type: 'error',
+          source: 'browser',
+          date: 12345 as TimeStamp,
+          error: { message: 'renderer error', source: 'source' },
+          view: { id: 'renderer-view' },
+          session: { id: 'renderer-session' },
+          application: { id: 'renderer-app' },
+          ...(usr ? { usr } : {}),
+        },
+      } as unknown as RawRumEvent);
+
+      return collected[0].data as RumEvent;
+    }
+
+    it('should leave a renderer event alone when no identity is set', () => {
+      const data = assembleRendererEvent(() => undefined, { id: 'renderer-user', anonymous_id: 'device-id' });
+
+      expect(data.usr).toEqual({ id: 'renderer-user', anonymous_id: 'device-id' });
+    });
+
+    it('should not invent a usr on a renderer event that carries none', () => {
+      const data = assembleRendererEvent(() => undefined);
+
+      expect(data.usr).toBeUndefined();
+    });
+
+    it('should stamp the main process identity on a renderer event that carries none', () => {
+      const data = assembleRendererEvent(() => ALICE);
+
+      expect(data.usr).toEqual(ALICE);
+    });
+
+    /**
+     * The reason this replaces rather than merges. `combine` merges per key and skips `undefined`,
+     * so a merge of `{ id, name }` over `{ id, name, email }` would emit Alice's id and name beside
+     * Bob's email — an identity belonging to nobody, and worse than either source alone.
+     */
+    it('should replace the renderer identity wholesale, never stitch the two together', () => {
+      const data = assembleRendererEvent(() => ({ id: 'alice', name: 'Alice' }), {
+        id: 'bob',
+        name: 'Bob',
+        email: 'bob@example.com',
+      });
+
+      expect(data.usr).toEqual({ id: 'alice', name: 'Alice' });
+      expect(data.usr).not.toHaveProperty('email');
+    });
+
+    /**
+     * The logout guarantee. If a stale renderer-side identity could outlive `clearUser()`, logging
+     * out would leave the user's name and email on everything that window kept reporting.
+     */
+    it('should drop a renderer identity that the main process has cleared', () => {
+      const data = assembleRendererEvent(() => ({ id: 'alice' }), { id: 'bob', email: 'bob@example.com' });
+
+      expect(data.usr).toEqual({ id: 'alice' });
+    });
+
+    it('should carry the anonymous id across the replacement untouched', () => {
+      const data = assembleRendererEvent(() => ALICE, { id: 'bob', anonymous_id: 'device-id' });
+
+      expect(data.usr?.anonymous_id).toBe('device-id');
+      expect(data.usr?.id).toBe('alice');
+    });
+
+    it('should not stamp the main process anonymous id on a renderer event', () => {
+      const data = assembleRendererEvent(() => ALICE);
+
+      expect(data.usr).not.toHaveProperty('anonymous_id');
+    });
+
+    it('should resolve the identity as of the event date, not of assembly time', () => {
+      const seen: number[] = [];
+      assembleRendererEvent((startTime?: unknown) => {
+        seen.push(startTime as number);
+        return ALICE;
+      });
+
+      expect(seen).toContain(12345);
+    });
+
+    /**
+     * Same rule as the main-process view: a page view that spans a login is re-reported, and the
+     * backend takes the session's identity from the last view row.
+     */
+    it('should resolve a renderer view at emit time, not at the view start', () => {
+      const viewStart = 1000;
+      const asked: number[] = [];
+      const { eventManager } = setup(((startTime: TimeStamp) => {
+        asked.push(startTime);
+        return ALICE;
+      }) as unknown as () => User | undefined);
+
+      eventManager.notify({
+        kind: EventKind.RAW,
+        source: EventSource.RENDERER,
+        format: EventFormat.RUM,
+        data: {
+          type: 'view',
+          source: 'browser',
+          date: viewStart as TimeStamp,
+          view: { id: 'renderer-view' },
+          session: { id: 'renderer-session' },
+          application: { id: 'renderer-app' },
+        },
+      } as unknown as RawRumEvent);
+
+      expect(asked).not.toHaveLength(0);
+      expect(asked).not.toContain(viewStart);
+    });
+
+    it('should leave the rest of the event untouched', () => {
+      const data = assembleRendererEvent(() => ALICE, { id: 'bob' });
+
+      expect(data.session.id).toBe('main-session-id');
+      expect(data.view.id).toBe('renderer-view');
+      expect(data.source).toBe('browser');
+    });
   });
 
   it('passes event.data.date as startTime for hook context resolution', () => {

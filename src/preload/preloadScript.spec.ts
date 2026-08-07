@@ -18,6 +18,7 @@ interface EventBridge {
   getAllowedWebViewHosts: () => string;
   getSessionId: () => string;
   getAnonymousId: () => string;
+  getUser: () => string;
   send: (msg: string) => void;
 }
 
@@ -164,6 +165,52 @@ describe('preload script', () => {
       const bridge = await runPreload();
 
       expect(bridge.getSessionId()).toBe('session-2');
+    });
+  });
+
+  describe('user identity', () => {
+    it('should answer an empty object when nobody is logged in', async () => {
+      const bridge = await runPreload();
+
+      expect(bridge.getUser()).toBe('{}');
+    });
+
+    it('should answer the identity carried by the configuration', async () => {
+      mockIpcRenderer.sendSync.mockReturnValue({ ...DEFAULT_CONFIG, user: { id: 'alice', name: 'Alice' } });
+
+      const bridge = await runPreload();
+
+      expect(JSON.parse(bridge.getUser())).toEqual({ id: 'alice', name: 'Alice' });
+    });
+
+    it('should answer the identity the main process pushes', async () => {
+      const bridge = await runPreload();
+
+      pushConfig({ user: { id: 'alice' } });
+
+      expect(JSON.parse(bridge.getUser())).toEqual({ id: 'alice' });
+    });
+
+    it('should go back to an empty object once the identity is cleared', async () => {
+      mockIpcRenderer.sendSync.mockReturnValue({ ...DEFAULT_CONFIG, user: { id: 'alice' } });
+      const bridge = await runPreload();
+
+      // `clearUser` removes the field rather than blanking it, and the push carries the whole
+      // configuration — so the absence has to survive the round trip.
+      pushConfig({ user: undefined });
+
+      expect(bridge.getUser()).toBe('{}');
+    });
+
+    it('should keep a push that lands before the configuration answers', async () => {
+      mockIpcRenderer.sendSync.mockImplementation(() => {
+        pushConfig({ user: { id: 'bob' } });
+        return { ...DEFAULT_CONFIG, user: { id: 'alice' } };
+      });
+
+      const bridge = await runPreload();
+
+      expect(JSON.parse(bridge.getUser())).toEqual({ id: 'bob' });
     });
   });
 

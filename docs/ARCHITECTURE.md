@@ -210,7 +210,25 @@ The device-scoped anonymous id (`src/domain/AnonymousId.ts`) is generated once a
 
 **`usr.id` is never backfilled with it.** Electron is counted off `COALESCE(NULLIF(usr_anonymous_id, ''), NULLIF(usr_id, ''))`, which reads the anonymous id first and is stable across a login. The browser SDK does backfill, because its count is `COUNT(DISTINCT usr_id)` and that is the only way it can see logged-out users; copying that here would buy nothing and would split one device into two people at login, when `usr.id` flips from the anonymous id to the real one. `src/assembly/commonContext.spec.ts` pins this down.
 
-Renderer events are left alone: the renderer reads the same id off the bridge itself, so the main process must not stamp a second one over it.
+Renderer events keep the `anonymous_id` they arrive with: the renderer reads the same id off the bridge itself, so the main process must not stamp a second one over it.
+
+#### The logged-in identity (`setUser`)
+
+`setUser` / `getUser` / `clearUser` (`src/domain/UserContext.ts`) record who the application says is logged in, next to — never instead of — the anonymous id. The names match `flashcatRum.setUser()` in `@flashcatcloud/browser-rum` so both processes of one application share a vocabulary; upstream's `@datadog/electron-sdk` calls it `setUserInfo`, a name Datadog's own browser SDK has since dropped, and we do not track that fork.
+
+Only `id`, `name` and `email` are copied out of the caller's object, and `id` is required. Dropping everything else is what makes `setUser({ anonymous_id })` structurally impossible; the hook also writes `anonymous_id` last, so the guarantee does not rest on the sanitizer alone. Upstream's `ContextManager.filterReservedKeys` excludes only the standard fields from its free-form `extraInfo` bag, so `addUserExtraInfo({ anonymous_id })` there overwrites the device id — **if `extraInfo` is ever added here, `anonymous_id` has to be reserved with it.**
+
+An invalid call is rejected whole rather than half-applied, and does not notify renderers: a partly-applied identity is harder to notice than none.
+
+**Two questions, two stores.** `get()` answers "who is logged in now" from a plain field, so `clearUser()` takes effect in the millisecond it happens. Event assembly instead asks `find(startTime)`, backed by a `DiskValueHistory` like `ViewContext`'s, because a main-process event is not always assembled in the moment it describes — a native crash is parsed on the _next_ startup carrying the crash's own timestamp, and `addError` accepts a caller-supplied `startTime`. Resolving those at assembly time would hand one user's crash to another. `set()` closes the previous entry and opens the next from a **single** clock read, the millisecond race `ViewCollection.createNewView` avoids the same way.
+
+Persistence has a consequence worth knowing: the identity is written to `userData` in plain text, beside the anonymous id and the session file.
+
+**View events are the exception: they resolve at the moment they are emitted.** A view is an interval, re-reported as it grows (`_dd.document_version`), and the backend derives the session's identity from the _last_ view row it receives (`buildSessionViewUpdates` in fc-rum reads `lastView.UserID`). The main process emits exactly one synthetic view per session, spanning the whole session, and `setUser` cannot run before `init` — so resolving that view at its start time would keep the identity off `t_sessions.usr_id` for the entire session. Verified against dev: without this the session row carried an empty `usr_id` while the error events beside it carried the full identity.
+
+**A restored history is closed at startup, one millisecond before now.** Quitting is not logging out, so a previous run normally leaves its entry open; restoring it still-active attributed this process's events to whoever used the machine last. Closing it at exactly `now` is not enough, because `find` treats `endTime` as inclusive and the first main-process view is created in the same millisecond as `init` — observed against dev, where a second run stamped its opening view with the first run's user. Earlier timestamps still resolve to that user, which is what a crash from the previous run needs.
+
+**`clearUser` removes `usr.id`; it never blanks it.** `NULLIF(usr_id, '')` treats an empty string and an absent field as different rows.
 
 ### Renderer identifiers
 
@@ -218,6 +236,12 @@ The renderer needs the main process's session id to attribute anything it upload
 
 - `getAnonymousId()` — the id above. It never changes once the SDK is initialized.
 - `getSessionId()` — the session the main process considers active, or `''` while none is. Sessions expire and renew, so the main process **pushes** a fresh configuration over `datadog:bridge-config-push` on every change; the preload caches it and answers from the cache. A synchronous IPC call per event would be far too slow.
+
+- `getUser()` — the identity set through `setUser`, as JSON, or `'{}'` when nobody is logged in. A string rather than an object, matching `getCapabilities` and `getAllowedWebViewHosts`; it rides the same configuration push and the same preload cache as the session id.
+
+**The bridge getter is not how bridged renderer events get their identity.** The Browser SDK's bridge contract has no user getter, so nothing would read it today; `Assembly.assembleRendererRumEvent` stamps the identity on renderer events as they pass through the main process instead, which needs no Browser SDK change. The getter is there so a renderer can attribute what it uploads _itself_ — Session Replay segments — to the same person, and is what a future Browser SDK would consume.
+
+**The main process wins, and it replaces rather than merges.** `combine` merges per key and skips `undefined`, so merging a main-process `{ id, name }` over a renderer's `{ id, name, email }` would emit one person's id and name beside another's email — an identity belonging to nobody, and worse than either source alone. The deciding reason for main-process precedence is `clearUser()`: if a stale renderer-side identity could survive it, logging out would leave the user's name and email on everything that window kept reporting, so a logout has to be enforceable from one place. `usr.anonymous_id` is carried across the replacement untouched, and when no user is set nothing is touched at all — an application that only calls `flashcatRum.setUser()` in its renderers keeps the behaviour it had.
 
 #### The renderer must never be able to outrun `init()`
 

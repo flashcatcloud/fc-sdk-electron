@@ -35,12 +35,14 @@ if (!window[BRIDGE_INITIALIZED]) {
   let allowedHosts: string[] = [location.hostname];
   let anonymousId = '';
   let sessionId = '';
+  let user: BridgeConfig['user'];
   let configPushed = false;
 
   const apply = (config: BridgeConfig | undefined): void => {
     defaultPrivacyLevel = config?.defaultPrivacyLevel ?? MASK;
     anonymousId = config?.anonymousId ?? '';
     sessionId = config?.sessionId ?? '';
+    user = config?.user;
     // The renderer's own host is always allowed; the configured ones are additions to it.
     allowedHosts = [...new Set([location.hostname, ...(config?.allowedWebViewHosts ?? [])])];
   };
@@ -89,6 +91,18 @@ if (!window[BRIDGE_INITIALIZED]) {
     /** Device-scoped identifier, stable across app restarts. */
     getAnonymousId() {
       return anonymousId;
+    },
+    /**
+     * Identity the main process set through `setUser`, as JSON, or `'{}'` when nobody is logged
+     * in. A JSON string rather than an object, to match `getCapabilities` and
+     * `getAllowedWebViewHosts` — the bridge only ever hands strings across.
+     *
+     * Kept up to date by {@link IDENTITY_CHANNEL} pushes, like the session id. Note that renderer
+     * events do not need this: the main process stamps the identity on them as they pass through.
+     * It is here so a renderer can attribute anything it uploads itself to the same user.
+     */
+    getUser() {
+      return user ? JSON.stringify(user) : '{}';
     },
     send(msg: string) {
       ipcRenderer.send(BRIDGE_CHANNEL, msg);

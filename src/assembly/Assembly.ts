@@ -3,6 +3,7 @@ import type { RecursivePartial } from '../tools/coreCompat';
 import { EventFormat, EventKind, EventManager, EventSource, EventTrack, type RawEvent, ServerEvent } from '../event';
 import type { RawRumEvent } from '../event';
 import type { FormatHooks } from './hooks';
+import { resolveEventUser, type User } from '../domain/UserContext';
 import { RumEvent } from '../domain/rum';
 import { TelemetryEvent } from '../domain/telemetry';
 
@@ -21,7 +22,12 @@ import { TelemetryEvent } from '../domain/telemetry';
 export class Assembly {
   constructor(
     private eventManager: EventManager,
-    private hooks: FormatHooks
+    private hooks: FormatHooks,
+    /**
+     * Identity in force at an event's start time — see `UserContext`. Defaults to "never anyone",
+     * so a caller that does not wire it up leaves renderer events exactly as they arrived.
+     */
+    private getUser: (startTime: TimeStamp) => User | undefined = () => undefined
   ) {
     this.eventManager.registerHandler<RawEvent>({
       canHandle: (event) => event.kind === EventKind.RAW,
@@ -66,13 +72,50 @@ export class Assembly {
       container: { view: { id: view?.id }, source: 'electron' },
     };
 
+    // Note `usr` is not in `mainProcessAttributes`: the anonymous id must not be stamped here (the
+    // renderer reads the same id off the bridge itself), and the identity needs replacing rather
+    // than merging — see below.
+    const data = combine(event.data, mainProcessAttributes) as RumEvent;
+
     return {
       kind: EventKind.SERVER,
       track: EventTrack.RUM,
       source: EventSource.RENDERER,
       // override some renderer event attributes by main process attributes
-      data: combine(event.data, mainProcessAttributes) as RumEvent,
+      data: this.applyUserIdentity(data),
     };
+  }
+
+  /**
+   * Replace a bridged event's identity with the main process's, when one is set.
+   *
+   * **Replacement, not a merge.** `combine` merges per key and skips `undefined`, so merging a
+   * main-process `{ id, name }` over a renderer's `{ id, name, email }` would emit the main
+   * process's id and name next to the previous user's email — an identity that belongs to nobody,
+   * and worse than either source alone.
+   *
+   * **The main process wins.** It is the one place that knows who is logged in, which is why it
+   * already overrides `session.id` and `application.id` on the way through. The deciding reason is
+   * `clearUser()`: if a stale renderer-side identity could survive it, logging out would leave the
+   * user's name and email attached to everything the window kept reporting. A logout has to be
+   * enforceable from one place.
+   *
+   * `usr.anonymous_id` is carried over untouched — it is device-scoped, the renderer took it from
+   * this same bridge, and it has to stay put across a login and a logout.
+   *
+   * When no user is set, nothing is touched, so an application that only ever calls
+   * `flashcatRum.setUser()` in its renderers keeps the behaviour it had before this existed.
+   */
+  private applyUserIdentity(data: RumEvent): RumEvent {
+    const user = resolveEventUser(this.getUser, data.type, data.date as TimeStamp);
+    if (!user) {
+      return data;
+    }
+
+    const anonymousId = data.usr?.anonymous_id;
+    const usr = anonymousId === undefined ? { ...user } : { ...user, anonymous_id: anonymousId };
+
+    return { ...data, usr } as RumEvent;
   }
 
   /**

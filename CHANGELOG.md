@@ -22,6 +22,12 @@ First FlashCat release. Forked from `@datadog/electron-sdk` v0.3.0 and rebranded
 
 - New `normalizeStackPath` option: rewrite a frame's absolute path yourself, before the built-in normalization runs, for build layouts a single application root cannot express (e.g. emitting to `<app root>/public/dist` but uploading under `/dist`). Returning `undefined` falls through to `app:///`. It applies to main-process and renderer frames alike, and a callback that throws is reported as an SDK error and falls back to the built-in behaviour. See the README.
 
+- New `setUser` / `getUser` / `clearUser`: identify the logged-in user from the main process. The identity is attached to main-process events and to the renderer events that arrive over the bridge, and is served to renderers through `DatadogEventBridge.getUser()` for what they upload themselves. `id` is required; only `id`, `name` and `email` are read. The names match `flashcatRum.setUser()` in `@flashcatcloud/browser-rum` so both processes of an application share one vocabulary. See the README.
+
+  `usr.anonymous_id` is untouched by all three, and `usr.id` is still never backfilled with it: the two coexist so unique users can be counted off `COALESCE(NULLIF(usr_anonymous_id, ''), NULLIF(usr_id, ''))` across a login. `clearUser` removes `usr.id` rather than blanking it, since `NULLIF(usr_id, '')` distinguishes an absent field from an empty string.
+
+  An identity set in the main process takes precedence over one set in a renderer, and replaces it wholesale rather than merging field by field — a merge could emit one person's id beside another's email. Applications that only call `flashcatRum.setUser()` in their renderers are unaffected.
+
 ### 🐛 Bug Fixes
 
 - Main-process HTTP calls no longer lose their `resource` events to a sibling request that never returns. dd-trace only exported a trace once every span in it had finished, so one hung request withheld the resource events of every other request made from the same `ipcMain.handle` invocation, for the rest of the process' life. Spans are now exported as they finish (`flushMinSpans: 1`).

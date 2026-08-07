@@ -9,10 +9,14 @@ import {
   _generateTelemetryError,
   _flushTransport,
   stopSession,
+  setUser,
+  getUser,
+  clearUser,
   startOperation,
   succeedOperation,
   failOperation,
   type FailureReason,
+  type User,
   type FeatureOperationOptions,
   type InitConfiguration,
 } from '@flashcatcloud/electron-sdk';
@@ -92,6 +96,16 @@ void app.whenReady().then(async () => {
 
   ipcMain.handle('stopSession', () => {
     stopSession();
+  });
+
+  ipcMain.handle('setUser', (_event, user: User) => {
+    setUser(user);
+  });
+
+  ipcMain.handle('getUser', () => getUser());
+
+  ipcMain.handle('clearUser', () => {
+    clearUser();
   });
 
   ipcMain.handle('generateUncaughtException', () => {

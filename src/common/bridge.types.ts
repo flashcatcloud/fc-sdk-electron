@@ -1,4 +1,5 @@
 import type { DefaultPrivacyLevel } from '@flashcatcloud/browser-core';
+import type { User } from '../domain/UserContext';
 
 /**
  * Everything the preload needs to answer the Browser SDK's bridge calls.
@@ -18,4 +19,10 @@ export interface BridgeConfig {
   anonymousId: string;
   /** Id of the active session, or `''` when none is — before initialization, or after expiry. */
   sessionId: string;
+  /**
+   * Identity set through `setUser`, or `undefined` when nobody is logged in. Absent and empty are
+   * distinct: the backend counts users off `NULLIF(usr_id, '')`, so `clearUser` has to remove the
+   * field rather than blank it.
+   */
+  user?: User;
 }

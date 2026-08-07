@@ -7,6 +7,7 @@ import { BRIDGE_CHANNEL, CONFIG_CHANNEL, CONFIG_PUSH_CHANNEL } from '../common';
 import { RendererRegistry } from '../domain/RendererRegistry';
 import { ViewTimingCorrector } from '../domain/ViewTimingCorrector';
 import { StackPathNormalizer } from '../domain/StackPathNormalizer';
+import type { User } from '../domain/UserContext';
 
 const { mockIpcMainOn, mockIpcMainRemoveAllListeners, mockGetAllWebContents, mockAddError } = vi.hoisted(() => ({
   mockIpcMainOn: vi.fn(),
@@ -60,6 +61,7 @@ describe('BridgeHandler', () => {
   let eventManager: EventManager;
   let rendererRegistry: RendererRegistry;
   let sessionId: string;
+  let user: User | undefined;
   /** `senderId: null` simulates an IPC event without a `sender` (e.g. a destroyed webContents). */
   let simulateIpcMessage: (msg: string, senderId?: number | null) => void;
   /** Replays a renderer's synchronous configuration request, and returns what it got back. */
@@ -73,6 +75,7 @@ describe('BridgeHandler', () => {
       eventManager,
       DEFAULT_BRIDGE_OPTIONS,
       () => sessionId,
+      () => user,
       rendererRegistry,
       new ViewTimingCorrector(rendererRegistry, true),
       new StackPathNormalizer(true, APP_ROOT)
@@ -84,6 +87,7 @@ describe('BridgeHandler', () => {
     eventManager = new EventManager();
     rendererRegistry = new RendererRegistry();
     sessionId = 'session-1';
+    user = undefined;
     liveRenderers = [];
     mockGetAllWebContents.mockImplementation(() => liveRenderers);
 
@@ -144,6 +148,16 @@ describe('BridgeHandler', () => {
 
       expect(simulateConfigRequest()).toMatchObject({ sessionId: 'session-2' });
     });
+
+    it('should answer with the identity of the moment, so a renderer opened after login starts with it', () => {
+      user = { id: 'alice', name: 'Alice' };
+
+      expect(simulateConfigRequest()).toMatchObject({ user: { id: 'alice', name: 'Alice' } });
+    });
+
+    it('should answer without a user when nobody is logged in', () => {
+      expect(simulateConfigRequest()).not.toHaveProperty('user.id');
+    });
   });
 
   describe('configuration pushes', () => {
@@ -174,6 +188,46 @@ describe('BridgeHandler', () => {
       eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_EXPIRED });
 
       expect(sender.send).toHaveBeenCalledWith(CONFIG_PUSH_CHANNEL, expect.objectContaining({ sessionId: '' }));
+    });
+
+    it('should push the identity when it changes, on the same channel as everything else', () => {
+      const sender = createSender();
+      liveRenderers = [sender];
+
+      user = { id: 'alice', name: 'Alice' };
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.USER_CHANGED });
+
+      expect(sender.send).toHaveBeenCalledWith(
+        CONFIG_PUSH_CHANNEL,
+        expect.objectContaining({ user: { id: 'alice', name: 'Alice' } })
+      );
+    });
+
+    it('should push an absent user once the identity is cleared', () => {
+      const sender = createSender();
+      liveRenderers = [sender];
+      user = { id: 'alice' };
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.USER_CHANGED });
+
+      user = undefined;
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.USER_CHANGED });
+
+      // Absent, not blanked: the backend counts users off `NULLIF(usr_id, '')`.
+      expect(sender.send).toHaveBeenLastCalledWith(CONFIG_PUSH_CHANNEL, expect.objectContaining({ user: undefined }));
+    });
+
+    it('should carry the identity alongside a session renewal', () => {
+      const sender = createSender();
+      liveRenderers = [sender];
+      user = { id: 'alice' };
+
+      sessionId = 'session-2';
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_RENEW });
+
+      expect(sender.send).toHaveBeenCalledWith(
+        CONFIG_PUSH_CHANNEL,
+        expect.objectContaining({ sessionId: 'session-2', user: { id: 'alice' } })
+      );
     });
 
     it('should not push on unrelated lifecycle events', () => {
