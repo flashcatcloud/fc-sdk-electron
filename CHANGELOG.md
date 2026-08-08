@@ -4,7 +4,29 @@ All notable changes to `@flashcatcloud/electron-sdk` are documented here.
 
 ## [0.2.0]
 
+### ✨ Features
+
+- The bridge preload is now the SDK's own, shipped as `@flashcatcloud/electron-sdk/preload` and registered by `installBridgePreload()` on `app.on('session-created')` plus the default session at app ready. It replaces the private preload dd-trace registered from the `BrowserWindow` subclass it installs — a script the SDK could not extend, and one a static ESM import bypasses entirely, since dd-trace's registration depends on the app reaching `BrowserWindow` through a hooked `require`. Hooking session creation also covers custom partitions. dd-trace's registration is redirected to this script rather than left to run alongside it: only one bridge can reach the page, so two scripts would make the outcome depend on registration order. dd-trace keeps instrumenting `net` and IPC as before.
+
+  The bridge answers two new identity questions. `getAnonymousId()` returns a device-scoped id, generated once and stored under `app.getPath('userData')` so it survives restarts and outlives the sessions that renew as the user comes and goes. `getSessionId()` returns the session the main process considers active, or `''` while there is none; the main process pushes every change to the renderers that asked for a configuration and the preload answers from that cache, because a synchronous IPC call per event would be far too slow.
+
+- New `setUser` / `getUser` / `clearUser`: identify the logged-in user from the main process. The identity is attached to main-process events and to the renderer events that arrive over the bridge, and is served to renderers through `DatadogEventBridge.getUser()` for what they upload themselves. `id` is required; only `id`, `name` and `email` are read. The names match `flashcatRum.setUser()` in `@flashcatcloud/browser-rum` so both processes of an application share one vocabulary. See the README.
+
+  `usr.anonymous_id` is untouched by all three, and `usr.id` is still never backfilled with it: the two coexist so unique users can be counted off `COALESCE(NULLIF(usr_anonymous_id, ''), NULLIF(usr_id, ''))` across a login. `clearUser` removes `usr.id` rather than blanking it, since `NULLIF(usr_id, '')` distinguishes an absent field from an empty string.
+
+  An identity set in the main process takes precedence over one set in a renderer, and replaces it wholesale rather than merging field by field — a merge could emit one person's id beside another's email. Applications that only call `flashcatRum.setUser()` in their renderers are unaffected.
+
+- Main-process RUM events now carry `usr.anonymous_id`, so an application can be counted for unique users even when a session has no renderer activity. The synthetic `electron://main-process` view is usually a session's first, and a session takes its user identity from its first view — without the stamp such a session had no identity at all, and unique-user counts came out empty. Renderer events are left alone: the renderer reads the same id off the bridge itself, so stamping a second one here would fight with it.
+
 ### 🐛 Bug Fixes
+
+- **Native crash reports now reach Error Tracking at all.** The crash time was read straight off the dump file's `fs.Stats` (`birthtimeMs || mtimeMs`), both of which carry sub-millisecond precision — so `date` was a fraction, and the intake decodes `date` into an int64, where Go's JSON decoder refuses a fractional number and fails the whole event. Nothing surfaced on the SDK side, because the intake answers `202` before it decodes. **No released version has ever delivered a native crash**, while every test stayed green — a JavaScript mock parses such an event perfectly happily.
+
+- **Main-process `resource` events now reach the intake at all.** `SpanProcessor` divided a dd-trace span start by 1e6 to get milliseconds, and dd-trace measures starts off `performance.now()` and reports nanoseconds, so the division essentially never came out even and `resource.date` was fractional — dropped by the intake for the same reason as the crash date, and just as silently. **No released version has ever delivered a main-process resource event.**
+
+  Both fixes go through a shared `toIntakeTimeStamp` rather than a bare `Math.round`, because the shape generalises: any millisecond value that did not come from `Date.now()` is suspect. The end-to-end suite now walks every uploaded event and fails on a fractional number in any field the backend types as an integer, which is the only way this class of defect is visible in CI at all.
+
+- `addError`'s caller-supplied `startTime` is rounded on the way in, so an error timed off anything derived from `performance.now()` is no longer lost the same way. A `null` `startTime` still means _now_ rather than the epoch. The pre-warmed-view rebase rounds the paint metrics it writes too — not a live defect, since its inputs are whole milliseconds today, but the guarantee now belongs to the module rather than to an assumption about what the renderer sends.
 
 - A renderer no longer hangs when it starts before the SDK is ready. The bridge preload asks the main process for its configuration over a **synchronous** channel, and Electron leaves a synchronous request that no listener answers blocked forever — registering one afterwards does not release it. The window never ran a line of the page: blank, unresponsive, for the rest of its life.
 
@@ -47,12 +69,6 @@ First FlashCat release. Forked from `@datadog/electron-sdk` v0.3.0 and rebranded
 - Stack frame paths are rewritten to `app:///<path relative to the app root>`, the same scheme the Sentry Electron SDK uses, for main-process and renderer stacks alike — a renderer no longer needs a `beforeSend` to be un-minifiable. Frame URLs are runtime installation paths — they carry the user name on Windows, a random mount point for a Linux AppImage, and the bundle location on macOS — so sourcemaps uploaded against them could only match on the machine those paths described. Upload with `--minified-path-prefix /dist` to match `app:///dist/…`. Anything outside the app root (`node:internal/…`, `http(s)` URLs, `app.asar.unpacked`, paths an application already normalized itself) is left untouched. Set `normalizeStackPaths: false` for the raw paths. See the README.
 
 - New `normalizeStackPath` option: rewrite a frame's absolute path yourself, before the built-in normalization runs, for build layouts a single application root cannot express (e.g. emitting to `<app root>/public/dist` but uploading under `/dist`). Returning `undefined` falls through to `app:///`. It applies to main-process and renderer frames alike, and a callback that throws is reported as an SDK error and falls back to the built-in behaviour. See the README.
-
-- New `setUser` / `getUser` / `clearUser`: identify the logged-in user from the main process. The identity is attached to main-process events and to the renderer events that arrive over the bridge, and is served to renderers through `DatadogEventBridge.getUser()` for what they upload themselves. `id` is required; only `id`, `name` and `email` are read. The names match `flashcatRum.setUser()` in `@flashcatcloud/browser-rum` so both processes of an application share one vocabulary. See the README.
-
-  `usr.anonymous_id` is untouched by all three, and `usr.id` is still never backfilled with it: the two coexist so unique users can be counted off `COALESCE(NULLIF(usr_anonymous_id, ''), NULLIF(usr_id, ''))` across a login. `clearUser` removes `usr.id` rather than blanking it, since `NULLIF(usr_id, '')` distinguishes an absent field from an empty string.
-
-  An identity set in the main process takes precedence over one set in a renderer, and replaces it wholesale rather than merging field by field — a merge could emit one person's id beside another's email. Applications that only call `flashcatRum.setUser()` in their renderers are unaffected.
 
 ### ⚠️ Breaking Changes / Notes
 
