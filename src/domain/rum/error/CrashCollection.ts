@@ -177,7 +177,10 @@ function buildCrashErrorEvent(crashReport: CrashReport, crashTime: TimeStamp): R
  *
  * Returns undefined when there is nothing to pin a site to: no crash_info, no identified
  * crashing thread, or a crashed thread without usable frames. Such an event carries no stack
- * either, and the backend's frames==0 gate already keeps it out of issue grouping.
+ * either, so there is no site to key on and the backend groups it by exception type and
+ * message alone. That is coarser than a per-site fingerprint, and it is all the dump supports:
+ * without an exception stream nothing records which thread died, so a finer split would have
+ * to be invented. Sending a fingerprint built from an arbitrary thread would do exactly that.
  */
 function computeCrashFingerprint(crashReport: CrashReport): string | undefined {
   // `crashing_thread` is a thread_index, matched the same way `formatThreads` flags threads.
