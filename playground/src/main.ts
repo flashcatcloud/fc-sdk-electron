@@ -162,6 +162,11 @@ void app.whenReady().then(async () => {
     ...CONF.staging,
     service: 'electron-playground',
     env: 'dev',
+    // Required for stack symbolication to run at all. The console only requests
+    // symbolication for an error that carries a version, and the intake rejects a request
+    // without one, so stacks stay unresolved until this is set. Keep it in step with
+    // playground/package.json and with the renderer below -- both are one app to RUM.
+    version: '0.1.0',
   });
   console.log('SDK init result:', result);
 

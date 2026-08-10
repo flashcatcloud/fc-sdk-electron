@@ -10,6 +10,8 @@ flashcatRum.init({
   site: 'jira.flashcat.cloud',
   service: 'electron-playground',
   env: 'dev',
+  // Must match the main process's version -- see the note there.
+  version: '0.1.0',
   sessionSampleRate: 100,
   trackResources: true,
   trackLongTasks: true,
