@@ -122,6 +122,7 @@ function buildCrashErrorEvent(crashReport: CrashReport, crashTime: TimeStamp): R
   const threads = formatThreads(crashReport);
   const crashedThread = threads.find((t) => t.crashed);
   const exceptionType = crashReport.crash_info?.type;
+  const fingerprint = computeCrashFingerprint(crashReport);
   // The faulting address, under the RUM schema's field for "CPU specific information about the
   // exception encoded into 64-bit hexadecimal number". It goes here rather than under a name of
   // our own because the intake decodes `error.meta` into a fixed set of fields and drops the rest,
@@ -142,6 +143,9 @@ function buildCrashErrorEvent(crashReport: CrashReport, crashTime: TimeStamp): R
       category: 'Exception',
       type: exceptionType,
       was_truncated: false,
+      // Spread rather than `fingerprint` directly: an explicit `undefined` would still serialize
+      // as an own property, and the backend treats any present fingerprint as authoritative.
+      ...(fingerprint !== undefined ? { fingerprint } : {}),
       meta: {
         code_type: crashReport.system_info.cpu,
         process: app.getName(),
@@ -154,6 +158,64 @@ function buildCrashErrorEvent(crashReport: CrashReport, crashTime: TimeStamp): R
       binary_images: formatBinaryImages(crashReport),
     },
   };
+}
+
+/**
+ * Compute the Error Tracking fingerprint for a native crash.
+ *
+ * Backend contract: the intake stores `error.fingerprint` verbatim on the error row, issue
+ * grouping prefers an event-provided fingerprint over any computed one, and similarity/embedding
+ * grouping is skipped entirely when an event carries one. Without it every crash of the same
+ * exception type lands in a single issue, no matter where the process faulted.
+ *
+ * Format: `{exceptionType}|{moduleBasename}|{normalizedModuleOffset}` — e.g.
+ * `SIGSEGV|MyApp|0x12ab3c`. The site is the first non-system frame of the crashed thread
+ * (falling back to the first frame when every frame is a system module), identified by module
+ * and offset rather than instruction address: ASLR rebases modules on every launch, while an
+ * offset is stable across runs of the same build. Offsets drift between builds, so a new app
+ * version opens fresh issues — the same trade-off the Android NDK top-frame grouping makes.
+ *
+ * Returns undefined when there is nothing to pin a site to: no crash_info, no identified
+ * crashing thread, or a crashed thread without usable frames. Such an event carries no stack
+ * either, so there is no site to key on and the backend groups it by exception type and
+ * message alone. That is coarser than a per-site fingerprint, and it is all the dump supports:
+ * without an exception stream nothing records which thread died, so a finer split would have
+ * to be invented. Sending a fingerprint built from an arbitrary thread would do exactly that.
+ */
+function computeCrashFingerprint(crashReport: CrashReport): string | undefined {
+  // `crashing_thread` is a thread_index, matched the same way `formatThreads` flags threads.
+  // Absent crash_info gives undefined, an unidentified thread gives null — both find nothing.
+  const crashingThread = crashReport.crash_info?.crashing_thread;
+  const crashedThread = crashReport.threads.find((thread) => thread.thread_index === crashingThread);
+  if (!crashedThread) {
+    return undefined;
+  }
+
+  const candidates = crashedThread.frames.filter((frame) => frame.module);
+  const frame = candidates.find((candidate) => !isSystemModule(candidate.module)) ?? candidates[0];
+  const normalizedOffset = frame ? normalizeModuleOffset(frame.module_offset) : undefined;
+  if (!frame || !normalizedOffset) {
+    return undefined;
+  }
+
+  const exceptionType = crashReport.crash_info?.type ?? 'unknown';
+  return `${exceptionType}|${path.basename(frame.module)}|${normalizedOffset}`;
+}
+
+/**
+ * Normalize a module offset like `0x0012AB3C` to `0x12ab3c` — lowercase, no leading zeros —
+ * so equivalent spellings of the same offset group into one issue. BigInt keeps this exact
+ * for offsets beyond 2^53. Returns undefined for missing or non-hex input.
+ */
+function normalizeModuleOffset(moduleOffset: string | undefined): string | undefined {
+  if (!moduleOffset) {
+    return undefined;
+  }
+  const hex = moduleOffset.toLowerCase().replace(/^0x/, '');
+  if (!/^[0-9a-f]+$/.test(hex)) {
+    return undefined;
+  }
+  return `0x${BigInt(`0x${hex}`).toString(16)}`;
 }
 
 const OS_TO_SOURCE_TYPE: Record<string, RumErrorEvent['error']['source_type']> = {

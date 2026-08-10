@@ -2,6 +2,12 @@
 
 All notable changes to `@flashcatcloud/electron-sdk` are documented here.
 
+## [0.2.1]
+
+### 🐛 Bug Fixes
+
+- Minidump crash events now carry `error.fingerprint`, so Error Tracking groups native crashes **per crash site** instead of merging every crash of one exception type into a single issue. The fingerprint is built from the exception type plus the top non-system frame of the crashed thread — module basename and module offset (`SIGSEGV|MyApp|0x12ab3c`), normalized so equivalent offset spellings group together. The offset, not the instruction address, is what identifies the site: ASLR rebases modules on every launch, while an offset is stable across runs of the same build. Offsets drift between builds, so a new app version opens fresh issues — the same trade-off as Android NDK top-frame grouping. The backend uses an event-provided fingerprint verbatim and skips similarity grouping when one is present, so this needs **no backend change**. Crashes with no identified crashed thread (dumps written without an exception stream) carry no fingerprint, as before they carry no stack.
+
 ## [0.2.0]
 
 ### ✨ Features
