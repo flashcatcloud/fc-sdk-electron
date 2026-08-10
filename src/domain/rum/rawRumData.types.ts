@@ -27,6 +27,11 @@ export interface RawRumError extends RecursivePartial<RumErrorEvent> {
     handling: 'unhandled' | 'handled';
     stack?: string;
     type?: string;
+    /**
+     * Error Tracking grouping fingerprint. The backend uses it verbatim for issue grouping
+     * and skips similarity grouping when it is present. Set for native crashes.
+     */
+    fingerprint?: string;
     is_crash?: boolean;
     was_truncated?: boolean;
     category?: 'Exception';

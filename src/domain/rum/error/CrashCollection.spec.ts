@@ -605,4 +605,181 @@ describe('CrashCollection', () => {
     const data = rawRumEvents[0].data as RawRumError;
     expect(data.error.meta!.exception_codes).toBe('0x00007fff6f41333a');
   });
+
+  it('builds the fingerprint from the first non-system frame of the crashed thread', async () => {
+    mockDmpFile();
+    vi.mocked(processMinidump).mockResolvedValue(
+      createMinidumpResult({
+        threads: [
+          {
+            thread_index: 0,
+            frame_count: 2,
+            frames: [
+              {
+                module: '/usr/lib/libSystem.B.dylib',
+                function: 'start',
+                instruction: '0x1',
+                module_offset: '0x50',
+                trust: 'context',
+              },
+              {
+                module: '/Applications/MyApp.app/Contents/MacOS/MyApp',
+                function: 'crash',
+                instruction: '0x2',
+                module_offset: '0x0012ab3c',
+                trust: 'cfi',
+              },
+            ],
+          },
+        ],
+      })
+    );
+
+    await startAndFlush(eventManager);
+
+    const data = rawRumEvents[0].data as RawRumError;
+    expect(data.error.fingerprint).toBe('SIGSEGV|MyApp|0x12ab3c');
+  });
+
+  it('skips frames without a module when picking the fingerprint frame', async () => {
+    mockDmpFile();
+    vi.mocked(processMinidump).mockResolvedValue(
+      createMinidumpResult({
+        threads: [
+          {
+            thread_index: 0,
+            frame_count: 2,
+            frames: [
+              { module: '', function: 'unknown', instruction: '0x1', module_offset: '0x10', trust: 'context' },
+              {
+                module: '/Applications/MyApp.app/Contents/MacOS/MyApp',
+                function: 'crash',
+                instruction: '0x2',
+                module_offset: '0x20',
+                trust: 'cfi',
+              },
+            ],
+          },
+        ],
+      })
+    );
+
+    await startAndFlush(eventManager);
+
+    const data = rawRumEvents[0].data as RawRumError;
+    expect(data.error.fingerprint).toBe('SIGSEGV|MyApp|0x20');
+  });
+
+  it('falls back to the first frame when every frame of the crashed thread is a system module', async () => {
+    mockDmpFile();
+    vi.mocked(processMinidump).mockResolvedValue(
+      createMinidumpResult({
+        threads: [
+          {
+            thread_index: 0,
+            frame_count: 2,
+            frames: [
+              {
+                module: '/usr/lib/libA.dylib',
+                function: 'crash',
+                instruction: '0x1',
+                module_offset: '0x30',
+                trust: 'context',
+              },
+              {
+                module: '/System/Library/Frameworks/CoreFoundation',
+                function: 'run',
+                instruction: '0x2',
+                module_offset: '0x40',
+                trust: 'cfi',
+              },
+            ],
+          },
+        ],
+      })
+    );
+
+    await startAndFlush(eventManager);
+
+    const data = rawRumEvents[0].data as RawRumError;
+    expect(data.error.fingerprint).toBe('SIGSEGV|libA.dylib|0x30');
+  });
+
+  it('emits no fingerprint when crash_info is missing', async () => {
+    mockDmpFile();
+    const report = createMinidumpResult();
+    delete report.crash_info;
+    delete report.crashing_thread;
+    vi.mocked(processMinidump).mockResolvedValue(report);
+
+    await startAndFlush(eventManager);
+
+    const data = rawRumEvents[0].data as RawRumError;
+    expect(data.error).not.toHaveProperty('fingerprint');
+  });
+
+  it('emits no fingerprint when the crashing thread is not identified', async () => {
+    mockDmpFile();
+    vi.mocked(processMinidump).mockResolvedValue(
+      createMinidumpResult({ crash_info: { type: 'SIGSEGV', address: '0x0', crashing_thread: null } })
+    );
+
+    await startAndFlush(eventManager);
+
+    const data = rawRumEvents[0].data as RawRumError;
+    expect(data.error).not.toHaveProperty('fingerprint');
+  });
+
+  it('emits no fingerprint when the crashed thread has no frames', async () => {
+    mockDmpFile();
+    vi.mocked(processMinidump).mockResolvedValue(
+      createMinidumpResult({
+        threads: [{ thread_index: 0, frame_count: 0, frames: [] }],
+      })
+    );
+
+    await startAndFlush(eventManager);
+
+    const data = rawRumEvents[0].data as RawRumError;
+    expect(data.error).not.toHaveProperty('fingerprint');
+  });
+
+  it('normalizes offset spellings so equivalent offsets produce the same fingerprint', async () => {
+    mfs.readdir.mockResolvedValue([
+      { name: 'a.dmp', isFile: () => true, isDirectory: () => false },
+      { name: 'b.dmp', isFile: () => true, isDirectory: () => false },
+    ]);
+    mfs.stat.mockResolvedValue({ birthtimeMs: 0 });
+    mfs.readFile.mockResolvedValue(new Uint8Array([1]));
+    mfs.unlink.mockResolvedValue(undefined);
+    const reportWithOffset = (moduleOffset: string) =>
+      createMinidumpResult({
+        threads: [
+          {
+            thread_index: 0,
+            frame_count: 1,
+            frames: [
+              {
+                module: '/Applications/MyApp.app/Contents/MacOS/MyApp',
+                function: 'crash',
+                instruction: '0x1',
+                module_offset: moduleOffset,
+                trust: 'context',
+              },
+            ],
+          },
+        ],
+      });
+    vi.mocked(processMinidump)
+      .mockResolvedValueOnce(reportWithOffset('0x0012AB3C'))
+      .mockResolvedValueOnce(reportWithOffset('0x12ab3c'));
+
+    await startAndFlush(eventManager);
+
+    expect(rawRumEvents).toHaveLength(2);
+    const first = rawRumEvents[0].data as RawRumError;
+    const second = rawRumEvents[1].data as RawRumError;
+    expect(first.error.fingerprint).toBe('SIGSEGV|MyApp|0x12ab3c');
+    expect(second.error.fingerprint).toBe(first.error.fingerprint);
+  });
 });
