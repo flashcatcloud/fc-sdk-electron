@@ -185,54 +185,55 @@ No watching of HTML changes for now to avoid extra complexity.
 
 ### Prerequisites
 
-- [`gh` CLI](https://cli.github.com/) installed and authenticated (`gh auth login`)
-- `$EDITOR` environment variable set (e.g. `export EDITOR=vim` in your shell profile)
-- npm Trusted Publisher configured on npmjs.com
-- Maintain permission on the GitHub repository (required to push tags)
+- Maintain permission on the GitHub repository (required to push tags and run the workflow)
+- npm publishing credentials configured for the repository
+
+`publish` is the release branch and the repository default. `main` tracks the upstream
+project and is not part of this flow.
 
 ### Release flow
 
-#### 1. Prepare the release (run locally)
+#### 1. Open a release PR against `publish`
+
+On a branch off `publish`:
+
+- Set the new version in `package.json` — it is the source of truth, and the publish
+  workflow refuses to run if the tag does not match it.
+- Add the matching `## [X.Y.Z]` section to `CHANGELOG.md`. The workflow extracts this
+  section verbatim as the GitHub release notes, so it stops at the next `## ` heading.
+- Leave already-released sections alone. Compare against `git show vX.Y.Z:CHANGELOG.md`
+  to confirm a published section still says what that version actually shipped.
+
+Run the same gates the workflow runs, so a failure surfaces before the release:
 
 ```sh
-yarn release
+yarn typecheck && yarn build && yarn test:unit && yarn format:check
 ```
 
-The script will:
+Merge the PR once CI is green.
 
-1. Validate prerequisites (`$EDITOR`, `gh` auth, clean working tree)
-2. Sync with main and install latest deps
-3. Prompt you to choose a version bump (patch / minor / major / custom)
-4. Generate a changelog draft and open it in `$EDITOR` for review
-5. Create a `release/vX.Y.Z` branch, commit, push, and create an annotated tag `vX.Y.Z`
-6. Open a GitHub PR
-
-**Dry-run mode** (validates all checks and previews changelog without git changes):
+#### 2. Tag the merge commit
 
 ```sh
-yarn release --dry-run
+git checkout publish && git pull --ff-only
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push origin vX.Y.Z
 ```
 
-#### 2. Review and merge the PR
+The tag must be on the merge commit, and `vX.Y.Z` must match `package.json`.
 
-- Review the generated changelog in the PR
-- Edit `CHANGELOG.md` if needed (push commits directly to the release branch)
+#### 3. Run the publish workflow from the tag
 
-> **⚠️ Warning:** The release tag is created **before** the PR is merged. If you push fixup commits to the release branch, you **must** move the tag to the latest commit before merging — otherwise those commits will be excluded from the published release:
->
-> ```sh
-> git tag -a -f vX.Y.Z -m "vX.Y.Z"
-> git push -f origin vX.Y.Z
-> ```
+Actions → **Publish** → **Run workflow**, selecting the tag `vX.Y.Z` in the ref dropdown.
 
-Merge the PR when ready.
+- `dry_run` runs the whole pipeline — build, gates, package contents — without publishing
+  to npm or creating a GitHub release. Use it first.
+- `npm_tag` chooses the dist-tag. Publishing under `next` leaves `npm install` resolving to
+  whatever `latest` already points at, so a release can be staged. Promote it afterwards
+  without republishing:
 
-#### 3. Trigger the publish workflow
-
-A Slack message in `#rum-electron-sdk-ops` is sent when the tag is pushed in step 1. It includes a link to the GitHub Actions publish workflow and reminds you to review and merge the PR first.
-
-Open the workflow link, click **Run workflow**, and select the tag `vX.Y.Z` in the ref dropdown.
-
-> **Dry-run option:** Enable the `dry_run` toggle to run the full pipeline (build, validate, extract changelog) without publishing to npm or creating a GitHub release. Useful to validate the pipeline before the real publish.
+  ```sh
+  npm dist-tag add @flashcatcloud/electron-sdk@X.Y.Z latest
+  ```
 
 [1]: https://gitmoji.carloscuesta.me/
