@@ -126,3 +126,49 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           NPM_TAG: ${{ inputs.npm_tag }}
+
+      # A dry run publishes nothing, so it must not announce a release.
+      - name: Notify deployment success
+        if: ${{ success() && !inputs.dry_run }}
+        uses: zcong1993/actions-ding@master
+        with:
+          dingToken: ${{ secrets.DING_TALK_TOKEN }}
+          secret: ${{ secrets.DING_TALK_SECRET }}
+          body: |
+            {
+              "msgtype": "markdown",
+              "markdown": {
+                "title": "fc-sdk-electron 发布通知",
+                "text": "### ✅ fc-sdk-electron 发布成功\n\n---\n\n 🔖 版本: v${{ steps.version.outputs.version }}\n\n 📦 包名: @flashcatcloud/electron-sdk\n\n 🏷️ dist-tag: ${{ inputs.npm_tag }}\n\n 👨‍💻 发布者: ${{ github.actor }}\n\n 🚀 [查看详情](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+              }
+            }
+
+      - name: Notify secondary DingTalk group on success
+        if: ${{ success() && !inputs.dry_run }}
+        uses: zcong1993/actions-ding@master
+        with:
+          dingToken: ${{ secrets.DING_TALK_TOKEN_2 }}
+          secret: ${{ secrets.DING_TALK_SECRET_2 }}
+          body: |
+            {
+              "msgtype": "markdown",
+              "markdown": {
+                "title": "fc-sdk-electron 发布通知",
+                "text": "### ✅ fc-sdk-electron 发布成功\n\n---\n\n 🔖 版本: v${{ steps.version.outputs.version }}\n\n 📦 包名: @flashcatcloud/electron-sdk\n\n 🏷️ dist-tag: ${{ inputs.npm_tag }}\n\n 👨‍💻 发布者: ${{ github.actor }}\n\n 🚀 [查看详情](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+              }
+            }
+
+      - name: Notify deployment failure
+        if: failure()
+        uses: zcong1993/actions-ding@master
+        with:
+          dingToken: ${{ secrets.DING_TALK_TOKEN }}
+          secret: ${{ secrets.DING_TALK_SECRET }}
+          body: |
+            {
+              "msgtype": "markdown",
+              "markdown": {
+                "title": "fc-sdk-electron 发布通知",
+                "text": "### ❌ fc-sdk-electron 发布失败\n\n---\n\n 🔖 标签: ${{ github.ref_name }}\n\n 👨‍💻 发布者: ${{ github.actor }}\n\n 🚀 [查看详情](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+              }
+            }
