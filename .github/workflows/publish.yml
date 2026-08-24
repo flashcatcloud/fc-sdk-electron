@@ -132,7 +132,7 @@ jobs:
         if: ${{ success() && !inputs.dry_run }}
         uses: zcong1993/actions-ding@master
         with:
-          ignoreError: "true"
+          ignoreError: 'true'
           dingToken: ${{ secrets.DING_TALK_TOKEN }}
           secret: ${{ secrets.DING_TALK_SECRET }}
           body: |
@@ -148,7 +148,7 @@ jobs:
         if: ${{ success() && !inputs.dry_run }}
         uses: zcong1993/actions-ding@master
         with:
-          ignoreError: "true"
+          ignoreError: 'true'
           dingToken: ${{ secrets.DING_TALK_TOKEN_2 }}
           secret: ${{ secrets.DING_TALK_SECRET_2 }}
           body: |
@@ -164,7 +164,7 @@ jobs:
         if: failure()
         uses: zcong1993/actions-ding@master
         with:
-          ignoreError: "true"
+          ignoreError: 'true'
           dingToken: ${{ secrets.DING_TALK_TOKEN }}
           secret: ${{ secrets.DING_TALK_SECRET }}
           body: |
