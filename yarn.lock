@@ -492,7 +492,7 @@ __metadata:
     typescript-eslint: "npm:8.57.0"
     vitest: "npm:4.0.18"
   peerDependencies:
-    electron: ">=39"
+    electron: ">=30"
   languageName: unknown
   linkType: soft
 
