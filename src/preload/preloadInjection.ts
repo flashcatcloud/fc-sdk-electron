@@ -2,6 +2,7 @@ import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { monitor } from '@flashcatcloud/browser-core/cjs/tools/monitor';
 import type { IpcMainEvent, PreloadScriptRegistration, Session } from 'electron';
 import { displayWarn } from '../tools/display';
 import { CONFIG_CHANNEL } from '../common';
@@ -81,6 +82,8 @@ export function installBridgePreload(
       return;
     }
 
+    standInForMissingRegisterPreloadScript(session);
+
     const register = registerOnce(session, preloadPath, registrations);
     takeOverDdTraceRegistrations(session, register);
     register();
@@ -88,15 +91,50 @@ export function installBridgePreload(
 
   // Sessions are created before the windows using them, so a session-created listener always runs
   // before dd-trace's BrowserWindow subclass gets a chance to register its own preload.
-  host.app.on('session-created', setUp);
+  host.app.on('session-created', monitor(setUp));
 
   // The default session usually exists before this runs, so 'session-created' has already fired for
   // it. Register it explicitly instead; `registrations` keeps that idempotent if the event did fire.
-  const setUpDefaultSession = () => setUp(host.session.defaultSession);
+  const setUpDefaultSession = monitor(() => setUp(host.session.defaultSession));
   if (host.app.isReady()) {
     setUpDefaultSession();
   } else {
     host.app.once('ready', setUpDefaultSession);
+  }
+}
+
+let warnedMissingRegisterPreloadScript = false;
+
+/**
+ * `session.registerPreloadScript` was added in Electron 35, and older versions do reach this code:
+ * `peerDependencies` is an installation error only under npm, a warning under Yarn and pnpm. Both
+ * this SDK and dd-trace's `BrowserWindow` subclass call the method unconditionally, from places the
+ * host application cannot guard — an `app` 'ready' listener here, every `new BrowserWindow()` there
+ * — so its absence stops the application from starting rather than costing it monitoring.
+ *
+ * Give such a session a stand-in that accepts registrations and drops them. Losing the renderer
+ * bridge is what an unsupported Electron costs; the application still starts, and main process
+ * monitoring is unaffected.
+ */
+function standInForMissingRegisterPreloadScript(session: Session): void {
+  if (typeof session.registerPreloadScript === 'function') {
+    return;
+  }
+
+  if (!warnedMissingRegisterPreloadScript) {
+    warnedMissingRegisterPreloadScript = true;
+    displayWarn(
+      'This Electron version has no session.registerPreloadScript (added in Electron 35), so the ' +
+        'renderer bridge cannot be installed. Main process monitoring is unaffected and the Browser ' +
+        'SDK keeps collecting in renderers, but renderer events will not share the main process ' +
+        'session. Upgrade to Electron 35 or later to restore the bridge.'
+    );
+  }
+
+  try {
+    session.registerPreloadScript = () => '';
+  } catch (error) {
+    displayWarn('Failed to install the preload registration stand-in:', error);
   }
 }
 

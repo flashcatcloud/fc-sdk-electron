@@ -1,6 +1,6 @@
 {
   "name": "@flashcatcloud/electron-sdk",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "FlashCat SDK for Electron applications",
   "packageManager": "yarn@4.12.0",
   "main": "./dist/index.cjs",
