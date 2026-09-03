@@ -107,10 +107,13 @@ let warnedMissingRegisterPreloadScript = false;
 
 /**
  * `session.registerPreloadScript` was added in Electron 35, and older versions do reach this code:
- * `peerDependencies` is an installation error only under npm, a warning under Yarn and pnpm. Both
- * this SDK and dd-trace's `BrowserWindow` subclass call the method unconditionally, from places the
- * host application cannot guard — an `app` 'ready' listener here, every `new BrowserWindow()` there
- * — so its absence stops the application from starting rather than costing it monitoring.
+ * `peerDependencies` is an installation error only under npm, a warning under Yarn and pnpm. The
+ * SDK registers the bridge preload from an `app` 'ready' listener and from 'session-created',
+ * neither of which the host application can guard, so the method's absence stops the application
+ * from starting rather than costing it monitoring.
+ *
+ * dd-trace registers a preload of its own the same way, but `datadog-instrumentations` gates its
+ * whole Electron hook on `electron >= 37`, so below that there is nothing of its to take over.
  *
  * Give such a session a stand-in that accepts registrations and drops them. Losing the renderer
  * bridge is what an unsupported Electron costs; the application still starts, and main process
