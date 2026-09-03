@@ -10,7 +10,7 @@ Real User Monitoring for Electron applications.
 
 ### Prerequisites
 
-- Electron 39+
+- Electron 30+
 
 ### Install
 

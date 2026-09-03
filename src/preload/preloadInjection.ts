@@ -82,7 +82,7 @@ export function installBridgePreload(
       return;
     }
 
-    standInForMissingRegisterPreloadScript(session);
+    fillInRegisterPreloadScript(session);
 
     const register = registerOnce(session, preloadPath, registrations);
     takeOverDdTraceRegistrations(session, register);
@@ -103,38 +103,52 @@ export function installBridgePreload(
   }
 }
 
-let warnedMissingRegisterPreloadScript = false;
+let warnedNoPreloadApi = false;
 
 /**
- * `session.registerPreloadScript` was added in Electron 35, and older versions do reach this code:
- * `peerDependencies` is an installation error only under npm, a warning under Yarn and pnpm. Both
- * this SDK and dd-trace's `BrowserWindow` subclass call the method unconditionally, from places the
- * host application cannot guard — an `app` 'ready' listener here, every `new BrowserWindow()` there
- * — so its absence stops the application from starting rather than costing it monitoring.
+ * `session.registerPreloadScript` was added in Electron 35. `setPreloads`, which it replaced, has
+ * been there since Electron 2. Both this SDK and dd-trace's `BrowserWindow` subclass call the newer
+ * method unconditionally, from places the host application cannot guard — an `app` 'ready' listener
+ * here, every `new BrowserWindow()` there — so on an older runtime its absence would stop the
+ * application from starting rather than cost it monitoring.
  *
- * Give such a session a stand-in that accepts registrations and drops them. Losing the renderer
- * bridge is what an unsupported Electron costs; the application still starts, and main process
- * monitoring is unaffected.
+ * Fill the method in from `setPreloads` rather than branching at each call site, so the SDK and
+ * dd-trace alike stay written against one API. `setPreloads` replaces the session's list instead of
+ * adding to it, so the current list is read back and appended to: an application's own preloads
+ * must survive. The reverse does not hold — an application that calls `setPreloads` itself after
+ * this point drops the bridge, which `registerPreloadScript` would have kept.
  */
-function standInForMissingRegisterPreloadScript(session: Session): void {
+function fillInRegisterPreloadScript(session: Session): void {
   if (typeof session.registerPreloadScript === 'function') {
     return;
   }
 
-  if (!warnedMissingRegisterPreloadScript) {
-    warnedMissingRegisterPreloadScript = true;
+  const hasSetPreloads = typeof session.setPreloads === 'function' && typeof session.getPreloads === 'function';
+
+  if (!hasSetPreloads && !warnedNoPreloadApi) {
+    warnedNoPreloadApi = true;
     displayWarn(
-      'This Electron version has no session.registerPreloadScript (added in Electron 35), so the ' +
-        'renderer bridge cannot be installed. Main process monitoring is unaffected and the Browser ' +
-        'SDK keeps collecting in renderers, but renderer events will not share the main process ' +
-        'session. Upgrade to Electron 35 or later to restore the bridge.'
+      'This Electron has neither session.registerPreloadScript (Electron 35 and later) nor ' +
+        'session.setPreloads, so the renderer bridge cannot be installed. Main process monitoring ' +
+        'is unaffected and the Browser SDK keeps collecting in renderers, but renderer events will ' +
+        'not share the main process session.'
     );
   }
 
+  let registered = 0;
+  const fallback = hasSetPreloads
+    ? (script: PreloadScriptRegistration): string => {
+        session.setPreloads([...session.getPreloads(), script.filePath]);
+        return `preloads-${++registered}`;
+      }
+    : // Accept and drop. dd-trace registers from inside the `BrowserWindow` constructor, where a
+      // throw would take window creation down with it — and there is no bridge to install anyway.
+      () => '';
+
   try {
-    session.registerPreloadScript = () => '';
+    session.registerPreloadScript = fallback;
   } catch (error) {
-    displayWarn('Failed to install the preload registration stand-in:', error);
+    displayWarn('Failed to install the preload registration fallback:', error);
   }
 }
 

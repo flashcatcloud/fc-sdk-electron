@@ -1,6 +1,6 @@
 {
   "name": "@flashcatcloud/electron-sdk",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "FlashCat SDK for Electron applications",
   "packageManager": "yarn@4.12.0",
   "main": "./dist/index.cjs",
@@ -144,7 +144,7 @@
     "dd-trace": "5.103.0"
   },
   "peerDependencies": {
-    "electron": ">=39"
+    "electron": ">=30"
   },
   "repository": {
     "type": "git",
