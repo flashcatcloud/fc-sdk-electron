@@ -19,14 +19,16 @@ interface FakeSession {
   registered: string[];
 }
 
-function createSession(): FakeSession {
+function createSession({ legacy = false } = {}): FakeSession {
   const registered: string[] = [];
   let nextId = 0;
   const registerPreloadScript = vi.fn((script: PreloadScriptRegistration) => {
     registered.push(script.filePath);
     return `registration-${++nextId}`;
   });
-  return { session: { registerPreloadScript } as unknown as Session, registerPreloadScript, registered };
+  // Electron < 35 has no `registerPreloadScript` on Session at all.
+  const session = (legacy ? {} : { registerPreloadScript }) as unknown as Session;
+  return { session, registerPreloadScript, registered };
 }
 
 interface FakeHost {
@@ -38,8 +40,8 @@ interface FakeHost {
   requestConfig: (channel: string) => unknown;
 }
 
-function createHost({ readyUpfront = false } = {}): FakeHost {
-  const defaultSession = createSession();
+function createHost({ readyUpfront = false, legacy = false } = {}): FakeHost {
+  const defaultSession = createSession({ legacy });
   const sessionListeners: ((session: Session) => void)[] = [];
   const readyListeners: (() => void)[] = [];
   const ipcListeners = new Map<string, (event: { returnValue?: unknown }) => void>();
@@ -63,7 +65,7 @@ function createHost({ readyUpfront = false } = {}): FakeHost {
       return ipcEvent.returnValue;
     },
     createSession: () => {
-      const created = createSession();
+      const created = createSession({ legacy });
       for (const listener of sessionListeners) {
         listener(created.session);
       }
@@ -240,6 +242,56 @@ describe('installBridgePreload', () => {
       // No preload means nothing will ever ask, and an unused listener would only be able to
       // shadow the real one that `BridgeHandler` registers.
       expect(requestConfig(CONFIG_CHANNEL)).toBeUndefined();
+    });
+  });
+
+  /**
+   * Electron < 35 has no `session.registerPreloadScript`. Both this SDK and dd-trace's
+   * `BrowserWindow` subclass call it unconditionally, from places the host application cannot
+   * guard, so its absence must cost monitoring — never startup.
+   */
+  describe('an Electron without registerPreloadScript', () => {
+    it('should not throw out of the app ready listener', async () => {
+      const { host, emitReady } = createHost({ legacy: true });
+      await install(host);
+
+      expect(emitReady).not.toThrow();
+    });
+
+    it('should not throw out of the session-created listener', async () => {
+      const { host, createSession: createNewSession } = createHost({ legacy: true });
+      await install(host);
+
+      expect(createNewSession).not.toThrow();
+    });
+
+    it('should not throw when the app is ready before the SDK installs', async () => {
+      const { host } = createHost({ legacy: true, readyUpfront: true });
+
+      await expect(install(host)).resolves.toBeUndefined();
+    });
+
+    it('should leave a dd-trace registration harmless, so windows can still be created', async () => {
+      const { host, defaultSession, emitReady } = createHost({ legacy: true });
+      await install(host);
+      emitReady();
+
+      // What dd-trace's BrowserWindow subclass does on every window it creates.
+      expect(() =>
+        defaultSession.session.registerPreloadScript({ type: 'frame', filePath: DD_TRACE_PRELOAD_PATH })
+      ).not.toThrow();
+    });
+
+    it('should say why once, not once per session', async () => {
+      const { host, emitReady, createSession: createNewSession } = createHost({ legacy: true });
+      await install(host);
+      emitReady();
+      createNewSession();
+      createNewSession();
+
+      const { displayWarn } = await import('../tools/display');
+      expect(displayWarn).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(displayWarn).mock.calls[0][0]).toContain('Electron 35');
     });
   });
 });
