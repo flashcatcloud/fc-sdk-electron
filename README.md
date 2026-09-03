@@ -10,7 +10,7 @@ Real User Monitoring for Electron applications.
 
 ### Prerequisites
 
-- Electron 30+
+- Electron 30+ — on Electron 30 to 36, requests made through Electron's own `net` module produce no `resource` events, because dd-trace only instruments it from Electron 37. Node `http`/`https` and the global `fetch` are traced on every supported version.
 
 ### Install
 

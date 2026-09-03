@@ -11,6 +11,17 @@ import type { InitConfiguration } from '@flashcatcloud/electron-sdk';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const electronPath = require(join(__dirname, '../app/node_modules/electron')) as string;
 
+/**
+ * Major version of the Electron the fixture app runs on. The e2e job runs this suite on the oldest
+ * supported Electron as well as the current one, so a scenario asserting something only newer
+ * Electrons can do skips itself rather than failing the older leg.
+ */
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { version: electronVersion } = require(join(__dirname, '../app/node_modules/electron/package.json')) as {
+  version: string;
+};
+export const ELECTRON_MAJOR = Number(electronVersion.split('.')[0]);
+
 // Variables forwarded to the Electron child process. Keep this list minimal:
 // system essentials for the binary to launch, plus the few flags the test app
 // and Playwright themselves read. Anything else is intentionally dropped to avoid

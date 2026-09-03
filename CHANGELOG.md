@@ -6,15 +6,19 @@ All notable changes to `@flashcatcloud/electron-sdk` are documented here.
 
 ### ✨ Features
 
-- The supported floor is now **Electron 30**, down from 39. `session.registerPreloadScript`, which the SDK and dd-trace both register the bridge preload through, only exists from Electron 35; below that the SDK now fills the method in from `session.setPreloads`, which has been there since Electron 2. Filling the method in rather than branching at each call site keeps the SDK and dd-trace written against one API, and means dd-trace's registration from inside the `BrowserWindow` constructor is redirected to the SDK's script exactly as it is on a newer runtime.
+- The supported floor is now **Electron 30**, down from 39. `session.registerPreloadScript`, which the bridge preload is registered through, only exists from Electron 35; below that the SDK now fills the method in from `session.setPreloads`, which has been there since Electron 2. Filling the method in rather than branching at each call site keeps the SDK written against one API, and keeps dd-trace's own registration — made through the same method on the versions where dd-trace installs at all — redirected to the SDK's script as before.
 
   `setPreloads` replaces the session's preload list instead of adding to it, so the list is read back and appended to and an application's own preloads survive. The reverse does not hold: on Electron 30 to 34, an application that calls `session.setPreloads()` itself _after_ the SDK has installed the bridge drops it, where `registerPreloadScript` would have kept both. Applications that set preloads per window through `webPreferences.preload` are unaffected.
 
   An Electron with neither API still degrades rather than failing: registrations are accepted and dropped, and a single warning names what is lost.
 
+### ⚠️ Known gaps below Electron 37
+
+- `datadog-instrumentations` gates its whole Electron hook on `electron >= 37`, so on Electron 30 to 36 **Electron's own `net` module is not traced** and its requests produce no `resource` events. Main process HTTP made through Node's `http`/`https` or the global `fetch` is instrumented independently and is unaffected, as is everything else the SDK collects: sessions, views, errors, native crashes, terminated processes, and the renderer bridge. IPC spans are not uploaded on any version, as before.
+
 ### 🔧 Internal
 
-- The e2e suite runs on the supported floor as well as the current Electron, so the floor cannot rot unnoticed.
+- The e2e suite runs on the supported floor as well as the current Electron, so the floor cannot rot unnoticed. The one scenario that asserts Electron `net` tracing skips itself below Electron 37, where dd-trace does not provide it.
 
 ## [0.2.2]
 
