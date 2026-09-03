@@ -44,7 +44,15 @@ jobs:
         run: yarn test:unit
 
   e2e:
+    name: e2e (Electron ${{ matrix.electron }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The current Electron, and the oldest one the SDK supports. Below Electron 35 the bridge
+        # preload is registered through `setPreloads` instead of `registerPreloadScript`, and this
+        # job is the only place that path runs against a real runtime.
+        electron: ['41.1.0', '30.5.1']
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -68,9 +76,17 @@ jobs:
       - name: Install Electron system dependencies
         run: yarn playwright install-deps chromium
 
+      - name: Pin the e2e app to Electron ${{ matrix.electron }}
+        working-directory: e2e/app
+        run: |
+          node -e "const fs=require('fs'),p='package.json',j=JSON.parse(fs.readFileSync(p,'utf8'));j.devDependencies.electron=process.argv[1];fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')" '${{ matrix.electron }}'
+
       # Builds the SDK, then installs and builds the fixture app against it.
       - name: Build the SDK and the e2e app
         run: yarn test:e2e:init
+        env:
+          # The step above rewrites e2e/app/package.json, so that install cannot be immutable.
+          YARN_ENABLE_IMMUTABLE_INSTALLS: 'false'
 
       # GitHub runners check out as an unprivileged user, so Electron's setuid sandbox helper
       # lacks the root ownership and 4755 mode Chromium demands, and the app refuses to launch.
@@ -94,7 +110,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-report
+          name: e2e-report-electron-${{ matrix.electron }}
           # Playwright resolves both directories against the working directory, not against the
           # config passed to `-c e2e`, so they land at the repository root.
           path: |

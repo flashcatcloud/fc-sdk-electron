@@ -7,7 +7,7 @@
  * `_dd.trace_id` / `_dd.span_id` the resource event carries, and `intake-contract.scenario.ts`
  * asserts that nothing is ever POSTed to a span endpoint.
  */
-import { test, expect } from '../lib/helpers';
+import { test, expect, ELECTRON_MAJOR } from '../lib/helpers';
 import type { RumResourceEvent, RumViewEvent } from '@flashcatcloud/electron-sdk';
 
 test('emits a resource event for a main-process fetch', async ({ mainPage, intake, testServer }) => {
@@ -62,6 +62,11 @@ test('emits a resource event for a main-process http.request', async ({ mainPage
 });
 
 test('emits a resource event for a main-process net.request', async ({ mainPage, intake, testServer }) => {
+  // `datadog-instrumentations` gates its whole Electron hook on `electron >= 37`, so below that
+  // nothing wraps Electron's own `net` module. Node's `http` and global `fetch` are instrumented
+  // independently of that hook and are asserted by the tests around this one, on every version.
+  test.skip(ELECTRON_MAJOR < 37, "dd-trace does not instrument Electron's net module below Electron 37");
+
   await mainPage.flushTransport();
   const viewEvents = await intake.getEventsByType('view');
   const view = viewEvents[0].body as RumViewEvent;
