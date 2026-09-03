@@ -77,7 +77,7 @@ export function installBridgePreload(
 
   const registrations = new WeakMap<Session, string>();
 
-  const setUp = (session: Session): void => {
+  const setUp = monitor((session: Session): void => {
     if (registrations.has(session)) {
       return;
     }
@@ -87,15 +87,15 @@ export function installBridgePreload(
     const register = registerOnce(session, preloadPath, registrations);
     takeOverDdTraceRegistrations(session, register);
     register();
-  };
+  });
 
   // Sessions are created before the windows using them, so a session-created listener always runs
   // before dd-trace's BrowserWindow subclass gets a chance to register its own preload.
-  host.app.on('session-created', monitor(setUp));
+  host.app.on('session-created', setUp);
 
   // The default session usually exists before this runs, so 'session-created' has already fired for
   // it. Register it explicitly instead; `registrations` keeps that idempotent if the event did fire.
-  const setUpDefaultSession = monitor(() => setUp(host.session.defaultSession));
+  const setUpDefaultSession = () => setUp(host.session.defaultSession);
   if (host.app.isReady()) {
     setUpDefaultSession();
   } else {
