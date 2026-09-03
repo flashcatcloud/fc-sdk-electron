@@ -107,10 +107,14 @@ let warnedNoPreloadApi = false;
 
 /**
  * `session.registerPreloadScript` was added in Electron 35. `setPreloads`, which it replaced, has
- * been there since Electron 2. Both this SDK and dd-trace's `BrowserWindow` subclass call the newer
- * method unconditionally, from places the host application cannot guard — an `app` 'ready' listener
- * here, every `new BrowserWindow()` there — so on an older runtime its absence would stop the
- * application from starting rather than cost it monitoring.
+ * been there since Electron 2. The SDK registers the bridge preload from an `app` 'ready' listener
+ * and from 'session-created', neither of which the host application can guard, so on an older
+ * runtime the newer method's absence would stop the application from starting rather than cost it
+ * monitoring.
+ *
+ * dd-trace registers a preload of its own through the same method, but `datadog-instrumentations`
+ * gates its whole Electron hook on `electron >= 37` — which also means its tracing of Electron's
+ * `net` module and of IPC is absent below that, whatever this fills in.
  *
  * Fill the method in from `setPreloads` rather than branching at each call site, so the SDK and
  * dd-trace alike stay written against one API. `setPreloads` replaces the session's list instead of
