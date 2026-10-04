@@ -498,6 +498,33 @@ describe('sessionManager', () => {
         expect(states[states.length - 1]).toMatchObject({ hasError: true });
       });
 
+      it('writes one state at a time, so a slow earlier write cannot land over the mark', async () => {
+        await startWithheldSession();
+        const { id } = sessionManager.getSession();
+        mfs.access.mockResolvedValue(undefined);
+        mfs.readFile.mockResolvedValue(
+          JSON.stringify({ id, created: 0, lastActivity: 0, trackingType: TrackingType.TRACKED_ON_ERROR })
+        );
+        let finishActivityWrite!: () => void;
+        mfs.writeFile.mockImplementationOnce(() => new Promise<void>((resolve) => (finishActivityWrite = resolve)));
+
+        // An activity update starts writing the state it had before the error…
+        eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.END_USER_ACTIVITY });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(savedSessionStates()).toHaveLength(1);
+
+        // …and the mark has to wait for it rather than race it.
+        sessionManager.setSessionHasError(id);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(savedSessionStates()).toHaveLength(1);
+
+        finishActivityWrite();
+        await vi.advanceTimersByTimeAsync(0);
+        const states = savedSessionStates();
+        expect(states).toHaveLength(2);
+        expect(states[1]).toMatchObject({ hasError: true });
+      });
+
       it('leaves a drawn session alone, and writes nothing', async () => {
         mockNoSessionFile();
         sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);

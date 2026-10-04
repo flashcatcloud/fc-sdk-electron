@@ -7,6 +7,11 @@ import { SESSION_TIME_OUT_DELAY } from '../../session';
 
 export const VIEW_HISTORY_FILE_NAME = '_dd_view_history';
 
+export interface MainView {
+  id: string;
+  startTime: TimeStamp;
+}
+
 export class ViewContext {
   private readonly history: DiskValueHistory<string>;
 
@@ -39,7 +44,7 @@ export class ViewContext {
   }
 
   /** The main-process view in force at `startTime`, or `undefined` when there was none. */
-  findView(startTime: TimeStamp): { id: string; startTime: TimeStamp } | undefined {
+  findView(startTime: TimeStamp): MainView | undefined {
     const entry = this.history.findEntry(startTime);
     return entry && { id: entry.value, startTime: entry.startTime };
   }

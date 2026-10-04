@@ -77,6 +77,7 @@ export class Transport {
     this.eventManager.registerHandler<ServerEvent>({
       canHandle: (event): event is ServerEvent => event.kind === EventKind.SERVER && event.track === track,
       handle: (event) => {
+        // `canHandle` already filtered on the track at runtime; the repeat is what narrows `data`.
         if (withheldEventBuffer && event.track === EventTrack.RUM && event.data.type !== 'telemetry') {
           withheldEventBuffer.collect(event.data);
         } else {

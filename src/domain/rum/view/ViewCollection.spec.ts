@@ -13,6 +13,7 @@ vi.mock('../../../tools/display', () => ({
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { type TimeStamp } from '@flashcatcloud/browser-core';
 import { ViewCollection, SESSION_KEEP_ALIVE_INTERVAL, VIEW_UPDATE_THROTTLE_DELAY } from './ViewCollection';
+import { ViewContext } from './ViewContext';
 import {
   EventManager,
   EventKind,
@@ -52,7 +53,7 @@ describe('ViewCollection', () => {
       handle: (event) => rawRumEvents.push(event),
     });
 
-    viewCollection = await ViewCollection.start(eventManager, hooks);
+    viewCollection = ViewCollection.start(eventManager, await ViewContext.init(hooks));
   });
 
   afterEach(() => {
@@ -106,7 +107,7 @@ describe('ViewCollection', () => {
         handle: (event) => emitted.push(event),
       });
 
-      const racyCollection = await ViewCollection.start(racyEventManager, racyHooks);
+      const racyCollection = ViewCollection.start(racyEventManager, await ViewContext.init(racyHooks));
       getTime.mockRestore();
 
       try {

@@ -47,8 +47,11 @@ export type SamplingConfiguration = Pick<Configuration, 'sessionSampleRate' | 's
  *   Session keeps the decision it was created with
  */
 export class SessionManager {
-  private currentSession!: Session;
+  /** The current session as it is saved: the one copy of its id, draw and error mark. */
   private currentState!: SessionState;
+  private status: SessionStatus = 'active';
+  /** Every write of `currentState`, in order, so that a late write cannot undo an earlier one. */
+  private pendingSave: Promise<void> = Promise.resolve();
   private sessionContext!: SessionContext;
   private inactivityTimeoutId: ReturnType<typeof setTimeout> | undefined;
   private sessionTimeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -71,7 +74,8 @@ export class SessionManager {
   }
 
   getSession(): Session {
-    return deepClone(this.currentSession);
+    const { id, trackingType, hasError } = this.currentState;
+    return deepClone({ id, trackingType, hasError, status: this.status });
   }
 
   expire(): void {
@@ -91,10 +95,9 @@ export class SessionManager {
    * quits" is the case this exists for, and it must not wait on a write.
    */
   setSessionHasError(sessionId: string): void {
-    if (sessionId === this.currentSession.id && withholdsEvents(this.currentSession)) {
-      this.currentSession.hasError = true;
+    if (sessionId === this.currentState.id && withholdsEvents(this.currentState)) {
       this.currentState.hasError = true;
-      saveSessionState(this.currentState).catch(addError);
+      void this.saveCurrentState();
     }
     this.sessionContext.setHasError(sessionId);
   }
@@ -116,7 +119,7 @@ export class SessionManager {
     if (existingState && isSessionValid(existingState, now)) {
       existingState.lastActivity = now;
       this.setCurrent(existingState);
-      await saveSessionState(existingState);
+      await this.saveCurrentState();
       this.scheduleInactivityTimeout();
       this.scheduleSessionTimeout(existingState.created);
     } else {
@@ -143,7 +146,7 @@ export class SessionManager {
     };
 
     this.setCurrent(state);
-    await saveSessionState(state);
+    await this.saveCurrentState();
 
     this.scheduleInactivityTimeout();
     this.scheduleSessionTimeout(state.created);
@@ -151,28 +154,37 @@ export class SessionManager {
 
   private setCurrent(state: SessionState): void {
     this.currentState = state;
+    this.status = 'active';
     const { id, trackingType, hasError } = state;
-    this.currentSession = { id, trackingType, hasError, status: 'active' };
     this.sessionContext.add({ id, trackingType, hasError });
+  }
+
+  /**
+   * Queue a write of the current state. Each write serializes the state as of when it runs, and they
+   * run one after another, so the last one on disk is always the latest state.
+   */
+  private saveCurrentState(): Promise<void> {
+    this.pendingSave = this.pendingSave.then(() => saveSessionState(this.currentState));
+    return this.pendingSave;
   }
 
   private expireSession(): void {
     this.clearTimers();
-    this.currentSession.status = 'expired';
+    this.status = 'expired';
     this.sessionContext.close();
     deleteSessionFile().catch(addError);
     this.eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_EXPIRED });
   }
 
   private async updateActivity(): Promise<void> {
-    if (this.currentSession.status === 'expired') {
+    if (this.status === 'expired') {
       await this.createNewSession();
       this.eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_RENEW });
       return;
     }
 
     const state = await loadSessionState();
-    if (!state || state.id !== this.currentSession.id) {
+    if (!state || state.id !== this.currentState.id) {
       addError(new Error('SessionManager: Invalid session state'));
       return;
     }
@@ -180,7 +192,7 @@ export class SessionManager {
     // Written from memory rather than from what was just read: the error mark reaches memory first
     // and disk afterwards, and writing the read state back could undo it.
     this.currentState.lastActivity = Date.now();
-    await saveSessionState(this.currentState);
+    await this.saveCurrentState();
 
     this.scheduleInactivityTimeout();
   }

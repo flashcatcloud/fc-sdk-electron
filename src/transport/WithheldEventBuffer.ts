@@ -1,5 +1,5 @@
 import { app } from 'electron';
-import { computeBytesCount, ONE_KIBI_BYTE, ONE_SECOND, type Subscription } from '@flashcatcloud/browser-core';
+import { computeBytesCount, ONE_KIBI_BYTE, ONE_SECOND } from '@flashcatcloud/browser-core';
 import { EventKind, type EventManager, type LifecycleEvent, LifecycleKind } from '../event';
 import type { RumEvent } from '../domain/rum';
 import { type SessionManager, withholdsEvents } from '../domain/session';
@@ -88,15 +88,13 @@ export class WithheldEventBuffer {
   private releaseTimeoutId: ReturnType<typeof setTimeout> | undefined;
   /** When the release was scheduled, which is what freezes the window — see {@link prune}. */
   private releaseScheduledAt: number | undefined;
-  private readonly lifecycleSubscription: Subscription;
-  private readonly onBeforeQuit = monitor(() => this.settle(false));
 
   constructor(
     eventManager: EventManager,
     private readonly sessionManager: SessionSource,
     private readonly forward: (event: RumEvent) => void
   ) {
-    this.lifecycleSubscription = eventManager.registerHandler<LifecycleEvent>({
+    eventManager.registerHandler<LifecycleEvent>({
       canHandle: (event): event is LifecycleEvent =>
         event.kind === EventKind.LIFECYCLE &&
         (event.lifecycle === LifecycleKind.SESSION_EXPIRED || event.lifecycle === LifecycleKind.APP_MAY_EXIT),
@@ -104,7 +102,10 @@ export class WithheldEventBuffer {
       // happen leaves the session running, and a real one takes the buffer with it either way.
       handle: (event) => this.settle(event.lifecycle === LifecycleKind.SESSION_EXPIRED),
     });
-    app.on('before-quit', this.onBeforeQuit);
+    app.on(
+      'before-quit',
+      monitor(() => this.settle(false))
+    );
   }
 
   collect(event: RumEvent): void {
@@ -122,14 +123,15 @@ export class WithheldEventBuffer {
     }
 
     if (sessionId === this.withheldForSessionId) {
-      if (event.type === 'error' && computeEventBytes(event) > WITHHELD_BUFFER_BYTES_LIMIT) {
+      const bytes = event.type === 'error' ? computeEventBytes(event) : undefined;
+      if (bytes !== undefined && bytes > WITHHELD_BUFFER_BYTES_LIMIT) {
         // The session has earned its release, but an error larger than the whole budget would evict
         // the history it is meant to come with. It goes to the batch on its own instead; the history
         // still waits for the jitter, which exists for exactly the correlated outage at hand.
         this.forward(event);
       } else {
         // Typically the error itself: it joins what is held, so the whole history leaves in order.
-        this.hold(event);
+        this.hold(event, bytes);
       }
       this.scheduleRelease();
       return;
@@ -138,13 +140,8 @@ export class WithheldEventBuffer {
     this.forward(event);
   }
 
-  stop(): void {
-    this.settle(true);
-    this.lifecycleSubscription.unsubscribe();
-    app.off('before-quit', this.onBeforeQuit);
-  }
-
-  private hold(event: RumEvent): void {
+  /** `measuredBytes` is the event's serialized size, when the caller already measured it. */
+  private hold(event: RumEvent, measuredBytes?: number): void {
     if (event.type === 'view') {
       // Upsert: a view event is cumulative, so the latest one supersedes the ones before it. The
       // delete moves it to the end, so the map stays ordered by last update.
@@ -155,7 +152,7 @@ export class WithheldEventBuffer {
       return;
     }
 
-    const bytes = computeEventBytes(event);
+    const bytes = measuredBytes ?? computeEventBytes(event);
     if (bytes > WITHHELD_BUFFER_BYTES_LIMIT) {
       // It could never be part of a release, and holding it would evict the entire minute before it
       // to make room it will never fit into.

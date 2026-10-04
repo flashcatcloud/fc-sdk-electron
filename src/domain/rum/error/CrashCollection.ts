@@ -6,6 +6,7 @@ import { EventFormat, EventKind, EventManager, EventSource } from '../../../even
 import type { CrashReport } from '../../../wasm';
 import type { RawRumError, RawRumView } from '../rawRumData.types';
 import { type SessionManager, withholdsEvents } from '../../session';
+import type { MainView } from '../view';
 import type { RumErrorEvent } from '../rumEvent.types';
 import { displayError, displayInfo } from '../../../tools/display';
 import { addError, monitor } from '../../telemetry';
@@ -23,13 +24,13 @@ export class CrashCollection {
   private constructor(
     private readonly eventManager: EventManager,
     private readonly sessionManager: Pick<SessionManager, 'findSession' | 'setSessionHasError'>,
-    private readonly findView: (startTime: TimeStamp) => CrashedView | undefined
+    private readonly findView: (startTime: TimeStamp) => MainView | undefined
   ) {}
 
   static start(
     eventManager: EventManager,
     sessionManager: Pick<SessionManager, 'findSession' | 'setSessionHasError'>,
-    findView: (startTime: TimeStamp) => CrashedView | undefined
+    findView: (startTime: TimeStamp) => MainView | undefined
   ): CrashCollection {
     crashReporter.start({ uploadToServer: false, ignoreSystemCrashHandler: true });
     const collection = new CrashCollection(eventManager, sessionManager, findView);
@@ -99,22 +100,17 @@ export class CrashCollection {
       kind: EventKind.RAW,
       source: EventSource.MAIN,
       format: EventFormat.RUM,
-      data: buildCrashedViewEvent(view, crashTime),
+      data: buildMainViewEvent(view, crashTime),
       startTime: view.startTime,
     });
   }
-}
-
-interface CrashedView {
-  id: string;
-  startTime: TimeStamp;
 }
 
 /**
  * The crashed view as of the crash. Its earlier updates were never uploaded, so this is the first
  * version the backend sees.
  */
-function buildCrashedViewEvent(view: CrashedView, crashTime: TimeStamp): RawRumView {
+function buildMainViewEvent(view: MainView, crashTime: TimeStamp): RawRumView {
   return {
     type: 'view',
     date: view.startTime,

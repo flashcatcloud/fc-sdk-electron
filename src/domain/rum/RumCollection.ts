@@ -2,7 +2,7 @@ import { EventManager } from '../../event';
 import type { FormatHooks } from '../../assembly';
 import { ErrorCollection, CrashCollection, ProcessGoneCollection } from './error';
 import { OperationCollection } from './operation';
-import { ViewCollection } from './view';
+import { ViewCollection, ViewContext } from './view';
 import type { RendererRegistry } from '../RendererRegistry';
 import type { StackPathNormalizer } from '../StackPathNormalizer';
 import type { SessionManager } from '../session';
@@ -22,11 +22,12 @@ export class RumCollection {
     stackPathNormalizer: StackPathNormalizer,
     sessionManager: SessionManager
   ): Promise<RumCollection> {
-    const viewCollection = await ViewCollection.start(eventManager, hooks);
+    const viewContext = await ViewContext.init(hooks);
+    const viewCollection = ViewCollection.start(eventManager, viewContext);
     const errorCollection = new ErrorCollection(eventManager, stackPathNormalizer);
     const operationCollection = new OperationCollection(eventManager);
     const processGoneCollection = new ProcessGoneCollection(eventManager, rendererRegistry);
-    CrashCollection.start(eventManager, sessionManager, (startTime) => viewCollection.findView(startTime));
+    CrashCollection.start(eventManager, sessionManager, (startTime) => viewContext.findView(startTime));
     return new RumCollection(viewCollection, errorCollection, operationCollection, processGoneCollection);
   }
 

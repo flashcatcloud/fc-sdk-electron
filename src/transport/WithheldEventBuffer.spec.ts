@@ -3,7 +3,6 @@ const { appListeners } = vi.hoisted(() => ({ appListeners: new Map<string, () =>
 vi.mock('electron', () => ({
   app: {
     on: vi.fn((name: string, listener: () => void) => appListeners.set(name, listener)),
-    off: vi.fn((name: string) => appListeners.delete(name)),
   },
 }));
 
@@ -96,7 +95,6 @@ describe('WithheldEventBuffer', () => {
   });
 
   afterEach(() => {
-    buffer.stop();
     vi.useRealTimers();
     vi.clearAllMocks();
   });
