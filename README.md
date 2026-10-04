@@ -215,7 +215,7 @@ await esbuild.build({
 
 ## Available Features
 
-- **Sessions** — Session-based event grouping
+- **Sessions** — Session-based event grouping, with [sampling](#sampling) and error-session capture
 - **RUM Views** — One view per main process instance
 - **RUM Errors** — Capture Node errors and crashes in main process, with sourcemap-ready stacks
 - **RUM Resources** — Capture RUM resources from main process network calls
@@ -381,6 +381,8 @@ before the logout still resolve to the user who was logged in then.
 | `service`                     | `string`                                 | Yes      | —                        | Service name                                                                                                                           |
 | `env`                         | `string`                                 | No       | —                        | Application environment                                                                                                                |
 | `version`                     | `string`                                 | No       | —                        | Application version                                                                                                                    |
+| `sessionSampleRate`           | `number`                                 | No       | `100`                    | Percentage of sessions collected (0–100). An out-of-range value fails `init`. See [Sampling](#sampling)                                |
+| `sessionOnError`              | `boolean`                                | No       | `false`                  | Keep the sessions `sessionSampleRate` did not draw, uploaded only if they report an error. See [Sampling](#sampling)                   |
 | `telemetrySampleRate`         | `number`                                 | No       | `20`                     | Telemetry sample rate (0–100)                                                                                                          |
 | `batchSize`                   | `'SMALL' \| 'MEDIUM' \| 'LARGE'`         | No       | —                        | Batch size for event uploads                                                                                                           |
 | `uploadFrequency`             | `'RARE' \| 'NORMAL' \| 'FREQUENT'`       | No       | —                        | Upload frequency for event batches                                                                                                     |
@@ -389,6 +391,48 @@ before the logout still resolve to the user who was logged in then.
 | `proxy`                       | `string`                                 | No       | —                        | Proxy URL to upload through instead of `site`. See [Self-hosted deployments](#self-hosted-deployments)                                 |
 | `normalizeStackPaths`         | `boolean`                                | No       | `true`                   | Rewrite stack frame paths to `app:///<path relative to the app root>`. See [Error stacks and sourcemaps](#error-stacks-and-sourcemaps) |
 | `correctPrewarmedViewTimings` | `boolean`                                | No       | `true`                   | Rebase FCP/LCP of pre-warmed windows onto the moment they became visible. See [Pre-warmed windows](#pre-warmed-windows)                |
+
+### Sampling
+
+`sessionSampleRate` is drawn once per session, in the main process, and decides for the renderers
+too: their events reach the intake through the main process, which drops those of a session it did
+not draw. A session resumed after a restart keeps the decision it was created with. A renderer's own
+`sessionSampleRate` does not apply to the events it sends over the bridge: the main process decides.
+
+`sessionOnError` keeps the sessions the rate did not draw on standby instead of dropping them:
+
+- The session's events — main process and renderers alike — are held in memory, never on disk, and
+  only the last minute of them (64 KiB of detail, 200 events, plus up to 50 views). Nothing is
+  uploaded.
+- At the session's first error, that minute is uploaded together with the error, 0–3 s later
+  (spread per session, so that one outage does not make every client upload at once), and the
+  session then reports as it happens, like any drawn session. An uncaught exception in the main
+  process uploads it at once instead, since the application may be about to exit.
+- A session that ends without an error is thrown away whole, late events included.
+
+Only errors the application reports count: an error a renderer's `beforeSend` dropped, or one the
+SDK reports about itself, does not. A native crash counts too: it is reported on the next launch,
+when the session's held events are long gone, so the crash comes with the view it happened in and
+nothing before it.
+
+Such a session reports `session.sampled_for_error: true` on its views and a
+`_dd.configuration.session_sample_rate` of `0` on every event, so that it is counted as itself
+rather than extrapolated by the rate.
+
+```ts
+await init({
+  // ...
+  sessionSampleRate: 0, // no session is collected unconditionally…
+  sessionOnError: true, // …but every session that reports an error is
+});
+```
+
+> **Session Replay is not withheld.** The renderer uploads its replay itself, past the main process.
+> For a session the rate did not draw, renderers are told there is no session, so they record
+> nothing. A session kept by `sessionOnError` cannot be hidden from them that way — its renderer
+> events must reach the main process to be held — so with `sessionReplayDirectUpload` on, its replay
+> is uploaded whether or not the session ever reports an error. Do not combine the two until the
+> Browser SDK can withhold replay for a bridged session.
 
 ### Pre-warmed windows
 

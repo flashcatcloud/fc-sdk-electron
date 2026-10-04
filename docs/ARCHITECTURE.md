@@ -75,6 +75,7 @@ flowchart LR
     end
 
     subgraph Transport
+        WB[WithheldEventBuffer]
         BM[BatchManager]
         BP[BatchProducer]
         BC[BatchConsumer]
@@ -83,16 +84,31 @@ flowchart LR
     RUM -- RawRumEvent --> COMBINE
     TEL -- RawTelemetryEvent --> COMBINE
     CC -. "application.id, service, ..." .-> HOOKS
-    SC -. "session.id" .-> HOOKS
+    SC -. "session.id, sampling" .-> HOOKS
     VC -. "view.id, view.name, ..." .-> HOOKS
     HOOKS --> COMBINE
-    COMBINE -- ServerEvent --> BM
+    COMBINE -- ServerEvent --> WB
+    WB -- "released / not withheld" --> BM
     BM --> BP
     BM --> BC
     BP -. "write" .-> DISK[Disk]
     BC -. "read" .-> DISK[Disk]
     BC -. "send" .-> INT[HTTP intake]
 ```
+
+### Sampling and withheld sessions
+
+`SessionManager` draws each session once (`sessionSampleRate`, then `sessionOnError` for what the
+rate missed) and persists the result with the session, in `_dd_s` and in the session history, so a
+resumed session and a crash reported on the next launch are judged by the draw they were made under.
+`SessionContext`'s RUM hook turns the draw into event attributes: it discards the events of a session
+not drawn, and of a withheld session that ended without an error (its late events), and stamps
+`session.sampled_for_error` and `_dd.configuration.session_sample_rate`.
+
+`WithheldEventBuffer` sits between assembly and the RUM batch, so it sees main-process and renderer
+events alike, already final. It holds a withheld session's events and releases them at the session's
+first error; telemetry bypasses it. `CrashCollection` releases the session of a crash reported on the
+next launch itself, rebuilding the crashed view from the view history. See the JSDoc of each class.
 
 ### Event Manager
 
@@ -254,7 +270,7 @@ Two pieces close it, and the order between them is what makes it work:
 
 `init-order.scenario.ts` pins both down — a window opened before the SDK is ready, and an application that never initializes at all.
 
-**`''` is load-bearing, and is not the same as not implementing the getter.** The Browser SDK reads an empty answer as "the host has no session right now" and stops attributing data until the host answers with an id again; it only falls back to its own placeholder session id for a host too old to implement `getSessionId()` at all. That distinction is what keeps Session Replay off a fake session: the renderer uploads its segments itself instead of handing them to the main process, so nothing here can discard them after the fact, and a placeholder id is a constant every application built on this SDK would share. It also means the main process must never answer with the id an expired session used to have — that would attach segments to a session that has ended. `getActiveSessionId` in `src/index.ts` answers `''` for anything but an active session, and `bridge-window.scenario.ts` pins both the expiry and the renewal down.
+**`''` is load-bearing, and is not the same as not implementing the getter.** The Browser SDK reads an empty answer as "the host has no session right now" and stops attributing data until the host answers with an id again; it only falls back to its own placeholder session id for a host too old to implement `getSessionId()` at all. That distinction is what keeps Session Replay off a fake session: the renderer uploads its segments itself instead of handing them to the main process, so nothing here can discard them after the fact, and a placeholder id is a constant every application built on this SDK would share. It also means the main process must never answer with the id an expired session used to have — that would attach segments to a session that has ended. `getActiveSessionId` in `src/index.ts` answers `''` for anything but an active session, and `bridge-window.scenario.ts` pins both the expiry and the renewal down. It answers `''` for a session the sampling draw did not keep, too, which is what keeps the renderer from recording it; a session withheld by `sessionOnError` is answered with its id, since its renderer events have to reach the main process — so the renderer's replay of such a session is not withheld (see README, Sampling).
 
 See `src/preload/`, `src/bridge/BridgeHandler.ts`, `src/domain/AnonymousId.ts`, `src/assembly/commonContext.ts`, `src/domain/tracing/`, `src/entries/instrument.ts`, `src/entries/vite-plugin.ts`, `src/entries/webpack-plugin.ts`, and `src/entries/esbuild-plugin.ts`.
 
