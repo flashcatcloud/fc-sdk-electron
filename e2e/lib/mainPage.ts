@@ -142,6 +142,15 @@ export class MainPage {
     return await this.page.evaluate(() => (globalThis as unknown as ElectronAppWindow).electronAPI.ping());
   }
 
+  /** The session id the SDK's bridge answers renderers with: `''` when there is none to collect. */
+  async getBridgeSessionId(): Promise<string> {
+    return await this.page.evaluate(() =>
+      (
+        globalThis as unknown as { DatadogEventBridge: { getSessionId: () => string } }
+      ).DatadogEventBridge.getSessionId()
+    );
+  }
+
   async flushTransport() {
     await this.page.evaluate(() => (globalThis as unknown as ElectronAppWindow).electronAPI.flushTransport());
   }
