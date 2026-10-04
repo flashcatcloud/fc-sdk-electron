@@ -61,23 +61,28 @@ export class DiskValueHistory<T> {
 
   add(value: T, startTime: TimeStamp): void {
     this.history.add(value, startTime);
-    this.persistToDisk();
+    this.persist();
   }
 
   find(startTime: TimeStamp): T | undefined {
     return this.history.find(startTime);
   }
 
+  findEntry(startTime: TimeStamp): TimeStampHistoryEntry<T> | undefined {
+    return this.history.findEntry(startTime);
+  }
+
   closeActive(endTime: TimeStamp): void {
     this.history.closeActive(endTime);
-    this.persistToDisk();
+    this.persist();
   }
 
   getEntries(): readonly TimeStampHistoryEntry<T>[] {
     return this.history.getEntries();
   }
 
-  private persistToDisk(): void {
+  /** Write the entries to disk. Called by `add()` and `closeActive()`, and after a value is updated in place. */
+  persist(): void {
     const snapshot = JSON.stringify(this.history.getEntries());
     this.pendingWrite = this.pendingWrite
       .then(() => fs.writeFile(this.filePath, snapshot, 'utf-8'))

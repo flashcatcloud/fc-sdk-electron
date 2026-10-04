@@ -42,6 +42,7 @@ import type { CrashReport } from '../../../wasm';
 import type { RawRumError } from '../rawRumData.types';
 import { displayError } from '../../../tools/display';
 import { addError } from '../../telemetry';
+import { type SessionManager, type SessionRecord, TrackingType } from '../../session';
 
 vi.mock('node:fs/promises');
 const mfs = mockFs();
@@ -91,8 +92,27 @@ function mockDmpFile(name = 'crash.dmp', birthtimeMs = 0) {
   mfs.unlink.mockResolvedValue(undefined);
 }
 
-async function startAndFlush(eventManager: EventManager) {
-  CrashCollection.start(eventManager);
+/** A session that is always collected, and a main-process view that always exists. */
+const TRACKED_SESSION_MANAGER = {
+  findSession: () => ({ id: 'session-id', trackingType: TrackingType.TRACKED }),
+  setSessionHasError: vi.fn(),
+};
+
+function startCollection(
+  eventManager: EventManager,
+  sessionManager: Pick<SessionManager, 'findSession' | 'setSessionHasError'> = TRACKED_SESSION_MANAGER
+) {
+  return CrashCollection.start(eventManager, sessionManager, () => ({
+    id: 'main-view-id',
+    startTime: 0 as TimeStamp,
+  }));
+}
+
+async function startAndFlush(
+  eventManager: EventManager,
+  sessionManager?: Pick<SessionManager, 'findSession' | 'setSessionHasError'>
+) {
+  startCollection(eventManager, sessionManager);
   resolveWhenReady();
   await vi.advanceTimersToNextTimerAsync();
 }
@@ -121,7 +141,7 @@ describe('CrashCollection', () => {
   });
 
   it('starts the native crash reporter', () => {
-    CrashCollection.start(eventManager);
+    startCollection(eventManager);
 
     // eslint-disable-next-line @typescript-eslint/unbound-method
     expect(crashReporter.start).toHaveBeenCalledWith({ uploadToServer: false, ignoreSystemCrashHandler: true });
@@ -781,5 +801,67 @@ describe('CrashCollection', () => {
     const second = rawRumEvents[1].data as RawRumError;
     expect(first.error.fingerprint).toBe('SIGSEGV|MyApp|0x12ab3c');
     expect(second.error.fingerprint).toBe(first.error.fingerprint);
+  });
+
+  describe('a crash of a session kept by sessionOnError', () => {
+    const VIEW_START = 400 as TimeStamp;
+    const CRASH_TIME = 1000 as TimeStamp;
+    let calls: string[];
+
+    function sessionManagerFor(session: SessionRecord | undefined) {
+      return {
+        findSession: () => session,
+        setSessionHasError: vi.fn(() => calls.push('setSessionHasError')),
+      };
+    }
+
+    async function processCrash(sessionManager: Pick<SessionManager, 'findSession' | 'setSessionHasError'>) {
+      mockDmpFile('crash.dmp', CRASH_TIME);
+      vi.mocked(processMinidump).mockResolvedValue(createMinidumpResult());
+      eventManager.registerHandler<RawRumEvent>({
+        canHandle: (event): event is RawRumEvent => event.kind === EventKind.RAW,
+        handle: (event) => calls.push(event.data.type),
+      });
+      CrashCollection.start(eventManager, sessionManager, () => ({ id: 'crashed-view', startTime: VIEW_START }));
+      resolveWhenReady();
+      await vi.advanceTimersToNextTimerAsync();
+    }
+
+    beforeEach(() => {
+      calls = [];
+    });
+
+    it('releases a session that had not reported an error, and rebuilds its view ahead of the crash', async () => {
+      const sessionManager = sessionManagerFor({ id: 'withheld', trackingType: TrackingType.TRACKED_ON_ERROR });
+
+      await processCrash(sessionManager);
+
+      expect(sessionManager.setSessionHasError).toHaveBeenCalledWith('withheld');
+      expect(calls).toEqual(['setSessionHasError', 'view', 'error']);
+      expect(rawRumEvents[0]).toMatchObject({
+        startTime: VIEW_START,
+        data: {
+          type: 'view',
+          date: VIEW_START,
+          view: { id: 'crashed-view', is_active: false, error: { count: 1 }, time_spent: 600_000_000 },
+          _dd: { document_version: 1 },
+        },
+      });
+      expect((rawRumEvents[1].data as RawRumError).error.is_crash).toBe(true);
+    });
+
+    it.each([
+      ['a drawn session', { id: 'drawn', trackingType: TrackingType.TRACKED }],
+      ['a session already released', { id: 'released', trackingType: TrackingType.TRACKED_ON_ERROR, hasError: true }],
+      ['a session the draw did not keep', { id: 'not-kept', trackingType: TrackingType.NOT_TRACKED }],
+      ['no session at all', undefined],
+    ])('reports the crash alone for %s', async (_, session) => {
+      const sessionManager = sessionManagerFor(session as SessionRecord | undefined);
+
+      await processCrash(sessionManager);
+
+      expect(sessionManager.setSessionHasError).not.toHaveBeenCalled();
+      expect(calls).toEqual(['error']);
+    });
   });
 });

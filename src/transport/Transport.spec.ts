@@ -3,11 +3,14 @@ import { BatchSizes, BatchUploadFrequencies } from '../config';
 import type { RawEvent, ServerEvent } from '../event';
 import { EventKind, EventTrack, EventManager } from '../event';
 import { createTestConfiguration } from '../mocks.specUtil';
+import { type Session, type SessionManager, TrackingType } from '../domain/session';
 import { Transport } from './Transport';
 
 vi.mock('electron', () => ({
   app: {
     getPath: vi.fn(() => '/mock/user/data'),
+    on: vi.fn(),
+    off: vi.fn(),
   },
 }));
 
@@ -32,23 +35,27 @@ vi.mock('./batch', () => ({
 describe('Transport', () => {
   let eventManager: EventManager;
   let config: ReturnType<typeof createTestConfiguration>;
+  let session: Session;
+  let sessionManager: SessionManager;
 
   beforeEach(() => {
     vi.clearAllMocks();
     eventManager = new EventManager();
     config = createTestConfiguration();
+    session = { id: 'session-id', status: 'active', trackingType: TrackingType.TRACKED };
+    sessionManager = { getSession: () => session, setSessionHasError: vi.fn() } as unknown as SessionManager;
   });
 
   describe('create', () => {
     it('should register event handlers for known tracks', async () => {
       const spy = vi.spyOn(eventManager, 'registerHandler');
-      await Transport.create(config, eventManager);
+      await Transport.create(config, eventManager, sessionManager);
 
       expect(spy).toHaveBeenCalled();
     });
 
     it('should setup batch manager for known tracks', async () => {
-      await Transport.create(config, eventManager);
+      await Transport.create(config, eventManager, sessionManager);
 
       expect(mockBatchCreate).toHaveBeenCalled();
     });
@@ -56,19 +63,36 @@ describe('Transport', () => {
 
   describe('event handling', () => {
     it('should handle SERVER events matching domain track type', async () => {
-      await Transport.create(config, eventManager);
+      await Transport.create(config, eventManager, sessionManager);
 
-      eventManager.notify({
-        kind: EventKind.SERVER,
-        track: EventTrack.RUM,
-        data: { test: 'data' },
-      } as unknown as ServerEvent);
+      const data = { type: 'action', session: { id: 'session-id' }, view: { id: 'view-id' } };
+      eventManager.notify({ kind: EventKind.SERVER, track: EventTrack.RUM, data } as unknown as ServerEvent);
 
-      expect(mockBatchPost).toHaveBeenCalledWith({ test: 'data' });
+      expect(mockBatchPost).toHaveBeenCalledWith(data);
+    });
+
+    it('should hold the RUM events of a session withheld by sessionOnError', async () => {
+      session.trackingType = TrackingType.TRACKED_ON_ERROR;
+      await Transport.create(config, eventManager, sessionManager);
+
+      const data = { type: 'action', session: { id: 'session-id' }, view: { id: 'view-id' } };
+      eventManager.notify({ kind: EventKind.SERVER, track: EventTrack.RUM, data } as unknown as ServerEvent);
+
+      expect(mockBatchPost).not.toHaveBeenCalled();
+    });
+
+    it('should post telemetry straight to the batch, even while the session is withheld', async () => {
+      session.trackingType = TrackingType.TRACKED_ON_ERROR;
+      await Transport.create(config, eventManager, sessionManager);
+
+      const data = { type: 'telemetry', telemetry: { status: 'error' } };
+      eventManager.notify({ kind: EventKind.SERVER, track: EventTrack.RUM, data } as unknown as ServerEvent);
+
+      expect(mockBatchPost).toHaveBeenCalledWith(data);
     });
 
     it('should not handle events that do not match', async () => {
-      await Transport.create(config, eventManager);
+      await Transport.create(config, eventManager, sessionManager);
 
       eventManager.notify({
         kind: EventKind.RAW,
@@ -80,7 +104,7 @@ describe('Transport', () => {
     });
 
     it('should not handle SERVER events with different track type', async () => {
-      await Transport.create(config, eventManager);
+      await Transport.create(config, eventManager, sessionManager);
 
       eventManager.notify({
         kind: EventKind.SERVER,
@@ -94,7 +118,7 @@ describe('Transport', () => {
 
   describe('flush', () => {
     it('should flush all batch managers', async () => {
-      const transport = await Transport.create(config, eventManager);
+      const transport = await Transport.create(config, eventManager, sessionManager);
       await transport.flush();
 
       // FlashCat only has the RUM track (no spans intake), so exactly one batch manager.
@@ -104,7 +128,7 @@ describe('Transport', () => {
 
   describe('batch configuration', () => {
     it('should use default batch size when not specified', async () => {
-      await Transport.create(config, eventManager);
+      await Transport.create(config, eventManager, sessionManager);
 
       expect(mockBatchCreate).toHaveBeenCalledWith(
         config,
@@ -116,7 +140,7 @@ describe('Transport', () => {
 
     it('should use configured batch size', async () => {
       const configWithBatchSize = createTestConfiguration({ batchSize: 'SMALL' });
-      await Transport.create(configWithBatchSize, eventManager);
+      await Transport.create(configWithBatchSize, eventManager, sessionManager);
 
       expect(mockBatchCreate).toHaveBeenCalledWith(
         configWithBatchSize,
@@ -127,7 +151,7 @@ describe('Transport', () => {
     });
 
     it('should use default upload frequency when not specified', async () => {
-      await Transport.create(config, eventManager);
+      await Transport.create(config, eventManager, sessionManager);
 
       expect(mockBatchCreate).toHaveBeenCalledWith(
         config,
@@ -139,7 +163,7 @@ describe('Transport', () => {
 
     it('should use configured upload frequency', async () => {
       const configWithFrequency = createTestConfiguration({ uploadFrequency: 'FREQUENT' });
-      await Transport.create(configWithFrequency, eventManager);
+      await Transport.create(configWithFrequency, eventManager, sessionManager);
 
       expect(mockBatchCreate).toHaveBeenCalledWith(
         configWithFrequency,

@@ -2,7 +2,9 @@ import { app } from 'electron';
 
 import { BatchSizes, BatchUploadFrequencies, type Configuration } from '../config';
 import { EventKind, EventTrack, type EventManager, type ServerEvent } from '../event';
+import type { SessionManager } from '../domain/session';
 import { BatchManager } from './batch';
+import { WithheldEventBuffer } from './WithheldEventBuffer';
 
 /**
  * Orchestrates event transport by routing server events from registered domains
@@ -20,14 +22,15 @@ export class Transport {
 
   private constructor(
     private readonly config: Configuration,
-    private readonly eventManager: EventManager
+    private readonly eventManager: EventManager,
+    private readonly sessionManager: SessionManager
   ) {
     this.basePath = app.getPath('userData');
   }
 
   /** Creates and fully initializes a Transport instance. */
-  static async create(config: Configuration, eventManager: EventManager) {
-    const transport = new Transport(config, eventManager);
+  static async create(config: Configuration, eventManager: EventManager, sessionManager: SessionManager) {
+    const transport = new Transport(config, eventManager, sessionManager);
     for (const track of transport.tracks) {
       await transport.setupTrackBatching(track);
     }
@@ -60,14 +63,25 @@ export class Transport {
   /**
    * Create a batch manager for a specific track
    * and register an event handler that forwards matching server events.
+   *
+   * RUM events go through a {@link WithheldEventBuffer} first, which holds those of a session kept by
+   * `sessionOnError` until it reports an error. Telemetry shares the track but is not session data,
+   * so it goes straight to the batch.
    */
   private async setupTrackBatching(track: EventTrack) {
     const batchManager = await this.createBatchManager(track);
+    const post = (data: unknown) => batchManager.post(data);
+    const withheldEventBuffer =
+      track === EventTrack.RUM ? new WithheldEventBuffer(this.eventManager, this.sessionManager, post) : undefined;
 
     this.eventManager.registerHandler<ServerEvent>({
       canHandle: (event): event is ServerEvent => event.kind === EventKind.SERVER && event.track === track,
       handle: (event) => {
-        batchManager.post(event.data);
+        if (withheldEventBuffer && event.track === EventTrack.RUM && event.data.type !== 'telemetry') {
+          withheldEventBuffer.collect(event.data);
+        } else {
+          post(event.data);
+        }
       },
     });
   }

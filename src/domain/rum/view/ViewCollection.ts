@@ -88,6 +88,11 @@ export class ViewCollection {
     });
   }
 
+  /** The main-process view in force at `startTime`, current or past. */
+  findView(startTime: TimeStamp): { id: string; startTime: TimeStamp } | undefined {
+    return this.viewContext.findView(startTime);
+  }
+
   stop(): void {
     this.cancelScheduledViewUpdate();
     this.stopSessionKeepAlive();

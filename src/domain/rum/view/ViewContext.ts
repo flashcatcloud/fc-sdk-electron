@@ -38,6 +38,12 @@ export class ViewContext {
     return new ViewContext(history, hooks);
   }
 
+  /** The main-process view in force at `startTime`, or `undefined` when there was none. */
+  findView(startTime: TimeStamp): { id: string; startTime: TimeStamp } | undefined {
+    const entry = this.history.findEntry(startTime);
+    return entry && { id: entry.value, startTime: entry.startTime };
+  }
+
   add(id: string, startTime: TimeStamp = timeStampNow()): void {
     this.history.add(id, startTime);
   }

@@ -5,6 +5,7 @@ import { OperationCollection } from './operation';
 import { ViewCollection } from './view';
 import type { RendererRegistry } from '../RendererRegistry';
 import type { StackPathNormalizer } from '../StackPathNormalizer';
+import type { SessionManager } from '../session';
 
 export class RumCollection {
   private constructor(
@@ -18,13 +19,14 @@ export class RumCollection {
     eventManager: EventManager,
     hooks: FormatHooks,
     rendererRegistry: RendererRegistry,
-    stackPathNormalizer: StackPathNormalizer
+    stackPathNormalizer: StackPathNormalizer,
+    sessionManager: SessionManager
   ): Promise<RumCollection> {
     const viewCollection = await ViewCollection.start(eventManager, hooks);
     const errorCollection = new ErrorCollection(eventManager, stackPathNormalizer);
     const operationCollection = new OperationCollection(eventManager);
     const processGoneCollection = new ProcessGoneCollection(eventManager, rendererRegistry);
-    CrashCollection.start(eventManager);
+    CrashCollection.start(eventManager, sessionManager, (startTime) => viewCollection.findView(startTime));
     return new RumCollection(viewCollection, errorCollection, operationCollection, processGoneCollection);
   }
 

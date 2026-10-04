@@ -1,19 +1,26 @@
 import { app } from 'electron';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { deepClone, generateUUID, ONE_MINUTE, type Subscription } from '@flashcatcloud/browser-core';
+import {
+  deepClone,
+  generateUUID,
+  ONE_MINUTE,
+  performDraw,
+  type Subscription,
+  type TimeStamp,
+} from '@flashcatcloud/browser-core';
+import type { Configuration } from '../../config';
 import { type EndUserActivityEvent, EventKind, EventManager, LifecycleKind } from '../../event';
 import type { FormatHooks } from '../../assembly';
 import { addError, setTimeout } from '../telemetry';
 import { displayError } from '../../tools/display';
-import { SessionContext } from './SessionContext';
+import { SessionContext, type SessionRecord, TrackingType, withholdsEvents } from './SessionContext';
 import { SESSION_TIME_OUT_DELAY } from './session.constants';
 
 export const SESSION_EXPIRATION_DELAY = 15 * ONE_MINUTE;
 export const SESSION_FILE_NAME = '_dd_s';
 
-export interface Session {
-  id: string;
+export interface Session extends SessionRecord {
   status: SessionStatus;
 }
 
@@ -22,11 +29,12 @@ export type SessionStatus = 'active' | 'expired';
 /**
  * Session state stored on disk
  */
-interface SessionState {
-  id: string;
+interface SessionState extends SessionRecord {
   created: number;
   lastActivity: number;
 }
+
+export type SamplingConfiguration = Pick<Configuration, 'sessionSampleRate' | 'sessionOnError'>;
 
 /**
  * Track session lifecycle
@@ -35,9 +43,12 @@ interface SessionState {
  * - after SESSION_EXPIRATION_DELAY without activity, expire the Session
  * - after SESSION_TIME_OUT_DELAY if the Session is still active, expire the Session
  * - on activity, if the Session is expired, create a new Session
+ * - when a Session is created, draw whether it is collected (see {@link TrackingType}); a resumed
+ *   Session keeps the decision it was created with
  */
 export class SessionManager {
   private currentSession!: Session;
+  private currentState!: SessionState;
   private sessionContext!: SessionContext;
   private inactivityTimeoutId: ReturnType<typeof setTimeout> | undefined;
   private sessionTimeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -45,11 +56,16 @@ export class SessionManager {
 
   private constructor(
     private readonly eventManager: EventManager,
-    private readonly hooks: FormatHooks
+    private readonly hooks: FormatHooks,
+    private readonly sampling: SamplingConfiguration
   ) {}
 
-  static async start(eventManager: EventManager, hooks: FormatHooks): Promise<SessionManager> {
-    const manager = new SessionManager(eventManager, hooks);
+  static async start(
+    eventManager: EventManager,
+    hooks: FormatHooks,
+    sampling: SamplingConfiguration
+  ): Promise<SessionManager> {
+    const manager = new SessionManager(eventManager, hooks, sampling);
     await manager.init();
     return manager;
   }
@@ -60,6 +76,27 @@ export class SessionManager {
 
   expire(): void {
     this.expireSession();
+  }
+
+  /** The session in force at `startTime`, current or past, or `undefined` when there was none. */
+  findSession(startTime: TimeStamp): SessionRecord | undefined {
+    return this.sessionContext.find(startTime);
+  }
+
+  /**
+   * Record that a withheld session reported its error, which releases what it held. A no-op for
+   * any other session: writing the mark there would only cost disk writes.
+   *
+   * Takes effect in memory at once, and reaches disk afterwards: "an error, then the application
+   * quits" is the case this exists for, and it must not wait on a write.
+   */
+  setSessionHasError(sessionId: string): void {
+    if (sessionId === this.currentSession.id && withholdsEvents(this.currentSession)) {
+      this.currentSession.hasError = true;
+      this.currentState.hasError = true;
+      saveSessionState(this.currentState).catch(addError);
+    }
+    this.sessionContext.setHasError(sessionId);
   }
 
   stop(): void {
@@ -74,12 +111,11 @@ export class SessionManager {
     const now = Date.now();
     const existingState = await loadSessionState();
 
-    this.sessionContext = await SessionContext.init(this.hooks);
+    this.sessionContext = await SessionContext.init(this.hooks, this.sampling.sessionSampleRate);
 
     if (existingState && isSessionValid(existingState, now)) {
-      this.currentSession = { id: existingState.id, status: 'active' };
-      this.sessionContext.add(existingState.id);
       existingState.lastActivity = now;
+      this.setCurrent(existingState);
       await saveSessionState(existingState);
       this.scheduleInactivityTimeout();
       this.scheduleSessionTimeout(existingState.created);
@@ -101,16 +137,23 @@ export class SessionManager {
     const now = Date.now();
     const state: SessionState = {
       id: generateUUID(),
+      trackingType: drawTrackingType(this.sampling),
       created: now,
       lastActivity: now,
     };
 
-    this.currentSession = { id: state.id, status: 'active' };
-    this.sessionContext.add(state.id);
+    this.setCurrent(state);
     await saveSessionState(state);
 
     this.scheduleInactivityTimeout();
     this.scheduleSessionTimeout(state.created);
+  }
+
+  private setCurrent(state: SessionState): void {
+    this.currentState = state;
+    const { id, trackingType, hasError } = state;
+    this.currentSession = { id, trackingType, hasError, status: 'active' };
+    this.sessionContext.add({ id, trackingType, hasError });
   }
 
   private expireSession(): void {
@@ -134,8 +177,10 @@ export class SessionManager {
       return;
     }
 
-    state.lastActivity = Date.now();
-    await saveSessionState(state);
+    // Written from memory rather than from what was just read: the error mark reaches memory first
+    // and disk afterwards, and writing the read state back could undo it.
+    this.currentState.lastActivity = Date.now();
+    await saveSessionState(this.currentState);
 
     this.scheduleInactivityTimeout();
   }
@@ -169,6 +214,17 @@ export class SessionManager {
   }
 }
 
+/**
+ * The plain rate first; `sessionOnError` only ever applies to what it missed, so a session is never
+ * counted by both.
+ */
+function drawTrackingType({ sessionSampleRate, sessionOnError }: SamplingConfiguration): TrackingType {
+  if (performDraw(sessionSampleRate)) {
+    return TrackingType.TRACKED;
+  }
+  return sessionOnError ? TrackingType.TRACKED_ON_ERROR : TrackingType.NOT_TRACKED;
+}
+
 function getSessionFilePath(): string {
   return path.join(app.getPath('userData'), SESSION_FILE_NAME);
 }
@@ -184,7 +240,10 @@ async function loadSessionState(): Promise<SessionState | undefined> {
     const filePath = getSessionFilePath();
     await fs.access(filePath);
     const content = await fs.readFile(filePath, 'utf-8');
-    return JSON.parse(content) as SessionState;
+    const state = JSON.parse(content) as Omit<SessionState, 'trackingType'> & Partial<SessionState>;
+    // A state written before sessions were sampled has no tracking type: every session was
+    // collected then, and a session keeps the decision it was created with.
+    return { ...state, trackingType: state.trackingType ?? TrackingType.TRACKED };
   } catch {
     return undefined;
   }

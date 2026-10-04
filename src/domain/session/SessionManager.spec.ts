@@ -15,8 +15,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { type TimeStamp } from '@flashcatcloud/browser-core';
 import { SessionManager, SESSION_EXPIRATION_DELAY, SESSION_FILE_NAME } from './SessionManager';
 import { SESSION_TIME_OUT_DELAY } from './session.constants';
+import { TrackingType } from './SessionContext';
 
 const T0 = 0 as TimeStamp;
+const SAMPLING = { sessionSampleRate: 100, sessionOnError: false };
 import { EventManager, EventKind, LifecycleKind, type LifecycleEvent } from '../../event';
 import { createFormatHooks, type FormatHooks } from '../../assembly';
 
@@ -56,7 +58,7 @@ describe('sessionManager', () => {
     it('creates new session when no file exists', async () => {
       mockNoSessionFile();
 
-      sessionManager = await SessionManager.start(eventManager, hooks);
+      sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
 
       expect(sessionManager.getSession().id).toMatch(/^[0-9a-f-]+$/);
       expect(sessionManager.getSession().status).toBe('active');
@@ -80,7 +82,7 @@ describe('sessionManager', () => {
 
       mfs.readFile.mockResolvedValue(JSON.stringify(existingState));
 
-      sessionManager = await SessionManager.start(eventManager, hooks);
+      sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
 
       expect(sessionManager.getSession().id).toBe('existing-session-id');
       expect(sessionManager.getSession().status).toBe('active');
@@ -96,7 +98,7 @@ describe('sessionManager', () => {
 
       mfs.readFile.mockResolvedValue(JSON.stringify(existingState));
 
-      sessionManager = await SessionManager.start(eventManager, hooks);
+      sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
 
       expect(sessionManager.getSession().id).not.toBe('expired-session-id');
       expect(sessionManager.getSession().status).toBe('active');
@@ -112,7 +114,7 @@ describe('sessionManager', () => {
 
       mfs.readFile.mockResolvedValue(JSON.stringify(existingState));
 
-      sessionManager = await SessionManager.start(eventManager, hooks);
+      sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
 
       expect(sessionManager.getSession().id).not.toBe('timed-out-session-id');
       expect(sessionManager.getSession().status).toBe('active');
@@ -130,7 +132,7 @@ describe('sessionManager', () => {
         .mockResolvedValueOnce(JSON.stringify(expiredState)) // _dd_s
         .mockResolvedValueOnce(JSON.stringify([{ startTime: 0, endTime: null, value: 'expired-session-id' }])); // _dd_session_history
 
-      sessionManager = await SessionManager.start(eventManager, hooks);
+      sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
 
       const newSessionId = sessionManager.getSession().id;
       expect(newSessionId).not.toBe('expired-session-id');
@@ -151,7 +153,7 @@ describe('sessionManager', () => {
     it('expires session after inactivity delay', async () => {
       mockNoSessionFile();
 
-      sessionManager = await SessionManager.start(eventManager, hooks);
+      sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
 
       expect(sessionManager.getSession().status).toBe('active');
 
@@ -166,7 +168,7 @@ describe('sessionManager', () => {
       const now = Date.now();
       mockNoSessionFile();
 
-      sessionManager = await SessionManager.start(eventManager, hooks);
+      sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
 
       const sessionId = sessionManager.getSession().id;
 
@@ -200,7 +202,7 @@ describe('sessionManager', () => {
       const startTime = Date.now();
       mockNoSessionFile();
 
-      sessionManager = await SessionManager.start(eventManager, hooks);
+      sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
 
       const sessionId = sessionManager.getSession().id;
       expect(sessionId).toBeDefined();
@@ -245,7 +247,7 @@ describe('sessionManager', () => {
     it('creates new session on activity when expired', async () => {
       mockNoSessionFile();
 
-      sessionManager = await SessionManager.start(eventManager, hooks);
+      sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
 
       const originalSessionId = sessionManager.getSession().id;
       expect(sessionManager.getSession().status).toBe('active');
@@ -275,7 +277,7 @@ describe('sessionManager', () => {
       mfs.access.mockResolvedValue(undefined);
       mfs.readFile.mockRejectedValue(new Error('Read error'));
 
-      sessionManager = await SessionManager.start(eventManager, hooks);
+      sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
 
       // Should create a new session despite read error
 
@@ -286,7 +288,7 @@ describe('sessionManager', () => {
       mockNoSessionFile();
       mfs.writeFile.mockRejectedValue(new Error('Write error'));
 
-      sessionManager = await SessionManager.start(eventManager, hooks);
+      sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
 
       // Session should still be created in memory
 
@@ -298,7 +300,7 @@ describe('sessionManager', () => {
       mfs.access.mockResolvedValue(undefined);
       mfs.readFile.mockResolvedValue('invalid json');
 
-      sessionManager = await SessionManager.start(eventManager, hooks);
+      sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
 
       // Should create a new session despite parse error
 
@@ -310,7 +312,7 @@ describe('sessionManager', () => {
     it('sets session status to expired and clears timers', async () => {
       mockNoSessionFile();
 
-      sessionManager = await SessionManager.start(eventManager, hooks);
+      sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
 
       expect(sessionManager.getSession().status).toBe('active');
 
@@ -326,7 +328,7 @@ describe('sessionManager', () => {
     it('RUM hook returns session id immediately after start()', async () => {
       mockNoSessionFile();
 
-      sessionManager = await SessionManager.start(eventManager, hooks);
+      sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
 
       const result = hooks.triggerRum({ eventType: 'view', startTime: T0 });
       expect(result).toMatchObject({ session: { id: sessionManager.getSession().id } });
@@ -335,7 +337,7 @@ describe('sessionManager', () => {
     it('telemetry hook returns session id immediately after start()', async () => {
       mockNoSessionFile();
 
-      sessionManager = await SessionManager.start(eventManager, hooks);
+      sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
 
       const result = hooks.triggerTelemetry({ startTime: T0 });
       expect(result).toMatchObject({ session: { id: sessionManager.getSession().id } });
@@ -346,12 +348,167 @@ describe('sessionManager', () => {
     it('should not allow to mutate the current session', async () => {
       mockNoSessionFile();
 
-      sessionManager = await SessionManager.start(eventManager, hooks);
+      sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
 
       const session = sessionManager.getSession();
       session.id = 'new-id';
 
       expect(sessionManager.getSession().id).not.toBe('new-id');
+    });
+  });
+
+  describe('sampling', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    function savedSessionStates(): Record<string, unknown>[] {
+      return mfs.writeFile.mock.calls
+        .filter(([filePath]) => (filePath as string).endsWith(SESSION_FILE_NAME))
+        .map(([, content]) => JSON.parse(content as string) as Record<string, unknown>);
+    }
+
+    it.each([
+      { sessionSampleRate: 100, sessionOnError: false, random: 0.99, expected: TrackingType.TRACKED },
+      { sessionSampleRate: 100, sessionOnError: true, random: 0.99, expected: TrackingType.TRACKED },
+      { sessionSampleRate: 50, sessionOnError: true, random: 0.2, expected: TrackingType.TRACKED },
+      { sessionSampleRate: 50, sessionOnError: true, random: 0.8, expected: TrackingType.TRACKED_ON_ERROR },
+      { sessionSampleRate: 50, sessionOnError: false, random: 0.8, expected: TrackingType.NOT_TRACKED },
+      { sessionSampleRate: 0, sessionOnError: true, random: 0, expected: TrackingType.TRACKED_ON_ERROR },
+      { sessionSampleRate: 0, sessionOnError: false, random: 0, expected: TrackingType.NOT_TRACKED },
+    ])(
+      'draws $expected at rate $sessionSampleRate with sessionOnError $sessionOnError (random $random)',
+      async ({ sessionSampleRate, sessionOnError, random, expected }) => {
+        mockNoSessionFile();
+        vi.spyOn(Math, 'random').mockReturnValue(random);
+
+        sessionManager = await SessionManager.start(eventManager, hooks, { sessionSampleRate, sessionOnError });
+
+        expect(sessionManager.getSession().trackingType).toBe(expected);
+        expect(savedSessionStates()[0]).toMatchObject({ trackingType: expected });
+      }
+    );
+
+    it('keeps the decision a resumed session was created with, whatever the configuration says now', async () => {
+      const now = Date.now();
+      mfs.readFile.mockResolvedValue(
+        JSON.stringify({ id: 'existing', created: now, lastActivity: now, trackingType: TrackingType.TRACKED_ON_ERROR })
+      );
+
+      sessionManager = await SessionManager.start(eventManager, hooks, {
+        sessionSampleRate: 100,
+        sessionOnError: false,
+      });
+
+      expect(sessionManager.getSession()).toMatchObject({
+        id: 'existing',
+        trackingType: TrackingType.TRACKED_ON_ERROR,
+      });
+      // Derived from the tracking type on the restore path too, not from the configured rate.
+      expect(hooks.triggerRum({ eventType: 'view', startTime: now as TimeStamp })).toMatchObject({
+        session: { id: 'existing', sampled_for_error: true },
+        _dd: { configuration: { session_sample_rate: 0 } },
+      });
+    });
+
+    it('resumes a session that had already reported its error as released', async () => {
+      const now = Date.now();
+      mfs.readFile.mockResolvedValue(
+        JSON.stringify({
+          id: 'existing',
+          created: now,
+          lastActivity: now,
+          trackingType: TrackingType.TRACKED_ON_ERROR,
+          hasError: true,
+        })
+      );
+
+      sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
+
+      expect(sessionManager.getSession().hasError).toBe(true);
+    });
+
+    it('resumes a session saved before sessions were sampled as a drawn one', async () => {
+      const now = Date.now();
+      mfs.readFile.mockResolvedValue(JSON.stringify({ id: 'existing', created: now, lastActivity: now }));
+
+      sessionManager = await SessionManager.start(eventManager, hooks, { sessionSampleRate: 0, sessionOnError: false });
+
+      expect(sessionManager.getSession()).toMatchObject({ id: 'existing', trackingType: TrackingType.TRACKED });
+    });
+
+    it('draws again when the session is renewed', async () => {
+      mockNoSessionFile();
+      const random = vi.spyOn(Math, 'random').mockReturnValue(0.8);
+      sessionManager = await SessionManager.start(eventManager, hooks, {
+        sessionSampleRate: 50,
+        sessionOnError: false,
+      });
+      expect(sessionManager.getSession().trackingType).toBe(TrackingType.NOT_TRACKED);
+
+      sessionManager.expire();
+      random.mockReturnValue(0.2);
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.END_USER_ACTIVITY });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(sessionManager.getSession().trackingType).toBe(TrackingType.TRACKED);
+    });
+
+    describe('setSessionHasError', () => {
+      async function startWithheldSession() {
+        mockNoSessionFile();
+        sessionManager = await SessionManager.start(eventManager, hooks, {
+          sessionSampleRate: 0,
+          sessionOnError: true,
+        });
+        mfs.writeFile.mockClear();
+      }
+
+      it('takes effect in memory before anything is written', async () => {
+        await startWithheldSession();
+        mfs.writeFile.mockReturnValue(new Promise(() => undefined));
+
+        sessionManager.setSessionHasError(sessionManager.getSession().id);
+
+        expect(sessionManager.getSession().hasError).toBe(true);
+      });
+
+      it('persists the mark with the session', async () => {
+        await startWithheldSession();
+
+        sessionManager.setSessionHasError(sessionManager.getSession().id);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(savedSessionStates()).toContainEqual(expect.objectContaining({ hasError: true }));
+      });
+
+      it('is not undone by an activity update that read the state before the mark reached disk', async () => {
+        await startWithheldSession();
+        const { id } = sessionManager.getSession();
+        mfs.access.mockResolvedValue(undefined);
+        mfs.readFile.mockResolvedValue(
+          JSON.stringify({ id, created: 0, lastActivity: 0, trackingType: TrackingType.TRACKED_ON_ERROR })
+        );
+
+        sessionManager.setSessionHasError(id);
+        eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.END_USER_ACTIVITY });
+        await vi.advanceTimersByTimeAsync(0);
+
+        const states = savedSessionStates();
+        expect(states[states.length - 1]).toMatchObject({ hasError: true });
+      });
+
+      it('leaves a drawn session alone, and writes nothing', async () => {
+        mockNoSessionFile();
+        sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
+        mfs.writeFile.mockClear();
+
+        sessionManager.setSessionHasError(sessionManager.getSession().id);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(sessionManager.getSession().hasError).toBeUndefined();
+        expect(mfs.writeFile).not.toHaveBeenCalled();
+      });
     });
   });
 });

@@ -1,10 +1,11 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
-import { generateUUID, type TimeStamp } from '@flashcatcloud/browser-core';
+import { elapsed, generateUUID, toServerDuration, type TimeStamp } from '@flashcatcloud/browser-core';
 import { app, crashReporter } from 'electron';
 import { EventFormat, EventKind, EventManager, EventSource } from '../../../event';
 import type { CrashReport } from '../../../wasm';
-import type { RawRumError } from '../rawRumData.types';
+import type { RawRumError, RawRumView } from '../rawRumData.types';
+import { type SessionManager, withholdsEvents } from '../../session';
 import type { RumErrorEvent } from '../rumEvent.types';
 import { displayError, displayInfo } from '../../../tools/display';
 import { addError, monitor } from '../../telemetry';
@@ -19,11 +20,19 @@ import { toIntakeTimeStamp } from '../../../tools/intakeTimeStamp';
  *   - emits RUM error events
  */
 export class CrashCollection {
-  private constructor(private readonly eventManager: EventManager) {}
+  private constructor(
+    private readonly eventManager: EventManager,
+    private readonly sessionManager: Pick<SessionManager, 'findSession' | 'setSessionHasError'>,
+    private readonly findView: (startTime: TimeStamp) => CrashedView | undefined
+  ) {}
 
-  static start(eventManager: EventManager): CrashCollection {
+  static start(
+    eventManager: EventManager,
+    sessionManager: Pick<SessionManager, 'findSession' | 'setSessionHasError'>,
+    findView: (startTime: TimeStamp) => CrashedView | undefined
+  ): CrashCollection {
     crashReporter.start({ uploadToServer: false, ignoreSystemCrashHandler: true });
-    const collection = new CrashCollection(eventManager);
+    const collection = new CrashCollection(eventManager, sessionManager, findView);
     // TODO(RUM-15046): wait for app to be stable (electron + browser windows)
     void app.whenReady().then(monitor(() => collection.processCrashFiles()));
     return collection;
@@ -51,6 +60,7 @@ export class CrashCollection {
         const bytes = new Uint8Array(await fs.readFile(filePath));
         const crashReport = await processMinidump(bytes);
 
+        this.releaseWithheldSession(crashTime);
         this.eventManager.notify({
           kind: EventKind.RAW,
           source: EventSource.MAIN,
@@ -67,6 +77,57 @@ export class CrashCollection {
     }
     displayInfo(`Crash dump processing done.`);
   }
+
+  /**
+   * A crash is reported a launch after it happened, by which time a session kept by `sessionOnError`
+   * has lost everything it held in memory — including the view the crash hangs from, which the
+   * backend needs to build the session at all. So when the crashed session had not reported an error
+   * yet, the crash releases it, and its view is rebuilt from the view history to go with it.
+   *
+   * This is all the history such a crash gets: keeping the withheld buffer on disk instead would
+   * cost a session that never errors constant writes.
+   */
+  private releaseWithheldSession(crashTime: TimeStamp): void {
+    const session = this.sessionManager.findSession(crashTime);
+    const view = this.findView(crashTime);
+    if (!session || !withholdsEvents(session) || !view) {
+      return;
+    }
+    // First, so the view and the crash pass assembly as events of a released session.
+    this.sessionManager.setSessionHasError(session.id);
+    this.eventManager.notify({
+      kind: EventKind.RAW,
+      source: EventSource.MAIN,
+      format: EventFormat.RUM,
+      data: buildCrashedViewEvent(view, crashTime),
+      startTime: view.startTime,
+    });
+  }
+}
+
+interface CrashedView {
+  id: string;
+  startTime: TimeStamp;
+}
+
+/**
+ * The crashed view as of the crash. Its earlier updates were never uploaded, so this is the first
+ * version the backend sees.
+ */
+function buildCrashedViewEvent(view: CrashedView, crashTime: TimeStamp): RawRumView {
+  return {
+    type: 'view',
+    date: view.startTime,
+    view: {
+      id: view.id,
+      time_spent: toServerDuration(elapsed(view.startTime, crashTime)),
+      is_active: false,
+      action: { count: 0 },
+      error: { count: 1 },
+      resource: { count: 0 },
+    },
+    _dd: { document_version: 1 },
+  };
 }
 
 /**
