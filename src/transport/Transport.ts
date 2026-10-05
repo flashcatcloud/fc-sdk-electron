@@ -19,8 +19,9 @@ import { WithheldEventBuffer } from './WithheldEventBuffer';
  * through dedicated {@link BatchManager} instances for disk-buffered delivery.
  *
  * When the application may be about to exit — an uncaught exception in the main process, or a quit
- * — whatever is posted but not written yet is written before returning: the batch writes on later
- * turns of the event loop, and an exit leaves none.
+ * — whatever is queued but not written yet is written before returning, the session state with it:
+ * the batch writes on later turns of the event loop, and an exit leaves none. An append already
+ * issued is not completed here.
  */
 export class Transport {
   // FlashCat ingest only exposes the RUM track (POST /api/v2/rum). It has no
@@ -118,5 +119,8 @@ export class Transport {
 
   private writePendingSync() {
     this.batchManagers.forEach((m) => m.writePendingSync());
+    // After the batches: the release they carry has just marked the session, and the mark must
+    // reach disk with them.
+    this.sessionManager.writePendingSync();
   }
 }

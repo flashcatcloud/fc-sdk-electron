@@ -11,6 +11,8 @@ import { DiskValueHistory } from './DiskValueHistory';
 import { TimeStampHistoryEntry } from './TimeStampValueHistory';
 
 vi.mock('node:fs/promises');
+const { writeFileSync } = vi.hoisted(() => ({ writeFileSync: vi.fn() }));
+vi.mock('node:fs', () => ({ writeFileSync }));
 const mfs = mockFs();
 
 const FILE_PATH = '/test/history.json';
@@ -159,6 +161,33 @@ describe('DiskValueHistory', () => {
       const lastCall = mfs.writeFile.mock.calls[mfs.writeFile.mock.calls.length - 1] as [string, string, string];
       const written = JSON.parse(lastCall[1]) as TimeStampHistoryEntry<string>[];
       expect(written[0]).toMatchObject({ startTime: T0, endTime: T10, value: 'session-a' });
+    });
+  });
+
+  describe('persist()', () => {
+    it('serializes the entries when the write runs, so a write queued earlier never lands an older state', async () => {
+      mfs.readFile.mockRejectedValue(new Error('ENOENT'));
+      mfs.writeFile.mockResolvedValue(undefined);
+      const history = await DiskValueHistory.init<string>({ filePath: FILE_PATH, expireDelay: EXPIRE_DELAY });
+
+      history.add('session-a', T0);
+      history.closeActive(T10);
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Both writes carry the closed entry: the first one ran after the close.
+      for (const [, content] of mfs.writeFile.mock.calls as [string, string][]) {
+        expect(JSON.parse(content)[0]).toMatchObject({ endTime: T10 });
+      }
+    });
+
+    it('persistSync() writes the entries before returning', async () => {
+      mfs.readFile.mockRejectedValue(new Error('ENOENT'));
+      const history = await DiskValueHistory.init<string>({ filePath: FILE_PATH, expireDelay: EXPIRE_DELAY });
+      history.add('session-a', T0);
+
+      history.persistSync();
+
+      expect(writeFileSync).toHaveBeenCalledWith(FILE_PATH, expect.stringContaining('"session-a"'), 'utf-8');
     });
   });
 

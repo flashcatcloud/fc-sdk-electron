@@ -7,12 +7,13 @@ import { mockFs } from '../../mocks.specUtil';
 vi.mock('node:fs/promises');
 const fsMocks = mockFs();
 
-const { appendFileSync, mkdirSync, renameSync } = vi.hoisted(() => ({
+const { appendFileSync, existsSync, mkdirSync, renameSync } = vi.hoisted(() => ({
   appendFileSync: vi.fn(),
+  existsSync: vi.fn((_path: string) => false),
   mkdirSync: vi.fn(),
   renameSync: vi.fn(),
 }));
-vi.mock('node:fs', () => ({ appendFileSync, mkdirSync, renameSync }));
+vi.mock('node:fs', () => ({ appendFileSync, existsSync, mkdirSync, renameSync }));
 
 vi.mock('@flashcatcloud/browser-core', () => ({
   dateNow: vi.fn(() => 1234567890),
@@ -32,6 +33,7 @@ describe('BatchProducer', () => {
   beforeEach(() => {
     fsMocks.reset();
     appendFileSync.mockReset();
+    existsSync.mockReset().mockReturnValue(false);
     mkdirSync.mockReset();
     renameSync.mockReset();
     config = makeConfig();
@@ -244,7 +246,7 @@ describe('BatchProducer', () => {
       vi.mocked(dateNow).mockReturnValueOnce(1000).mockReturnValueOnce(2000);
       producer.post({ a: 'x'.repeat(10) });
       await producer.flush();
-      vi.mocked(dateNow).mockReturnValueOnce(3000).mockReturnValueOnce(4000);
+      vi.mocked(dateNow).mockReturnValueOnce(3000);
       producer.post({ b: 'y'.repeat(10) });
       await vi.waitFor(() => expect(fsMocks.appendFile).toHaveBeenCalledTimes(2));
       let finishRename!: () => void;
@@ -305,6 +307,20 @@ describe('BatchProducer', () => {
         path.join(config.trackPath, 'batch-1234567891.tmp'),
         path.join(config.trackPath, 'batch-1234567892.tmp'),
       ]);
+    });
+
+    it('never rotates onto a .log that exists, as one left by an earlier launch may share the name', async () => {
+      const producer = await BatchProducer.create(makeConfig({ batchSize: 20 }));
+      producer.post({ a: 'x'.repeat(10) });
+      producer.post({ b: 'y'.repeat(10) });
+      existsSync.mockImplementation((candidate: string) => String(candidate).endsWith('batch-1234567890.log'));
+
+      producer.writePendingSync();
+
+      expect(renameSync).toHaveBeenCalledWith(
+        path.join(config.trackPath, 'batch-1234567890.tmp'),
+        path.join(config.trackPath, 'batch-1234567890-1.log')
+      );
     });
 
     it('drops a write that fails, like the queue does', async () => {

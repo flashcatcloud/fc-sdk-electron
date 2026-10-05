@@ -233,6 +233,11 @@ describe('ViewCollection', () => {
     });
   });
 
+  /** The main view's own id: only its own events count towards it. */
+  function currentViewId() {
+    return (rawRumEvents[0].data as RawRumView).view.id;
+  }
+
   describe('event counters', () => {
     it.each(['action', 'error', 'resource'] as const)(
       'increments %s counter on corresponding ServerRumEvent',
@@ -241,7 +246,7 @@ describe('ViewCollection', () => {
           kind: EventKind.SERVER,
           track: EventTrack.RUM,
           source: EventSource.MAIN,
-          data: createServerRumEvent(type),
+          data: createServerRumEvent(type, { view: { id: currentViewId() } }),
         });
 
         expect(rawRumEvents).toHaveLength(2);
@@ -250,6 +255,18 @@ describe('ViewCollection', () => {
         expect(data._dd.document_version).toBe(2);
       }
     );
+
+    it("does not count another view's events, as a crash reported on the next launch is the view it happened in's", () => {
+      eventManager.notify({
+        kind: EventKind.SERVER,
+        track: EventTrack.RUM,
+        source: EventSource.MAIN,
+        data: createServerRumEvent('error', { view: { id: 'previous-launch-view' } }),
+      });
+
+      // Only the initial event, no update
+      expect(rawRumEvents).toHaveLength(1);
+    });
 
     it('does not count view type ServerEvents', () => {
       eventManager.notify({
@@ -268,7 +285,7 @@ describe('ViewCollection', () => {
         kind: EventKind.SERVER,
         track: EventTrack.RUM,
         source: EventSource.RENDERER,
-        data: createServerRumEvent('error'),
+        data: createServerRumEvent('error', { view: { id: currentViewId() } }),
       });
 
       // Only the initial event, no update
@@ -294,7 +311,7 @@ describe('ViewCollection', () => {
         kind: EventKind.SERVER,
         track: EventTrack.RUM,
         source: EventSource.MAIN,
-        data: createServerRumEvent(type),
+        data: createServerRumEvent(type, { view: { id: currentViewId() } }),
       });
     }
 

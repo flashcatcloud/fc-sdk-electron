@@ -403,13 +403,14 @@ the bridge: the main process decides, and its rate is what every event reports.
 `sessionOnError` keeps the sessions the rate did not draw on standby instead of dropping them:
 
 - The session's events — main process and renderers alike — are held in memory, never on disk, and
-  only the last minute of them (64 KiB of detail, 200 events, plus up to 50 views). Nothing is
-  uploaded.
+  only the last minute of them (64 KiB of detail, 200 events, plus up to 50 views). No RUM event of
+  it is uploaded.
 - At the session's first error, that minute is handed to the upload batch together with the error,
   0–3 s later (spread per session, so that one outage does not make every client upload at once),
   and the session then reports as it happens, like any drawn session. An uncaught exception in the
-  main process, or a quit, writes it to disk before returning instead, since the application may be
-  about to exit.
+  main process, or a quit, writes a release already earned to disk before returning instead, since
+  the application may be about to exit — provided the application's own `uncaughtException` listener
+  is registered after `init()`, so that the SDK's runs first.
 - A session that ends without an error is thrown away whole, late events included.
 
 Only errors the application reports count: an error a renderer's `beforeSend` dropped, or one the

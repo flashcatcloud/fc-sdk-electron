@@ -185,6 +185,14 @@ describe('WithheldEventBuffer', () => {
       expect(forwarded).toEqual([next]);
     });
 
+    it('is released by an error whose text is not ASCII, as the main process has no window to count bytes with', () => {
+      buffer.collect(view(MAIN_VIEW, 1));
+      buffer.collect(error('source', { error: { source: 'source', message: '支付失败 💥' } }));
+      vi.advanceTimersByTime(WITHHELD_BUFFER_RELEASE_MAX_DELAY);
+
+      expect(forwarded.map((event) => event.type)).toEqual(['view', 'error']);
+    });
+
     it('is not released by an error the SDK reported about itself', () => {
       buffer.collect(view(MAIN_VIEW, 1));
       buffer.collect(error('agent'));
@@ -450,6 +458,28 @@ describe('WithheldEventBuffer', () => {
 
       expect(forwarded).toContain(crashedView);
       expect(forwarded).toContain(crash);
+    });
+  });
+
+  describe('budget, crash larger than the budget', () => {
+    it('keeps the view of a crash forwarded on its own past the view limit, until the release', () => {
+      for (let i = 1; i <= WITHHELD_BUFFER_VIEWS_LIMIT; i += 1) {
+        buffer.collect(view(`window-${i}`, i));
+      }
+      const crashedView = view('crashed-view', 0, false);
+      const oversizeCrash = error(
+        'source',
+        { error: { source: 'source', is_crash: true }, ...padding(WITHHELD_BUFFER_BYTES_LIMIT) },
+        'crashed-view'
+      );
+      session.hasError = true;
+      buffer.collect(crashedView);
+      buffer.collect(oversizeCrash);
+      // A renderer view the crashed view had displaced comes back during the jitter.
+      buffer.collect(view('window-1', 1));
+      vi.advanceTimersByTime(WITHHELD_BUFFER_RELEASE_MAX_DELAY);
+
+      expect(forwarded).toContain(crashedView);
     });
   });
 

@@ -123,6 +123,17 @@ describe('telemetry', () => {
       expect(notifiedEvents).toHaveLength(0);
     });
 
+    it('does not format an error once capped either', () => {
+      startTelemetry(eventManager, createTestConfiguration({ telemetrySampleRate: 100 }));
+      for (let i = 0; i < 100; i += 1) {
+        addError(new Error(`error ${i}`));
+      }
+
+      expect(() => addError(1n)).not.toThrow();
+
+      expect(notifiedEvents).toHaveLength(100);
+    });
+
     it('does not notify when sample rate is 0', () => {
       const config = createTestConfiguration({ telemetrySampleRate: 0 });
       startTelemetry(eventManager, config);

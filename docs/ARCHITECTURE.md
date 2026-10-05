@@ -111,9 +111,9 @@ events alike, already final. It holds a withheld session's events and releases t
 first error; telemetry bypasses it. `CrashCollection` releases the session of a crash reported on the
 next launch itself, rebuilding the crashed view from the view history. When the application may be
 about to exit (`APP_MAY_EXIT`: an uncaught exception in the main process, or a quit), the buffer
-releases what has earned its release and `Transport` then writes everything posted but not yet
-written before returning, since the batch otherwise writes on later turns of the event loop. See the
-JSDoc of each class.
+releases what has earned its release and `Transport` then writes every queued event, and the session
+state, before returning, since the batch otherwise writes on later turns of the event loop; an append
+already issued is not completed synchronously. See the JSDoc of each class.
 
 ### Event Manager
 

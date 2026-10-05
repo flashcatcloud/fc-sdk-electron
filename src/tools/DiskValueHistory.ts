@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import type { TimeStamp } from '@flashcatcloud/browser-core';
 import { TimeStampValueHistory, type TimeStampHistoryEntry } from './TimeStampValueHistory';
@@ -81,13 +82,25 @@ export class DiskValueHistory<T> {
     return this.history.getEntries();
   }
 
-  /** Write the entries to disk. Called by `add()` and `closeActive()`, and after a value is updated in place. */
+  /**
+   * Write the entries to disk. Called by `add()` and `closeActive()`, and after a value is updated
+   * in place. The entries are serialized when the write runs, not when it is queued, so a write
+   * queued earlier never lands a state older than one written since — `persistSync` included.
+   */
   persist(): void {
-    const snapshot = JSON.stringify(this.history.getEntries());
     this.pendingWrite = this.pendingWrite
-      .then(() => fs.writeFile(this.filePath, snapshot, 'utf-8'))
+      .then(() => fs.writeFile(this.filePath, JSON.stringify(this.history.getEntries()), 'utf-8'))
       .catch((error) => {
         displayError('Failed to persist value history:', error);
       });
+  }
+
+  /** `persist` before returning, for a process that may be about to exit. */
+  persistSync(): void {
+    try {
+      writeFileSync(this.filePath, JSON.stringify(this.history.getEntries()), 'utf-8');
+    } catch (error) {
+      displayError('Failed to persist value history:', error);
+    }
   }
 }

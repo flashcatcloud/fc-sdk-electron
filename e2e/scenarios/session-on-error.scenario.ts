@@ -241,10 +241,13 @@ test.describe('sessionOnError, host exit on an uncaught exception', () => {
     try {
       // A main-process operation: its vital is held the moment it is reported.
       await mainPage.startOperation('checkout');
-      const pid = electronApp.process().pid;
+      // Taken now: the accessor is gone with the process.
+      const child = electronApp.process();
 
       mainPage.generateUncaughtExceptionAndExit();
-      await ensureProcessGone(pid);
+      await ensureProcessGone(child.pid);
+      // Ended by the host's listener, not by the harness giving up on it.
+      expect(child.exitCode).toBe(1);
 
       // The process ended from its own uncaughtException listener, with no later turn of the event
       // loop: what is on disk is what the SDK wrote before returning from its listener.

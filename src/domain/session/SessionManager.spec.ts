@@ -1,5 +1,7 @@
 import { mockFs } from '../../mocks.specUtil';
 vi.mock('node:fs/promises');
+const { writeFileSync } = vi.hoisted(() => ({ writeFileSync: vi.fn() }));
+vi.mock('node:fs', () => ({ writeFileSync }));
 vi.mock('electron', () => ({
   app: {
     getPath: vi.fn(() => '/mock/user/data'),
@@ -648,6 +650,36 @@ describe('sessionManager', () => {
         expect(savedSessionStates()).toEqual([]);
         // The history still learns of it: that is what lets the crash through assembly.
         expect(hooks.triggerRum({ eventType: 'error', startTime: T0 })).toMatchObject({ session: { id } });
+      });
+
+      it('writes the state and the history before returning when the application may exit', async () => {
+        await startWithheldSession();
+        const { id } = sessionManager.getSession();
+        writeFileSync.mockClear();
+        mfs.writeFile.mockReturnValue(new Promise(() => undefined));
+        sessionManager.setSessionHasError(id, T0);
+
+        sessionManager.writePendingSync();
+
+        const written = writeFileSync.mock.calls.map(([filePath, content]) => [String(filePath), String(content)]);
+        expect(written.find(([filePath]) => filePath.endsWith(SESSION_FILE_NAME))?.[1]).toContain('"hasError":true');
+        expect(written.find(([filePath]) => filePath.endsWith('_dd_session_history'))?.[1]).toContain(
+          '"hasError":true'
+        );
+      });
+
+      it('does not write the state of a session that has ended, when the application may exit', async () => {
+        await startWithheldSession();
+        mfs.unlink.mockResolvedValue(undefined);
+        sessionManager.expire();
+        await vi.advanceTimersByTimeAsync(0);
+        writeFileSync.mockClear();
+
+        sessionManager.writePendingSync();
+
+        expect(writeFileSync.mock.calls.map(([filePath]) => String(filePath))).not.toContainEqual(
+          expect.stringMatching(new RegExp(`/${SESSION_FILE_NAME}$`))
+        );
       });
 
       it('leaves a drawn session alone, and writes nothing', async () => {

@@ -46,7 +46,11 @@ describe('Transport', () => {
     eventManager = new EventManager();
     config = createTestConfiguration();
     session = { id: 'session-id', status: 'active', trackingType: TrackingType.TRACKED, sampleRate: 100 };
-    sessionManager = { getSession: () => session, setSessionHasError: vi.fn() } as unknown as SessionManager;
+    sessionManager = {
+      getSession: () => session,
+      setSessionHasError: vi.fn(),
+      writePendingSync: vi.fn(),
+    } as unknown as SessionManager;
   });
 
   describe('create', () => {
@@ -97,13 +101,15 @@ describe('Transport', () => {
       eventManager.notify({ kind: EventKind.SERVER, track: EventTrack.RUM, data: view } as unknown as ServerEvent);
       eventManager.notify({ kind: EventKind.SERVER, track: EventTrack.RUM, data: error } as unknown as ServerEvent);
       const calls: string[] = [];
-      mockBatchPost.mockImplementation((data: { type: string }) => calls.push(`post:${data.type}`));
-      mockBatchWritePendingSync.mockImplementation(() => calls.push('writePendingSync'));
+      const record = (name: string) => () => calls.push(name);
+      mockBatchPost.mockImplementationOnce(record('post:view')).mockImplementationOnce(record('post:error'));
+      mockBatchWritePendingSync.mockImplementationOnce(record('batch'));
+      vi.mocked(sessionManager.writePendingSync).mockImplementationOnce(record('session'));
 
       eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.APP_MAY_EXIT });
 
-      // The release first, so that the write takes it along.
-      expect(calls).toEqual(['post:view', 'post:error', 'writePendingSync']);
+      // The release first, so that the write takes it along; the session's mark with it.
+      expect(calls).toEqual(['post:view', 'post:error', 'batch', 'session']);
     });
 
     it('should treat a quit as an exit', async () => {

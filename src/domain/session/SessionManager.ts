@@ -1,4 +1,5 @@
 import { app } from 'electron';
+import { writeFileSync } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import {
@@ -101,6 +102,22 @@ export class SessionManager {
       void this.saveCurrentState();
     }
     this.sessionContext.setHasError(sessionId, errorTime);
+  }
+
+  /**
+   * Writes the session's state and history before returning, for a process that may be about to
+   * exit: the error mark a release just set reaches disk asynchronously otherwise, and a session
+   * resumed by the next launch would withhold again what this one already uploaded.
+   */
+  writePendingSync(): void {
+    if (this.status === 'active') {
+      try {
+        writeFileSync(getSessionFilePath(), JSON.stringify(this.currentState), 'utf-8');
+      } catch (error) {
+        displayError('Failed to save session state:', error);
+      }
+    }
+    this.sessionContext.persistSync();
   }
 
   stop(): void {

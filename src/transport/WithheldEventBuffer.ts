@@ -1,10 +1,4 @@
-import {
-  computeBytesCount,
-  ONE_KIBI_BYTE,
-  ONE_SECOND,
-  type TimeStamp,
-  timeStampNow,
-} from '@flashcatcloud/browser-core';
+import { ONE_KIBI_BYTE, ONE_SECOND, type TimeStamp, timeStampNow } from '@flashcatcloud/browser-core';
 import { EventKind, type EventManager, type LifecycleEvent, LifecycleKind } from '../event';
 import type { RumEvent } from '../domain/rum';
 import { type SessionManager, withholdsEvents } from '../domain/session';
@@ -95,6 +89,8 @@ export class WithheldEventBuffer {
   private bytes = 0;
   private droppedCount = 0;
   private withheldForSessionId: string | undefined;
+  /** Views of errors forwarded on their own for exceeding the budget: protected from eviction like a held error's. */
+  private oversizeErrorViewIds = new Set<string>();
   private releaseTimeoutId: ReturnType<typeof setTimeout> | undefined;
   /** When the release was scheduled, which is what freezes the window — see {@link prune}. */
   private releaseScheduledAt: number | undefined;
@@ -131,6 +127,7 @@ export class WithheldEventBuffer {
         // The session has earned its release, but an error larger than the whole budget would evict
         // the history it is meant to come with. It goes to the batch on its own instead; the history
         // still waits for the jitter, which exists for exactly the correlated outage at hand.
+        this.oversizeErrorViewIds.add(event.view.id);
         this.forward(event);
       } else {
         // Typically the error itself: it joins what is held, so the whole history leaves in order.
@@ -183,9 +180,10 @@ export class WithheldEventBuffer {
    */
   private evictViewsOverLimit(justUpdatedViewId: string): void {
     while (this.views.size > WITHHELD_BUFFER_VIEWS_LIMIT) {
-      const viewsWithError = new Set(
-        this.details.filter((held) => held.event.type === 'error').map((held) => held.viewId)
-      );
+      const viewsWithError = new Set([
+        ...this.oversizeErrorViewIds,
+        ...this.details.filter((held) => held.event.type === 'error').map((held) => held.viewId),
+      ]);
       const cost = (viewId: string, view: WithheldView) =>
         (viewsWithError.has(viewId) ? 2 : 0) + (isActiveView(view.event) ? 1 : 0);
       let evictedViewId: string | undefined;
@@ -317,6 +315,7 @@ export class WithheldEventBuffer {
     this.bytes = 0;
     this.droppedCount = 0;
     this.withheldForSessionId = undefined;
+    this.oversizeErrorViewIds = new Set();
   }
 }
 
@@ -332,8 +331,9 @@ function isActiveView(view: RumEvent): boolean {
   return view.type === 'view' && view.view.is_active !== false;
 }
 
+/** Node's count: browser-core's reaches for `window.TextEncoder` on non-ASCII text, which the main process has not. */
 function computeEventBytes(event: RumEvent): number {
-  return computeBytesCount(JSON.stringify(event));
+  return Buffer.byteLength(JSON.stringify(event), 'utf8');
 }
 
 function getEvictionTier(event: RumEvent): EvictionTier {

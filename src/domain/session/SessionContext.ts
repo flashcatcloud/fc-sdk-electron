@@ -112,6 +112,11 @@ export class SessionContext {
     return toSessionRecord(this.history.find(startTime));
   }
 
+  /** Writes the history before returning, for a process that may be about to exit. */
+  persistSync(): void {
+    this.history.persistSync();
+  }
+
   add(record: SessionRecord): void {
     this.activeSessionId = record.id;
     this.history.add(record, timeStampNow());

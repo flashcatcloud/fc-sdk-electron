@@ -1,5 +1,5 @@
 import { dateNow } from '@flashcatcloud/browser-core';
-import { appendFileSync, mkdirSync, renameSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -55,10 +55,10 @@ export class BatchProducer {
    * Writes everything posted but not written yet before returning, for a process that may be about
    * to exit: the queue only writes on later turns of the event loop, and there may be none.
    *
-   * A write the queue has in flight completes on its own and lands after these; every line stays
-   * whole, only the order differs. If that write's rotation is in flight too, its line goes to a
-   * `.tmp` the rename has just emptied, which the next launch picks up as an orphan rather than
-   * loses. A write that fails is dropped, as the queue drops it.
+   * An append the queue has already issued is not completed here: it lands after these if the
+   * process lives long enough, and an exit before that loses it, or leaves a partial line the
+   * consumer skips. Every line written here is whole. A write that fails is dropped, as the queue
+   * drops it.
    */
   writePendingSync() {
     while (this.pending.length > 0) {
@@ -206,7 +206,7 @@ export class BatchProducer {
     }
     const tmpPath = path.join(this.trackPath, this.currentBatchFile);
     try {
-      renameSync(tmpPath, tmpPath.replace(/\.tmp$/, '.log'));
+      renameSync(tmpPath, freeLogPathSync(tmpPath.replace(/\.tmp$/, '.log')));
     } catch {
       // File doesn't exist or rename failed - silently ignore
     }
@@ -233,7 +233,7 @@ export class BatchProducer {
 
   private async freeLogPath(logPath: string): Promise<string> {
     for (let attempt = 0; ; attempt += 1) {
-      const candidate = attempt === 0 ? logPath : logPath.replace(/\.log$/, `-${attempt}.log`);
+      const candidate = logCandidate(logPath, attempt);
       try {
         await fs.stat(candidate);
       } catch {
@@ -241,4 +241,18 @@ export class BatchProducer {
       }
     }
   }
+}
+
+/** `freeLogPath` for the synchronous rotation: a `.log` left by an earlier launch may share the name. */
+function freeLogPathSync(logPath: string): string {
+  for (let attempt = 0; ; attempt += 1) {
+    const candidate = logCandidate(logPath, attempt);
+    if (!existsSync(candidate)) {
+      return candidate;
+    }
+  }
+}
+
+function logCandidate(logPath: string, attempt: number): string {
+  return attempt === 0 ? logPath : logPath.replace(/\.log$/, `-${attempt}.log`);
 }
