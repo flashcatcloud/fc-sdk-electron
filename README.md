@@ -418,7 +418,7 @@ when the session's held events are long gone, so the crash comes with the view i
 nothing before it.
 
 Such a session reports `session.sampled_for_error: true` on its views and a
-`_dd.configuration.session_sample_rate` of `0` on every event, so that it is counted as itself
+`_dd.configuration.session_sample_rate` of `0` on every RUM event, so that it is counted as itself
 rather than extrapolated by the rate.
 
 ```ts

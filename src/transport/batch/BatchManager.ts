@@ -89,12 +89,14 @@ export class BatchManager {
 
   /** Flushes the producer to rotate pending files, then uploads all ready batches. */
   private triggerUploadCycle(): Promise<void> {
-    this.cycles = this.cycles.then(async () => {
+    const cycle = this.cycles.then(async () => {
       // Flush producer first to rotate any pending .tmp files to .log
       await this.producer.flush();
       // Then upload all .log files
       await this.consumer.upload();
     });
-    return this.cycles;
+    // A failed cycle is its caller's to report; the next cycle runs regardless.
+    this.cycles = cycle.catch(() => undefined);
+    return cycle;
   }
 }

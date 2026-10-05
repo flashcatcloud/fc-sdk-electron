@@ -79,6 +79,9 @@ export class Assembly {
     // renderer reads the same id off the bridge itself), and the identity needs replacing rather
     // than merging — see below.
     const data = combine(event.data, mainProcessAttributes) as RumEvent;
+    // Assigned rather than merged: `combine` keeps the renderer's value where the main process has
+    // none, and the marker is the main process's to set or clear.
+    data.session.sampled_for_error = session?.sampled_for_error;
 
     return {
       kind: EventKind.SERVER,

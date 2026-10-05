@@ -43,10 +43,18 @@ class Telemetry {
   }
 
   addError(error: unknown): void {
+    // Before formatting: a telemetry that is sampled out or capped must cost nothing, and must not
+    // throw on a value it cannot serialize, since its callers are error paths themselves.
+    if (!this.canSend()) {
+      return;
+    }
     this.notify(this.createErrorEvent(error));
   }
 
   addDebug(message: string, context: Record<string, unknown>): void {
+    if (!this.canSend()) {
+      return;
+    }
     this.notify({ type: 'telemetry', telemetry: { type: 'log', status: 'debug', message, ...context } });
   }
 
@@ -55,10 +63,11 @@ class Telemetry {
     this.sessionRenewSubscription?.unsubscribe();
   }
 
+  private canSend(): boolean {
+    return this.isEnabled && this.eventCount < MAX_TELEMETRY_EVENTS_PER_SESSION;
+  }
+
   private notify(data: RawTelemetryData): void {
-    if (!this.isEnabled || this.eventCount >= MAX_TELEMETRY_EVENTS_PER_SESSION) {
-      return;
-    }
     this.eventCount++;
     this.eventManager.notify({
       kind: EventKind.RAW,

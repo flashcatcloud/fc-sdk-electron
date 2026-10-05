@@ -115,6 +115,14 @@ describe('telemetry', () => {
   });
 
   describe('sampling', () => {
+    it('does not format an error it will not send, so a value it cannot serialize costs nothing', () => {
+      startTelemetry(eventManager, createTestConfiguration({ telemetrySampleRate: 0 }));
+
+      expect(() => addError(1n)).not.toThrow();
+
+      expect(notifiedEvents).toHaveLength(0);
+    });
+
     it('does not notify when sample rate is 0', () => {
       const config = createTestConfiguration({ telemetrySampleRate: 0 });
       startTelemetry(eventManager, config);

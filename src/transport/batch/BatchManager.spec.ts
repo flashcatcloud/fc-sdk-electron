@@ -117,6 +117,16 @@ describe('BatchManager', () => {
       expect(mockConsumerUpload).toHaveBeenCalled();
     });
 
+    it('runs the next cycle after one that failed, and reports the failure to the flush that ran it', async () => {
+      mockConsumerUpload.mockRejectedValueOnce(new Error('intake down'));
+      const manager = await BatchManager.create(config, batchConfig);
+
+      await expect(manager.flush()).rejects.toThrow('intake down');
+      await expect(manager.flush()).resolves.toBeUndefined();
+
+      expect(mockConsumerUpload).toHaveBeenCalledTimes(2);
+    });
+
     it('runs a flush requested during another one after it, so that it covers what arrived since', async () => {
       let resolveFlush!: () => void;
       mockProducerFlush.mockReturnValueOnce(new Promise<void>((resolve) => (resolveFlush = resolve)));

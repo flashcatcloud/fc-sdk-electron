@@ -23,6 +23,13 @@ export class BatchProducer {
   private draining: Promise<void> = Promise.resolve();
   /** The timestamp of the last batch file named, so that the next is named after a later one. */
   private lastBatchTimestamp = 0;
+  /**
+   * The batch file an asynchronous append is writing to, if one is: `writePendingSync` must not
+   * write to it meanwhile — a large event is appended in several chunks, and a line written between
+   * two of them would corrupt both — so it moves on to a new batch and leaves that one to the
+   * append, which rotates it once done.
+   */
+  private inFlightFile: string | null = null;
 
   private constructor(config: ProducerConfig) {
     this.trackPath = config.trackPath;
@@ -78,7 +85,14 @@ export class BatchProducer {
   private async drain() {
     while (this.pending.length > 0) {
       const data = this.pending[0];
-      const serialized = `${JSON.stringify(data)}\n`;
+      let serialized: string;
+      try {
+        serialized = `${JSON.stringify(data)}\n`;
+      } catch {
+        // Not serializable (a BigInt in a context, say): dropped, like a write that fails.
+        this.pending.shift();
+        continue;
+      }
       const dataSize = Buffer.byteLength(serialized, 'utf8');
       try {
         await this.ensureTrackDirectoryExists();
@@ -93,11 +107,23 @@ export class BatchProducer {
         continue;
       }
       this.pending.shift();
+      const filePath = this.getCurrentBatchPath();
+      const file = this.currentBatchFile!;
+      this.inFlightFile = file;
       try {
-        await fs.appendFile(this.getCurrentBatchPath(), serialized, 'utf8');
-        this.currentBatchSize += dataSize;
+        await fs.appendFile(filePath, serialized, 'utf8');
+        if (this.currentBatchFile === file) {
+          this.currentBatchSize += dataSize;
+        }
       } catch {
         // Silently ignore write errors to ensure the queue continues processing
+      } finally {
+        this.inFlightFile = null;
+      }
+      if (this.currentBatchFile !== file) {
+        // The batch moved on while this append was in flight: nothing else writes to this file, and
+        // only a rotation makes it uploadable.
+        await this.renameBatchFile(file);
       }
     }
   }
@@ -145,12 +171,16 @@ export class BatchProducer {
 
   /** Renames the current `.tmp` batch file to `.log` and resets the batch state. */
   private async rotateBatch() {
-    if (!this.currentBatchFile) {
+    const file = this.currentBatchFile;
+    if (!file) {
       return;
     }
-    await this.renameBatchFile(this.currentBatchFile);
-    this.currentBatchFile = null;
-    this.currentBatchSize = 0;
+    await this.renameBatchFile(file);
+    // Unless the batch moved on while the rename was in flight: the newer batch is the current one.
+    if (this.currentBatchFile === file) {
+      this.currentBatchFile = null;
+      this.currentBatchSize = 0;
+    }
   }
 
   /** `drain`'s write of one item, for `writePendingSync`. */
@@ -158,7 +188,11 @@ export class BatchProducer {
     mkdirSync(this.trackPath, { recursive: true });
     const serialized = `${JSON.stringify(data)}\n`;
     const dataSize = Buffer.byteLength(serialized, 'utf8');
-    if (this.currentBatchSize + dataSize > this.batchSize && this.currentBatchSize > 0) {
+    if (this.inFlightFile !== null && this.inFlightFile === this.currentBatchFile) {
+      // See `inFlightFile`: the append rotates that file once it is done with it.
+      this.currentBatchFile = null;
+      this.currentBatchSize = 0;
+    } else if (this.currentBatchSize + dataSize > this.batchSize && this.currentBatchSize > 0) {
       this.rotateBatchSync();
     }
     appendFileSync(this.getCurrentBatchPath(), serialized, 'utf8');

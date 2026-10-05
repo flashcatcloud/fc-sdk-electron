@@ -152,6 +152,17 @@ describe('BatchProducer', () => {
       expect(fsMocks.appendFile.mock.calls[2][1]).toBe(`{"order":3}\n`);
     });
 
+    it('drops an item it cannot serialize and keeps writing the ones after it', async () => {
+      const producer = await BatchProducer.create(config);
+
+      producer.post({ context: { id: 1n } });
+      producer.post({ good: true });
+      await producer.flush();
+
+      expect(fsMocks.appendFile).toHaveBeenCalledTimes(1);
+      expect(fsMocks.appendFile.mock.calls[0][1]).toBe(`{"good":true}\n`);
+    });
+
     it('swallows appendFile errors and keeps queue processing subsequent posts', async () => {
       fsMocks.appendFile.mockRejectedValueOnce(new Error('write failed')).mockResolvedValueOnce(undefined);
 
@@ -198,6 +209,65 @@ describe('BatchProducer', () => {
       finishDirectoryCheck();
       await producer.flush();
       expect(fsMocks.appendFile).not.toHaveBeenCalled();
+    });
+
+    it('writes to a new batch while an append is in flight, which then rotates the batch it was writing', async () => {
+      const producer = await BatchProducer.create(config);
+      const { dateNow } = await import('@flashcatcloud/browser-core');
+      vi.mocked(dateNow).mockReturnValueOnce(1000).mockReturnValueOnce(2000);
+      let finishAppend!: () => void;
+      fsMocks.appendFile.mockImplementationOnce(() => new Promise<void>((resolve) => (finishAppend = resolve)));
+      producer.post({ large: 'x'.repeat(100) });
+      await vi.waitFor(() => expect(fsMocks.appendFile).toHaveBeenCalledTimes(1));
+      producer.post({ fatal: true });
+
+      // A large event is appended in chunks: a line written to the same file between two of them
+      // would corrupt both, so the exit flush starts a new batch instead.
+      producer.writePendingSync();
+
+      expect(appendFileSync).toHaveBeenCalledWith(
+        path.join(config.trackPath, 'batch-2000.tmp'),
+        `{"fatal":true}\n`,
+        'utf8'
+      );
+      expect(renameSync).not.toHaveBeenCalled();
+      finishAppend();
+      await producer.flush();
+      // The append rotated its own batch once done; the flush rotated the current one.
+      const renamed = fsMocks.rename.mock.calls.map(([from]) => path.basename(String(from)));
+      expect(renamed).toEqual(['batch-1000.tmp', 'batch-2000.tmp']);
+    });
+
+    it('keeps the batch the exit flush started when an earlier rotation completes after it', async () => {
+      const producer = await BatchProducer.create(makeConfig({ batchSize: 20 }));
+      const { dateNow } = await import('@flashcatcloud/browser-core');
+      vi.mocked(dateNow).mockReturnValueOnce(1000).mockReturnValueOnce(2000);
+      producer.post({ a: 'x'.repeat(10) });
+      await producer.flush();
+      vi.mocked(dateNow).mockReturnValueOnce(3000).mockReturnValueOnce(4000);
+      producer.post({ b: 'y'.repeat(10) });
+      await vi.waitFor(() => expect(fsMocks.appendFile).toHaveBeenCalledTimes(2));
+      let finishRename!: () => void;
+      fsMocks.rename.mockImplementationOnce(() => new Promise<void>((resolve) => (finishRename = resolve)));
+      // The next event does not fit: the queue starts rotating batch 3000…
+      producer.post({ c: 'z'.repeat(10) });
+      await vi.waitFor(() => expect(fsMocks.rename).toHaveBeenCalledTimes(2));
+      // …and an exit flush rotates it itself and writes into the next batch meanwhile.
+      producer.writePendingSync();
+      expect(appendFileSync).toHaveBeenCalledWith(
+        path.join(config.trackPath, 'batch-3000.tmp'),
+        `{"c":"zzzzzzzzzz"}\n`,
+        'utf8'
+      );
+
+      finishRename();
+      await producer.flush();
+
+      // That batch stayed the current one, so the flush rotated it rather than forgetting it.
+      expect(fsMocks.rename).toHaveBeenCalledWith(
+        path.join(config.trackPath, 'batch-3000.tmp'),
+        path.join(config.trackPath, 'batch-3000.log')
+      );
     });
 
     it('leaves a write the queue already started to complete on its own', async () => {

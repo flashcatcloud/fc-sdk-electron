@@ -52,10 +52,10 @@ export interface InitConfiguration {
    * report an error. Defaults to `false`.
    *
    * Such a session holds the last minute of its events in memory and uploads nothing; at its first
-   * error it uploads that minute along with the error, then reports as it happens like any other
-   * session. A session that ends without an error is thrown away whole. It only applies to what the
-   * plain rate missed, so with the default `sessionSampleRate` of 100 there is nothing left for it to
-   * apply to.
+   * error it hands that minute to the upload batch along with the error, 0–3 s later, then reports
+   * as it happens like any other session. A session that ends without an error is thrown away
+   * whole. It only applies to what the plain rate missed, so with the default `sessionSampleRate`
+   * of 100 there is nothing left for it to apply to.
    */
   sessionOnError?: boolean;
   telemetrySampleRate?: number;
@@ -246,7 +246,7 @@ export function buildConfiguration(initConfig: InitConfiguration): Configuration
   const sessionSampleRate = initConfig.sessionSampleRate ?? 100;
   const sessionOnError = validateOptionalBoolean(initConfig.sessionOnError, 'sessionOnError', false);
   if (sessionOnError && sessionSampleRate === 100) {
-    displayWarn('sessionOnError has no effect while sessionSampleRate is 100: every session is already collected.');
+    displayWarn('sessionOnError has no effect while sessionSampleRate is 100: every new session is collected anyway.');
   }
 
   return {
