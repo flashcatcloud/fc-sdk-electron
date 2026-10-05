@@ -18,7 +18,11 @@ export class BatchProducer {
   private batchSize: number;
   private currentBatchFile: string | null = null;
   private currentBatchSize = 0;
-  private writeQueue: Promise<void> = Promise.resolve();
+  /** Posted, not written yet: the queue takes from the front, in order. */
+  private pending: unknown[] = [];
+  private draining: Promise<void> = Promise.resolve();
+  /** The timestamp of the last batch file named, so that the next is named after a later one. */
+  private lastBatchTimestamp = 0;
 
   private constructor(config: ProducerConfig) {
     this.trackPath = config.trackPath;
@@ -34,43 +38,47 @@ export class BatchProducer {
     return producer;
   }
 
-  /** Enqueues data to be appended to the current batch file. Writes are serialized. */
+  /** Enqueues data to be appended to the current batch file. Writes are serialized, in call order. */
   post(data: unknown) {
-    this.writeQueue = this.writeQueue
-      .then(() => this.writeData(data))
-      .catch(() => {
-        // Silently ignore write errors to ensure the queue continues processing
-      });
+    this.pending.push(data);
+    this.draining = this.draining.then(() => this.drain());
   }
 
   /**
-   * Writes `data` before returning, for a caller that may not get another turn of the event loop —
-   * the process may be about to exit, and the queue only writes on later turns.
+   * Writes everything posted but not written yet before returning, for a process that may be about
+   * to exit: the queue only writes on later turns of the event loop, and there may be none.
    *
-   * It lands behind what the queue has already written and ahead of what it has not; every line
-   * stays whole, only the order across the two differs. A rotation the queue has in flight is the
-   * one gap: the line then goes to a `.tmp` the rename has just emptied, which is picked up as an
-   * orphan on the next launch rather than lost. Write errors are dropped, as `post()` drops them.
+   * A write the queue has in flight completes on its own and lands after these; every line stays
+   * whole, only the order differs. If that write's rotation is in flight too, its line goes to a
+   * `.tmp` the rename has just emptied, which the next launch picks up as an orphan rather than
+   * loses. A write that fails is dropped, as the queue drops it.
    */
-  postSync(data: unknown) {
-    try {
-      mkdirSync(this.trackPath, { recursive: true });
-      const serialized = `${JSON.stringify(data)}\n`;
-      const dataSize = Buffer.byteLength(serialized, 'utf8');
-      if (this.currentBatchSize + dataSize > this.batchSize && this.currentBatchSize > 0) {
-        this.rotateBatchSync();
+  writePendingSync() {
+    while (this.pending.length > 0) {
+      const data = this.pending.shift();
+      try {
+        this.writeDataSync(data);
+      } catch {
+        // Same contract as the queue: a write that fails is dropped.
       }
-      appendFileSync(this.getCurrentBatchPath(), serialized, 'utf8');
-      this.currentBatchSize += dataSize;
-    } catch {
-      // Same contract as the queue: a write that fails is dropped.
     }
   }
 
   /** Waits for pending writes to complete and rotates the current batch file. */
   async flush() {
-    await this.writeQueue;
+    await this.draining;
     await this.rotateBatch();
+  }
+
+  private async drain() {
+    while (this.pending.length > 0) {
+      const data = this.pending.shift();
+      try {
+        await this.writeData(data);
+      } catch {
+        // Silently ignore write errors to ensure the queue continues processing
+      }
+    }
   }
 
   /** Creates the track directory if it does not already exist. */
@@ -96,9 +104,14 @@ export class BatchProducer {
     }
   }
 
-  /** Generates a timestamp-based `.tmp` file name for a new batch. */
+  /**
+   * Generates a timestamp-based `.tmp` file name for a new batch. Strictly increasing: two batches
+   * rotated within the same millisecond — a burst written before an exit, say — would otherwise
+   * share a name, and the second `.log` would replace the first.
+   */
   private generateBatchFileName() {
-    return `batch-${dateNow()}.tmp`;
+    this.lastBatchTimestamp = Math.max(dateNow(), this.lastBatchTimestamp + 1);
+    return `batch-${this.lastBatchTimestamp}.tmp`;
   }
 
   /** Returns the full path to the current batch file, creating a new name if needed. */
@@ -119,7 +132,19 @@ export class BatchProducer {
     this.currentBatchSize = 0;
   }
 
-  /** `rotateBatch` for `postSync`: the rename is attempted in place, and the state is reset either way. */
+  /** `writeData` for `writePendingSync`. */
+  private writeDataSync(data: unknown) {
+    mkdirSync(this.trackPath, { recursive: true });
+    const serialized = `${JSON.stringify(data)}\n`;
+    const dataSize = Buffer.byteLength(serialized, 'utf8');
+    if (this.currentBatchSize + dataSize > this.batchSize && this.currentBatchSize > 0) {
+      this.rotateBatchSync();
+    }
+    appendFileSync(this.getCurrentBatchPath(), serialized, 'utf8');
+    this.currentBatchSize += dataSize;
+  }
+
+  /** `rotateBatch` for `writePendingSync`: the rename is attempted in place, and the state is reset either way. */
   private rotateBatchSync() {
     if (!this.currentBatchFile) {
       return;

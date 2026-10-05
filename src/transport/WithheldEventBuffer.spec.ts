@@ -1,9 +1,5 @@
-const { appListeners } = vi.hoisted(() => ({ appListeners: new Map<string, () => void>() }));
-
 vi.mock('electron', () => ({
-  app: {
-    on: vi.fn((name: string, listener: () => void) => appListeners.set(name, listener)),
-  },
+  app: { getPath: vi.fn(() => '/mock/user/data') },
 }));
 
 vi.mock('../domain/telemetry', async (importOriginal) => ({
@@ -75,10 +71,7 @@ describe('WithheldEventBuffer', () => {
   let eventManager: EventManager;
   let session: Session;
   let setSessionHasError: Mock<(sessionId: string, errorTime: TimeStamp) => void>;
-  /** Everything the sink received, in order. */
   let forwarded: RumEvent[];
-  /** The subset of `forwarded` that was written before returning. */
-  let writtenNow: RumEvent[];
   let buffer: WithheldEventBuffer;
 
   beforeEach(() => {
@@ -90,17 +83,10 @@ describe('WithheldEventBuffer', () => {
       if (sessionId === session.id) session.hasError = true;
     });
     forwarded = [];
-    writtenNow = [];
     buffer = new WithheldEventBuffer(
       eventManager,
       { getSession: () => ({ ...session }), setSessionHasError },
-      {
-        post: (event) => forwarded.push(event),
-        postNow: (event) => {
-          forwarded.push(event);
-          writtenNow.push(event);
-        },
-      }
+      (event) => forwarded.push(event)
     );
   });
 
@@ -146,7 +132,9 @@ describe('WithheldEventBuffer', () => {
       buffer.collect(detail('action'));
       buffer.collect(error());
 
-      expect(setSessionHasError).toHaveBeenCalledWith(SESSION_ID, expect.any(Number));
+      // Marked when released, not when the error arrives: until the release nothing of the session
+      // has reached the batch, which is what the mark means to a crash reported on the next launch.
+      expect(setSessionHasError).not.toHaveBeenCalled();
       if (RELEASE_DELAY > 0) {
         vi.advanceTimersByTime(RELEASE_DELAY - 1);
         expect(forwarded).toEqual([]);
@@ -154,6 +142,7 @@ describe('WithheldEventBuffer', () => {
       vi.advanceTimersByTime(1);
 
       expect(forwarded.map((event) => event.type)).toEqual(['view', 'error', 'action']);
+      expect(setSessionHasError).toHaveBeenCalledWith(SESSION_ID, expect.any(Number));
     });
 
     it('releases views oldest first, then errors, then the rest oldest first', () => {
@@ -429,6 +418,24 @@ describe('WithheldEventBuffer', () => {
     });
   });
 
+  describe('budget, crash reported on the next launch', () => {
+    it('keeps the view a crash brings along past the view limit, until the crash arrives for it', () => {
+      for (let i = 1; i <= WITHHELD_BUFFER_VIEWS_LIMIT; i += 1) {
+        buffer.collect(view(`window-${i}`, i));
+      }
+      // What CrashCollection emits, in this order: the crashed view ended, then the crash itself.
+      const crashedView = view('crashed-view', 0, false);
+      const crash = error('source', { error: { source: 'source', is_crash: true } }, 'crashed-view');
+      session.hasError = true;
+      buffer.collect(crashedView);
+      buffer.collect(crash);
+      vi.advanceTimersByTime(WITHHELD_BUFFER_RELEASE_MAX_DELAY);
+
+      expect(forwarded).toContain(crashedView);
+      expect(forwarded).toContain(crash);
+    });
+  });
+
   describe('end of the session', () => {
     it('throws away what never earned its release', () => {
       buffer.collect(view(MAIN_VIEW, 1));
@@ -462,39 +469,22 @@ describe('WithheldEventBuffer', () => {
   });
 
   describe('application exit', () => {
-    it.each([
-      ['an uncaught exception', () => notifyLifecycle(LifecycleKind.APP_MAY_EXIT)],
-      ['a quit', () => appListeners.get('before-quit')!()],
-    ])('releases at once what is waiting for the jitter on %s, written before returning', (_, mayExit) => {
+    it('releases at once what is waiting for the jitter', () => {
       buffer.collect(view(MAIN_VIEW, 1));
       buffer.collect(error());
 
-      mayExit();
+      notifyLifecycle(LifecycleKind.APP_MAY_EXIT);
 
       expect(forwarded.map((event) => event.type)).toEqual(['view', 'error']);
-      // The process may not get another turn of the event loop, which is what a queued write needs.
-      expect(writtenNow).toEqual(forwarded);
+      expect(setSessionHasError).toHaveBeenCalledWith(SESSION_ID, expect.any(Number));
     });
 
-    it('queues the release of a session that merely ended, as there is time for it', () => {
-      buffer.collect(view(MAIN_VIEW, 1));
-      buffer.collect(error());
-
-      expireSession();
-
-      expect(forwarded.map((event) => event.type)).toEqual(['view', 'error']);
-      expect(writtenNow).toEqual([]);
-    });
-
-    it.each([
-      ['an uncaught exception', () => notifyLifecycle(LifecycleKind.APP_MAY_EXIT)],
-      ['a quit', () => appListeners.get('before-quit')!()],
-    ])('keeps what has not earned its release on %s', (_, mayExit) => {
+    it('keeps what has not earned its release', () => {
       buffer.collect(view(MAIN_VIEW, 1));
       const history = detail('action');
       buffer.collect(history);
 
-      mayExit();
+      notifyLifecycle(LifecycleKind.APP_MAY_EXIT);
       expect(forwarded).toEqual([]);
 
       buffer.collect(error());

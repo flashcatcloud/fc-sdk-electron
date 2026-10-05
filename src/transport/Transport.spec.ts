@@ -5,6 +5,7 @@ import { EventKind, EventTrack, EventManager, LifecycleKind } from '../event';
 import { createTestConfiguration } from '../mocks.specUtil';
 import { type Session, type SessionManager, TrackingType } from '../domain/session';
 import { Transport } from './Transport';
+import { app } from 'electron';
 
 vi.mock('electron', () => ({
   app: {
@@ -14,18 +15,18 @@ vi.mock('electron', () => ({
   },
 }));
 
-const { mockBatchPost, mockBatchPostSync, mockBatchFlush, mockBatchCreate } = vi.hoisted(() => {
+const { mockBatchPost, mockBatchWritePendingSync, mockBatchFlush, mockBatchCreate } = vi.hoisted(() => {
   const mockBatchPost = vi.fn();
-  const mockBatchPostSync = vi.fn();
+  const mockBatchWritePendingSync = vi.fn();
   const mockBatchFlush = vi.fn().mockResolvedValue(undefined);
   const mockBatchCreate = vi.fn().mockResolvedValue({
     post: mockBatchPost,
-    postSync: mockBatchPostSync,
+    writePendingSync: mockBatchWritePendingSync,
     flush: mockBatchFlush,
     stop: vi.fn(),
   });
 
-  return { mockBatchPost, mockBatchPostSync, mockBatchFlush, mockBatchCreate };
+  return { mockBatchPost, mockBatchWritePendingSync, mockBatchFlush, mockBatchCreate };
 });
 
 vi.mock('./batch', () => ({
@@ -83,7 +84,7 @@ describe('Transport', () => {
       expect(mockBatchPost).not.toHaveBeenCalled();
     });
 
-    it('should write the release of a withheld session before returning when the application may exit', async () => {
+    it('should release a withheld session, then write what is pending, when the application may exit', async () => {
       session.trackingType = TrackingType.TRACKED_ON_ERROR;
       await Transport.create(config, eventManager, sessionManager);
       const view = { type: 'view', date: 1, session: { id: 'session-id' }, view: { id: 'view-id', is_active: true } };
@@ -95,11 +96,25 @@ describe('Transport', () => {
       };
       eventManager.notify({ kind: EventKind.SERVER, track: EventTrack.RUM, data: view } as unknown as ServerEvent);
       eventManager.notify({ kind: EventKind.SERVER, track: EventTrack.RUM, data: error } as unknown as ServerEvent);
+      const calls: string[] = [];
+      mockBatchPost.mockImplementation((data: { type: string }) => calls.push(`post:${data.type}`));
+      mockBatchWritePendingSync.mockImplementation(() => calls.push('writePendingSync'));
 
       eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.APP_MAY_EXIT });
 
-      expect(mockBatchPostSync.mock.calls).toEqual([[view], [error]]);
-      expect(mockBatchPost).not.toHaveBeenCalled();
+      // The release first, so that the write takes it along.
+      expect(calls).toEqual(['post:view', 'post:error', 'writePendingSync']);
+    });
+
+    it('should treat a quit as an exit', async () => {
+      await Transport.create(config, eventManager, sessionManager);
+      const beforeQuit = (vi.mocked(app.on).mock.calls as [string, () => void][]).find(
+        ([name]) => name === 'before-quit'
+      )![1];
+
+      beforeQuit();
+
+      expect(mockBatchWritePendingSync).toHaveBeenCalled();
     });
 
     it('should post telemetry straight to the batch, even while the session is withheld', async () => {

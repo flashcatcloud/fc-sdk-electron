@@ -391,6 +391,63 @@ describe('sessionManager', () => {
       }
     );
 
+    it('does not write back a state read before the session ended', async () => {
+      mockNoSessionFile();
+      sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
+      const { id } = sessionManager.getSession();
+      let finishRead!: (content: string) => void;
+      mfs.access.mockResolvedValue(undefined);
+      mfs.readFile.mockImplementationOnce(() => new Promise<string>((resolve) => (finishRead = resolve)));
+      mfs.unlink.mockResolvedValue(undefined);
+      mfs.writeFile.mockClear();
+
+      // An activity update starts reading the state, and the session ends before the read completes.
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.END_USER_ACTIVITY });
+      await vi.advanceTimersByTimeAsync(0);
+      sessionManager.expire();
+      finishRead(
+        JSON.stringify({ id, created: 0, lastActivity: 0, trackingType: TrackingType.TRACKED, sampleRate: 100 })
+      );
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(savedSessionStates()).toEqual([]);
+    });
+
+    it('closes the previous launch of a resumed session in the history, so the file does not grow with every launch', async () => {
+      const now = Date.now();
+      mfs.readFile.mockImplementation((filePath: string) =>
+        Promise.resolve(
+          filePath.endsWith(SESSION_FILE_NAME)
+            ? JSON.stringify({
+                id: 'existing',
+                created: now,
+                lastActivity: now,
+                trackingType: TrackingType.TRACKED,
+                sampleRate: 100,
+              })
+            : JSON.stringify([
+                { startTime: now - 10, endTime: null, value: { id: 'existing', trackingType: '2', sampleRate: 100 } },
+              ])
+        )
+      );
+
+      sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const histories = mfs.writeFile.mock.calls
+        .filter(([filePath]) => (filePath as string).endsWith('_dd_session_history'))
+        .map(([, content]) => JSON.parse(content as string) as { endTime: number | null; startTime: number }[]);
+      const latest = histories[histories.length - 1];
+      expect(latest).toHaveLength(2);
+      // Newest first: this launch's entry open, the previous launch's closed at this launch.
+      expect(latest[0]).toMatchObject({ startTime: now, endTime: null });
+      expect(latest[1]).toMatchObject({ startTime: now - 10, endTime: now });
+      // Events of the previous launch still resolve to it.
+      expect(hooks.triggerRum({ eventType: 'error', startTime: (now - 5) as TimeStamp })).toMatchObject({
+        session: { id: 'existing' },
+      });
+    });
+
     it('reports the rate a resumed session was drawn at, not the one configured since', async () => {
       const now = Date.now();
       mfs.readFile.mockResolvedValue(
@@ -574,6 +631,23 @@ describe('sessionManager', () => {
         finishMarkWrite();
         await vi.advanceTimersByTimeAsync(0);
         expect(mfs.unlink).toHaveBeenCalled();
+      });
+
+      it('writes nothing for a session that has ended, so the file it had cannot come back', async () => {
+        await startWithheldSession();
+        const { id } = sessionManager.getSession();
+        mfs.unlink.mockResolvedValue(undefined);
+        sessionManager.expire();
+        await vi.advanceTimersByTimeAsync(0);
+        mfs.writeFile.mockClear();
+
+        // A crash of this session, processed after it ended.
+        sessionManager.setSessionHasError(id, T0);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(savedSessionStates()).toEqual([]);
+        // The history still learns of it: that is what lets the crash through assembly.
+        expect(hooks.triggerRum({ eventType: 'error', startTime: T0 })).toMatchObject({ session: { id } });
       });
 
       it('leaves a drawn session alone, and writes nothing', async () => {

@@ -1,9 +1,14 @@
-import { app } from 'electron';
-import { computeBytesCount, ONE_KIBI_BYTE, ONE_SECOND, timeStampNow } from '@flashcatcloud/browser-core';
+import {
+  computeBytesCount,
+  ONE_KIBI_BYTE,
+  ONE_SECOND,
+  type TimeStamp,
+  timeStampNow,
+} from '@flashcatcloud/browser-core';
 import { EventKind, type EventManager, type LifecycleEvent, LifecycleKind } from '../event';
 import type { RumEvent } from '../domain/rum';
 import { type SessionManager, withholdsEvents } from '../domain/session';
-import { addTelemetryDebug, monitor, setTimeout } from '../domain/telemetry';
+import { addTelemetryDebug, setTimeout } from '../domain/telemetry';
 
 /**
  * How much history a withheld session keeps: the minute leading up to its error. The browser SDK
@@ -59,17 +64,6 @@ interface WithheldEvent {
 
 type SessionSource = Pick<SessionManager, 'getSession' | 'setSessionHasError'>;
 
-/** Where released and not-withheld events go. */
-export interface WithheldEventSink {
-  /** Hands the event to the batch, which writes it in turn. */
-  post(event: RumEvent): void;
-  /**
-   * Writes the event before returning. For the release of a process that may be about to exit:
-   * what the batch queues for a later turn of the event loop would never get written.
-   */
-  postNow(event: RumEvent): void;
-}
-
 type SettleCause = 'session-ended' | 'may-exit';
 
 /**
@@ -81,7 +75,10 @@ type SettleCause = 'session-ended' | 'may-exit';
  * trace — and only the last {@link WITHHELD_BUFFER_DURATION} is kept.
  *
  * The session's first error releases the buffer behind a per-session jitter: views oldest first,
- * then errors, then everything else, oldest first. From then on its events go straight to the batch.
+ * then errors, then everything else, oldest first. The session is marked as errored at that moment,
+ * not when the error arrives: the mark is what a crash reported on the next launch reads as "the
+ * crashed view reached the batch", and until the release it has not. From then on its events go
+ * straight to the batch.
  * A session that ends without an error is thrown away with everything it held; its stragglers are
  * discarded at assembly (see `SessionContext`).
  *
@@ -105,7 +102,7 @@ export class WithheldEventBuffer {
   constructor(
     eventManager: EventManager,
     private readonly sessionManager: SessionSource,
-    private readonly sink: WithheldEventSink
+    private readonly forward: (event: RumEvent) => void
   ) {
     eventManager.registerHandler<LifecycleEvent>({
       canHandle: (event): event is LifecycleEvent =>
@@ -113,10 +110,6 @@ export class WithheldEventBuffer {
         (event.lifecycle === LifecycleKind.SESSION_EXPIRED || event.lifecycle === LifecycleKind.APP_MAY_EXIT),
       handle: (event) => this.settle(event.lifecycle === LifecycleKind.SESSION_EXPIRED ? 'session-ended' : 'may-exit'),
     });
-    app.on(
-      'before-quit',
-      monitor(() => this.settle('may-exit'))
-    );
   }
 
   collect(event: RumEvent): void {
@@ -130,7 +123,6 @@ export class WithheldEventBuffer {
         return;
       }
       // The session earns its release with this error, which then leaves with the rest, below.
-      this.sessionManager.setSessionHasError(sessionId, timeStampNow());
     }
 
     if (sessionId === this.withheldForSessionId) {
@@ -139,7 +131,7 @@ export class WithheldEventBuffer {
         // The session has earned its release, but an error larger than the whole budget would evict
         // the history it is meant to come with. It goes to the batch on its own instead; the history
         // still waits for the jitter, which exists for exactly the correlated outage at hand.
-        this.sink.post(event);
+        this.forward(event);
       } else {
         // Typically the error itself: it joins what is held, so the whole history leaves in order.
         this.hold(event, bytes);
@@ -148,7 +140,7 @@ export class WithheldEventBuffer {
       return;
     }
 
-    this.sink.post(event);
+    this.forward(event);
   }
 
   /** `measuredBytes` is the event's serialized size, when the caller already measured it. */
@@ -158,7 +150,7 @@ export class WithheldEventBuffer {
       // delete moves it to the end, so the map stays ordered by last update.
       this.views.delete(event.view.id);
       this.views.set(event.view.id, { event, time: Date.now() });
-      this.evictViewsOverLimit();
+      this.evictViewsOverLimit(event.view.id);
       this.prune();
       return;
     }
@@ -183,23 +175,28 @@ export class WithheldEventBuffer {
 
   /**
    * Drops the oldest views past the limit: ended ones first, since an active one is still
-   * collecting, and never — while any other is left — a view that holds an error. Its detail leaves
-   * with the view (see {@link release}), and the error is what the session is kept for.
+   * collecting, and never — while any other is left — a view that holds an error, nor the one just
+   * updated. A detail leaves only with its view (see {@link release}), and the error is what the
+   * session is kept for; the view just updated may be the one its error is about to arrive for, as
+   * a crash reported on the next launch brings its view first.
    */
-  private evictViewsOverLimit(): void {
+  private evictViewsOverLimit(justUpdatedViewId: string): void {
     while (this.views.size > WITHHELD_BUFFER_VIEWS_LIMIT) {
       const viewsWithError = new Set(
         this.details.filter((held) => held.event.type === 'error').map((held) => held.viewId)
       );
       const cost = (viewId: string, view: WithheldView) =>
         (viewsWithError.has(viewId) ? 2 : 0) + (isActiveView(view.event) ? 1 : 0);
-      let evictedViewId = this.views.keys().next().value!;
+      let evictedViewId: string | undefined;
       for (const [viewId, view] of this.views) {
-        if (cost(viewId, view) < cost(evictedViewId, this.views.get(evictedViewId)!)) {
+        if (viewId === justUpdatedViewId) {
+          continue;
+        }
+        if (evictedViewId === undefined || cost(viewId, view) < cost(evictedViewId, this.views.get(evictedViewId)!)) {
           evictedViewId = viewId;
         }
       }
-      this.views.delete(evictedViewId);
+      this.views.delete(evictedViewId!);
     }
   }
 
@@ -264,10 +261,8 @@ export class WithheldEventBuffer {
    * Called when what is held may not get another chance to leave: the session ended (discarding
    * what never earned its release), or the application may be about to exit (keeping it: a quit
    * that does not happen leaves the session running, and a real one takes the buffer with it either
-   * way).
-   *
-   * Either way a session that reported its error is released now rather than after the jitter —
-   * and before an exit, written before returning, since there may be no later turn to write on.
+   * way). Either way a session that reported its error is released now rather than after the
+   * jitter. The transport then writes what an exit would otherwise take along, see `Transport`.
    */
   private settle(cause: SettleCause): void {
     if (this.withheldForSessionId === undefined) {
@@ -276,27 +271,31 @@ export class WithheldEventBuffer {
     const session = this.sessionManager.getSession();
     const hasErrored = session.id === this.withheldForSessionId && !!session.hasError;
     if (this.releaseTimeoutId !== undefined || hasErrored) {
-      this.release(cause === 'may-exit' ? 'now' : 'queued');
+      this.release();
     } else if (cause === 'session-ended') {
       this.clear();
     }
   }
 
-  private release(write: 'queued' | 'now' = 'queued'): void {
+  private release(): void {
     this.prune();
-    const forward =
-      write === 'now' ? (event: RumEvent) => this.sink.postNow(event) : (event: RumEvent) => this.sink.post(event);
+    // Marked as of when the error arrived, which is inside the session's entry even if the session
+    // ended since: a mark on the entry is what lets the session's final events through assembly.
+    this.sessionManager.setSessionHasError(
+      this.withheldForSessionId!,
+      (this.releaseScheduledAt ?? timeStampNow()) as TimeStamp
+    );
 
     // A detail whose view is gone has no container to hang from, so it would be unreachable.
     const releasable = this.details.filter((held) => this.views.has(held.viewId));
     // Oldest first: the backend builds the session out of whichever of its views arrives first.
     const views = [...this.views.values()].map((view) => view.event).sort((left, right) => left.date - right.date);
 
-    views.forEach(forward);
+    views.forEach((view) => this.forward(view));
     // The errors right behind the views, then the rest oldest first: if the application is about to
     // exit, the first writes are the ones most likely to make it.
-    releasable.filter((held) => held.event.type === 'error').forEach((held) => forward(held.event));
-    releasable.filter((held) => held.event.type !== 'error').forEach((held) => forward(held.event));
+    releasable.filter((held) => held.event.type === 'error').forEach((held) => this.forward(held.event));
+    releasable.filter((held) => held.event.type !== 'error').forEach((held) => this.forward(held.event));
 
     addTelemetryDebug('Error session event buffer released', {
       'buffer.views_count': views.length,

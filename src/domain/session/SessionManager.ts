@@ -95,7 +95,8 @@ export class SessionManager {
    * quits" is the case this exists for, and it must not wait on a write.
    */
   setSessionHasError(sessionId: string, errorTime: TimeStamp): void {
-    if (sessionId === this.currentState.id && withholdsEvents(this.currentState)) {
+    // Only while active: an ended session's file is being deleted, and a write would bring it back.
+    if (this.status === 'active' && sessionId === this.currentState.id && withholdsEvents(this.currentState)) {
       this.currentState.hasError = true;
       void this.saveCurrentState();
     }
@@ -115,6 +116,9 @@ export class SessionManager {
     const existingState = await loadSessionState();
 
     this.sessionContext = await SessionContext.init(this.hooks);
+    // The previous launch's entry, resumed session or not: it never got to close itself, and an
+    // open entry is never pruned. A resumed session gets a new entry for this launch.
+    this.sessionContext.close();
 
     if (existingState && isSessionValid(existingState, now)) {
       existingState.lastActivity = now;
@@ -123,7 +127,6 @@ export class SessionManager {
       this.scheduleInactivityTimeout();
       this.scheduleSessionTimeout(existingState.created);
     } else {
-      this.sessionContext.close();
       await this.createNewSession();
     }
 
@@ -180,13 +183,17 @@ export class SessionManager {
   }
 
   private async updateActivity(): Promise<void> {
-    if (this.status === 'expired') {
+    if (this.isExpired()) {
       await this.createNewSession();
       this.eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_RENEW });
       return;
     }
 
     const state = await loadSessionState();
+    if (this.isExpired()) {
+      // Expired while the state was being read: writing it back would bring the session back.
+      return;
+    }
     if (!state || state.id !== this.currentState.id) {
       addError(new Error('SessionManager: Invalid session state'));
       return;
@@ -198,6 +205,11 @@ export class SessionManager {
     await this.saveCurrentState();
 
     this.scheduleInactivityTimeout();
+  }
+
+  /** A method rather than a comparison in place: the status changes under an `await`. */
+  private isExpired(): boolean {
+    return this.status === 'expired';
   }
 
   private scheduleInactivityTimeout(): void {

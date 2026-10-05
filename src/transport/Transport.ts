@@ -1,14 +1,26 @@
 import { app } from 'electron';
 
 import { BatchSizes, BatchUploadFrequencies, type Configuration } from '../config';
-import { EventKind, EventTrack, type EventManager, type ServerEvent } from '../event';
+import {
+  EventKind,
+  EventTrack,
+  type AppMayExitEvent,
+  type EventManager,
+  LifecycleKind,
+  type ServerEvent,
+} from '../event';
 import type { SessionManager } from '../domain/session';
+import { monitor } from '../domain/telemetry';
 import { BatchManager } from './batch';
 import { WithheldEventBuffer } from './WithheldEventBuffer';
 
 /**
  * Orchestrates event transport by routing server events from registered domains
  * through dedicated {@link BatchManager} instances for disk-buffered delivery.
+ *
+ * When the application may be about to exit — an uncaught exception in the main process, or a quit
+ * — whatever is posted but not written yet is written before returning: the batch writes on later
+ * turns of the event loop, and an exit leaves none.
  */
 export class Transport {
   // FlashCat ingest only exposes the RUM track (POST /api/v2/rum). It has no
@@ -34,6 +46,17 @@ export class Transport {
     for (const track of transport.tracks) {
       await transport.setupTrackBatching(track);
     }
+
+    // After the tracks, whose handlers release what an exit must take along, so this runs last.
+    eventManager.registerHandler<AppMayExitEvent>({
+      canHandle: (event): event is AppMayExitEvent =>
+        event.kind === EventKind.LIFECYCLE && event.lifecycle === LifecycleKind.APP_MAY_EXIT,
+      handle: () => transport.writePendingSync(),
+    });
+    app.on(
+      'before-quit',
+      monitor(() => eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.APP_MAY_EXIT }))
+    );
 
     return transport;
   }
@@ -72,10 +95,7 @@ export class Transport {
     const batchManager = await this.createBatchManager(track);
     const withheldEventBuffer =
       track === EventTrack.RUM
-        ? new WithheldEventBuffer(this.eventManager, this.sessionManager, {
-            post: (event) => batchManager.post(event),
-            postNow: (event) => batchManager.postSync(event),
-          })
+        ? new WithheldEventBuffer(this.eventManager, this.sessionManager, (event) => batchManager.post(event))
         : undefined;
 
     this.eventManager.registerHandler<ServerEvent>({
@@ -94,5 +114,9 @@ export class Transport {
   /** Flushes all batch managers, rotating pending data and triggering uploads. */
   async flush() {
     await Promise.all(this.batchManagers.map((m) => m.flush()));
+  }
+
+  private writePendingSync() {
+    this.batchManagers.forEach((m) => m.writePendingSync());
   }
 }

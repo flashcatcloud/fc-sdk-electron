@@ -150,32 +150,58 @@ describe('BatchProducer', () => {
     });
   });
 
-  describe('postSync()', () => {
-    it('writes before returning, without waiting on the queue', async () => {
+  describe('writePendingSync()', () => {
+    it('writes what is posted but not written yet before returning, and the queue does not write it again', async () => {
       const producer = await BatchProducer.create(config);
-      fsMocks.appendFile.mockReturnValue(new Promise(() => undefined));
-      producer.post({ queued: true });
+      producer.post({ a: 1 });
+      producer.post({ b: 2 });
 
-      producer.postSync({ now: true });
+      producer.writePendingSync();
 
-      expect(appendFileSync).toHaveBeenCalledWith(
-        path.join(config.trackPath, 'batch-1234567890.tmp'),
-        `${JSON.stringify({ now: true })}\n`,
-        'utf8'
-      );
+      const tmp = path.join(config.trackPath, 'batch-1234567890.tmp');
+      expect(appendFileSync.mock.calls).toEqual([
+        [tmp, `{"a":1}\n`, 'utf8'],
+        [tmp, `{"b":2}\n`, 'utf8'],
+      ]);
+      await producer.flush();
+      expect(fsMocks.appendFile).not.toHaveBeenCalled();
     });
 
-    it('counts what it wrote towards the batch size, and rotates in place when it is exceeded', async () => {
+    it('leaves a write the queue already started to complete on its own', async () => {
+      const producer = await BatchProducer.create(config);
+      let finishWrite!: () => void;
+      fsMocks.appendFile.mockImplementationOnce(() => new Promise<void>((resolve) => (finishWrite = resolve)));
+      producer.post({ started: true });
+      await vi.waitFor(() => expect(fsMocks.appendFile).toHaveBeenCalledTimes(1));
+      producer.post({ pending: true });
+
+      producer.writePendingSync();
+
+      expect(appendFileSync).toHaveBeenCalledTimes(1);
+      expect(appendFileSync.mock.calls[0][1]).toBe(`{"pending":true}\n`);
+      finishWrite();
+      await producer.flush();
+      expect(fsMocks.appendFile).toHaveBeenCalledTimes(1);
+    });
+
+    it('rotates in place when the batch size is exceeded, never onto the name of an earlier batch', async () => {
       const producer = await BatchProducer.create(makeConfig({ batchSize: 20 }));
-      producer.postSync({ a: 'x'.repeat(10) });
+      producer.post({ a: 'x'.repeat(10) });
+      producer.post({ b: 'y'.repeat(10) });
+      producer.post({ c: 'z'.repeat(10) });
 
-      producer.postSync({ b: 'y' });
+      producer.writePendingSync();
 
-      expect(renameSync).toHaveBeenCalledWith(
+      // Three batches within the same millisecond: each named after a later one than the last.
+      expect(renameSync.mock.calls).toEqual([
+        [path.join(config.trackPath, 'batch-1234567890.tmp'), path.join(config.trackPath, 'batch-1234567890.log')],
+        [path.join(config.trackPath, 'batch-1234567891.tmp'), path.join(config.trackPath, 'batch-1234567891.log')],
+      ]);
+      expect(appendFileSync.mock.calls.map(([file]) => file)).toEqual([
         path.join(config.trackPath, 'batch-1234567890.tmp'),
-        path.join(config.trackPath, 'batch-1234567890.log')
-      );
-      expect(appendFileSync).toHaveBeenCalledTimes(2);
+        path.join(config.trackPath, 'batch-1234567891.tmp'),
+        path.join(config.trackPath, 'batch-1234567892.tmp'),
+      ]);
     });
 
     it('drops a write that fails, like the queue does', async () => {
@@ -183,9 +209,11 @@ describe('BatchProducer', () => {
       appendFileSync.mockImplementationOnce(() => {
         throw new Error('EACCES');
       });
+      producer.post({ a: 1 });
+      producer.post({ b: 2 });
 
-      expect(() => producer.postSync({ a: 1 })).not.toThrow();
-      producer.postSync({ b: 2 });
+      expect(() => producer.writePendingSync()).not.toThrow();
+
       expect(appendFileSync).toHaveBeenCalledTimes(2);
     });
   });

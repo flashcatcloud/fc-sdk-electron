@@ -71,8 +71,9 @@ export interface UserChangedEvent {
 }
 
 /**
- * The main process hit an uncaught exception, after which applications commonly exit. Whatever is
- * waiting to be written has to be handed to the batch now rather than later.
+ * The main process hit an uncaught exception, after which applications commonly exit, or the
+ * application is quitting. Whatever is waiting to be written has to be written now rather than
+ * later.
  */
 export interface AppMayExitEvent {
   kind: typeof EventKind.LIFECYCLE;
