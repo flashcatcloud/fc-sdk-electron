@@ -378,7 +378,7 @@ describe('WithheldEventBuffer', () => {
       expect(forwarded.slice(1).map((event) => event.type)).toEqual(['view', 'action']);
     });
 
-    it('evicts ended views first past the view limit, and never releases a detail without its view', () => {
+    it('evicts ended views first past the view limit, and still releases a detail whose view went', () => {
       buffer.collect(view(MAIN_VIEW, 0));
       // An ended view arrives after its detail: its final update is emitted when it ends.
       const orphan = detail('action', {}, { viewId: 'view-0' });
@@ -395,7 +395,24 @@ describe('WithheldEventBuffer', () => {
       const views = forwarded.filter((event) => event.type === 'view');
       expect(views).toHaveLength(WITHHELD_BUFFER_VIEWS_LIMIT);
       expect(views[0].view.id).toBe(MAIN_VIEW);
-      expect(forwarded).not.toContain(orphan);
+      // Views order the release; a detail is never lost for want of its view.
+      expect(forwarded).toContain(orphan);
+    });
+
+    it('releases every detail it holds, with the errors first, even those whose view was never held', () => {
+      buffer.collect(view(MAIN_VIEW, 0));
+      const viewlessAction = detail('action', {}, { viewId: 'renderer-view-not-held' });
+      const viewlessError = error('source', {}, 'renderer-view-not-held');
+      buffer.collect(viewlessAction);
+      buffer.collect(viewlessError);
+      vi.advanceTimersByTime(WITHHELD_BUFFER_RELEASE_MAX_DELAY);
+
+      expect(forwarded.map((event) => event.type)).toEqual(['view', 'error', 'action']);
+      expect(forwarded).toContain(viewlessError);
+      expect(addTelemetryDebug).toHaveBeenCalledWith(
+        'Error session event buffer released',
+        expect.objectContaining({ 'buffer.events_count': 2, 'buffer.dropped_count': 0 })
+      );
     });
 
     it('keeps the view of the releasing error past the view limit, ended as it may be', () => {

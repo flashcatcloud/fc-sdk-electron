@@ -176,9 +176,10 @@ export class WithheldEventBuffer {
   /**
    * Drops the oldest views past the limit: ended ones first, since an active one is still
    * collecting, and never — while any other is left — a view that holds an error, nor the one just
-   * updated. A detail leaves only with its view (see {@link release}), and the error is what the
-   * session is kept for; the view just updated may be the one its error is about to arrive for, as
-   * a crash reported on the next launch brings its view first.
+   * updated. A detail is released with or without its view (see {@link release}), but the error is
+   * what the session is kept for, and its view is what the backend hangs it from; the view just
+   * updated may be the one its error is about to arrive for, as a crash reported on the next launch
+   * brings its view first.
    */
   private evictViewsOverLimit(justUpdatedViewId: string): void {
     while (this.views.size > WITHHELD_BUFFER_VIEWS_LIMIT) {
@@ -286,21 +287,21 @@ export class WithheldEventBuffer {
       (this.releaseScheduledAt ?? timeStampNow()) as TimeStamp
     );
 
-    // A detail whose view is gone has no container to hang from, so it would be unreachable.
-    const releasable = this.details.filter((held) => this.views.has(held.viewId));
     // Oldest first: the backend builds the session out of whichever of its views arrives first.
     const views = [...this.views.values()].map((view) => view.event).sort((left, right) => left.date - right.date);
 
     views.forEach((view) => this.forward(view));
-    // The errors right behind the views, then the rest oldest first: if the application is about to
-    // exit, the first writes are the ones most likely to make it.
-    releasable.filter((held) => held.event.type === 'error').forEach((held) => this.forward(held.event));
-    releasable.filter((held) => held.event.type !== 'error').forEach((held) => this.forward(held.event));
+    // Every detail held, whether or not its view still is: an errored session must not lose its
+    // error or its history, and the views only order the release. The errors right behind the
+    // views, then the rest oldest first: if the application is about to exit, the first writes are
+    // the ones most likely to make it.
+    this.details.filter((held) => held.event.type === 'error').forEach((held) => this.forward(held.event));
+    this.details.filter((held) => held.event.type !== 'error').forEach((held) => this.forward(held.event));
 
     addTelemetryDebug('Error session event buffer released', {
       'buffer.views_count': views.length,
-      'buffer.events_count': releasable.length,
-      'buffer.dropped_count': this.droppedCount + this.details.length - releasable.length,
+      'buffer.events_count': this.details.length,
+      'buffer.dropped_count': this.droppedCount,
       'buffer.bytes': this.bytes,
     });
 
