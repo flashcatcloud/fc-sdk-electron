@@ -5,7 +5,7 @@ import { app, crashReporter } from 'electron';
 import { EventFormat, EventKind, EventManager, EventSource } from '../../../event';
 import type { CrashReport } from '../../../wasm';
 import type { RawRumError, RawRumView } from '../rawRumData.types';
-import { type SessionManager, withholdsEvents } from '../../session';
+import { type SessionManager, type SessionRecord, withholdsEvents } from '../../session';
 import type { MainView } from '../view';
 import type { RumErrorEvent } from '../rumEvent.types';
 import { displayError, displayInfo } from '../../../tools/display';
@@ -61,12 +61,16 @@ export class CrashCollection {
         const bytes = new Uint8Array(await fs.readFile(filePath));
         const crashReport = await processMinidump(bytes);
 
-        this.releaseWithheldSession(crashTime);
+        const session = this.sessionManager.findSession(crashTime);
+        const view = this.findView(crashTime);
+        this.releaseWithheldSession(session, view, crashTime);
         this.eventManager.notify({
           kind: EventKind.RAW,
           source: EventSource.MAIN,
           format: EventFormat.RUM,
-          data: buildCrashErrorEvent(crashReport, crashTime),
+          // Under the view it happened in — or, when that view is gone from the history, under a
+          // view of its own: a session must not lose its crash for want of a container.
+          data: buildCrashErrorEvent(crashReport, crashTime, view?.id ?? generateUUID()),
           startTime: crashTime,
         });
       } catch (error) {
@@ -88,12 +92,15 @@ export class CrashCollection {
    * resumed it, released this launch's views, not the one the crash happened in.
    *
    * This is all the history such a crash gets: keeping the withheld buffer on disk instead would
-   * cost a session that never errors constant writes.
+   * cost a session that never errors constant writes. When the view itself is gone from the
+   * history, the session is still released and the crash goes alone.
    */
-  private releaseWithheldSession(crashTime: TimeStamp): void {
-    const session = this.sessionManager.findSession(crashTime);
-    const view = this.findView(crashTime);
-    if (!session || !withholdsEvents(session) || !view) {
+  private releaseWithheldSession(
+    session: SessionRecord | undefined,
+    view: MainView | undefined,
+    crashTime: TimeStamp
+  ): void {
+    if (!session || !withholdsEvents(session)) {
       return;
     }
     const current = this.sessionManager.getSession();
@@ -104,6 +111,9 @@ export class CrashCollection {
       // the release the crash earns it, and the mark belongs there — a mark written now would tell
       // a crash of this launch that the view had reached the batch when it had not.
       this.sessionManager.setSessionHasError(session.id, crashTime);
+    }
+    if (!view) {
+      return;
     }
     this.eventManager.notify({
       kind: EventKind.RAW,
@@ -184,7 +194,7 @@ function calculateMaxAddress(baseAddress: string | undefined, size: number | und
  * binary images and system info are all available, only the exception type, the
  * faulting address and the crashed thread are unknown.
  */
-function buildCrashErrorEvent(crashReport: CrashReport, crashTime: TimeStamp): RawRumError {
+function buildCrashErrorEvent(crashReport: CrashReport, crashTime: TimeStamp, viewId: string): RawRumError {
   const threads = formatThreads(crashReport);
   const crashedThread = threads.find((t) => t.crashed);
   const exceptionType = crashReport.crash_info?.type;
@@ -200,6 +210,7 @@ function buildCrashErrorEvent(crashReport: CrashReport, crashTime: TimeStamp): R
   return {
     date: crashTime,
     type: 'error',
+    view: { id: viewId },
     error: {
       id: generateUUID(),
       message: 'Application crashed',

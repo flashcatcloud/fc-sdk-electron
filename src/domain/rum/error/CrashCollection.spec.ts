@@ -36,6 +36,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { crashReporter } from 'electron';
 import { type TimeStamp } from '@flashcatcloud/browser-core';
 import { CrashCollection } from './CrashCollection';
+import type { MainView } from '../view';
 import { EventManager, EventKind, EventFormat, type RawRumEvent } from '../../../event';
 import { processMinidump } from '../../../wasm';
 import type { CrashReport } from '../../../wasm';
@@ -827,7 +828,8 @@ describe('CrashCollection', () => {
     }
 
     async function processCrash(
-      sessionManager: Pick<SessionManager, 'findSession' | 'getSession' | 'setSessionHasError'>
+      sessionManager: Pick<SessionManager, 'findSession' | 'getSession' | 'setSessionHasError'>,
+      findView: () => MainView | undefined = () => ({ id: 'crashed-view', startTime: VIEW_START })
     ) {
       mockDmpFile('crash.dmp', CRASH_TIME);
       vi.mocked(processMinidump).mockResolvedValue(createMinidumpResult());
@@ -835,7 +837,7 @@ describe('CrashCollection', () => {
         canHandle: (event): event is RawRumEvent => event.kind === EventKind.RAW,
         handle: (event) => calls.push(event.data.type),
       });
-      CrashCollection.start(eventManager, sessionManager, () => ({ id: 'crashed-view', startTime: VIEW_START }));
+      CrashCollection.start(eventManager, sessionManager, findView);
       resolveWhenReady();
       await vi.advanceTimersToNextTimerAsync();
     }
@@ -863,6 +865,18 @@ describe('CrashCollection', () => {
         },
       });
       expect((rawRumEvents[1].data as RawRumError).error.is_crash).toBe(true);
+    });
+
+    it('still releases the session and reports the crash, under a view of its own, when its view is gone from the history', async () => {
+      const sessionManager = sessionManagerFor(WITHHELD);
+
+      await processCrash(sessionManager, () => undefined);
+
+      expect(sessionManager.setSessionHasError).toHaveBeenCalledWith('withheld', CRASH_TIME);
+      expect(calls).toEqual(['setSessionHasError', 'error']);
+      const crash = rawRumEvents[0].data as RawRumError;
+      expect(crash.error.is_crash).toBe(true);
+      expect(typeof crash.view?.id).toBe('string');
     });
 
     it('leaves the mark to the release when the crashed session was resumed and is the current one', async () => {

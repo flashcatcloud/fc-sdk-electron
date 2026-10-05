@@ -19,7 +19,9 @@ export class ViewContext {
     this.history = history;
 
     hooks.registerRum((params) => {
-      const id = this.history.find(params.startTime);
+      // The view in force at the time, or the one the event names itself when none was: a crash
+      // reported on the next launch is not lost for want of its view.
+      const id = this.history.find(params.startTime) ?? params.viewId;
       if (id === undefined) return DISCARDED;
       return { view: { id, name: 'main process', url: 'electron://main-process' } }; // TODO(RUM-14657) improve name / url
     });

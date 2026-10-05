@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { RumErrorEvent, RumViewEvent } from '@flashcatcloud/electron-sdk';
 import {
@@ -279,12 +279,24 @@ async function readBatchEvents(trackDir: string): Promise<SessionEvent[]> {
   return events;
 }
 
-for (const { title, config, reported } of [
-  { title: 'reports the crash of a withheld session, with its view', config: ON_ERROR_ONLY, reported: true },
+for (const { title, config, reported, viewHistory } of [
+  {
+    title: 'reports the crash of a withheld session, with its view',
+    config: ON_ERROR_ONLY,
+    reported: true,
+    viewHistory: 'kept',
+  },
+  {
+    title: 'reports the crash of a withheld session under a view of its own when the view history is gone',
+    config: ON_ERROR_ONLY,
+    reported: true,
+    viewHistory: 'lost',
+  },
   {
     title: 'does not report the crash of a session the draw did not keep',
     config: { sessionSampleRate: 0 },
     reported: false,
+    viewHistory: 'kept',
   },
 ]) {
   test.describe('sessionOnError, native crash', () => {
@@ -304,6 +316,10 @@ for (const { title, config, reported } of [
       await ensureProcessGone(crashedPid);
       // Nothing of the crashed launch was uploaded: the session never reported an error there.
       expect(rumEvents(intake)).toEqual([]);
+      if (viewHistory === 'lost') {
+        // The SDK's own view history file, as written by the crashed launch.
+        await rm(join(userDataDir, '_dd_view_history'), { force: true });
+      }
 
       const second = await launchAppManually(intake, userDataDir, 'await', sdkConfig);
       try {
@@ -322,6 +338,14 @@ for (const { title, config, reported } of [
         expect(crashes).toHaveLength(1);
         const crash = crashes[0];
         expect(crash._dd?.configuration?.session_sample_rate).toBe(0);
+        expect(crash.session.id).toEqual(expect.any(String));
+        expect(intake.getProtocolViolations()).toEqual([]);
+        if (viewHistory === 'lost') {
+          // A view of its own, which no view event describes: the crash is not lost for want of one.
+          expect(crash.view.id).toEqual(expect.any(String));
+          expect(events.some((event) => event.type === 'view' && event.view.id === crash.view.id)).toBe(false);
+          return;
+        }
         const crashedView = events.find((event) => event.type === 'view' && event.view.id === crash.view.id) as
           | (SessionEvent & RumViewEvent)
           | undefined;
@@ -329,7 +353,6 @@ for (const { title, config, reported } of [
         expect(crashedView!.session.sampled_for_error).toBe(true);
         expect(crashedView!.view.is_active).toBe(false);
         expect(crashedView!.session.id).toBe(crash.session.id);
-        expect(intake.getProtocolViolations()).toEqual([]);
       } finally {
         await second.electronApp.close();
         await cleanupUserDataDir(userDataDir);
