@@ -12,7 +12,7 @@ vi.mock('../domain/telemetry', async (importOriginal) => ({
 }));
 
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
-import { generateUUID } from '@flashcatcloud/browser-core';
+import { generateUUID, type TimeStamp } from '@flashcatcloud/browser-core';
 import { EventKind, EventManager, LifecycleKind } from '../event';
 import type { RumEvent } from '../domain/rum';
 import { type Session, TrackingType } from '../domain/session';
@@ -74,23 +74,33 @@ function padding(bytes: number) {
 describe('WithheldEventBuffer', () => {
   let eventManager: EventManager;
   let session: Session;
-  let setSessionHasError: Mock<(sessionId: string) => void>;
+  let setSessionHasError: Mock<(sessionId: string, errorTime: TimeStamp) => void>;
+  /** Everything the sink received, in order. */
   let forwarded: RumEvent[];
+  /** The subset of `forwarded` that was written before returning. */
+  let writtenNow: RumEvent[];
   let buffer: WithheldEventBuffer;
 
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000_000);
     eventManager = new EventManager();
-    session = { id: SESSION_ID, status: 'active', trackingType: TrackingType.TRACKED_ON_ERROR };
+    session = { id: SESSION_ID, status: 'active', trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 0 };
     setSessionHasError = vi.fn((sessionId: string) => {
       if (sessionId === session.id) session.hasError = true;
     });
     forwarded = [];
+    writtenNow = [];
     buffer = new WithheldEventBuffer(
       eventManager,
       { getSession: () => ({ ...session }), setSessionHasError },
-      (event) => forwarded.push(event)
+      {
+        post: (event) => forwarded.push(event),
+        postNow: (event) => {
+          forwarded.push(event);
+          writtenNow.push(event);
+        },
+      }
     );
   });
 
@@ -136,7 +146,7 @@ describe('WithheldEventBuffer', () => {
       buffer.collect(detail('action'));
       buffer.collect(error());
 
-      expect(setSessionHasError).toHaveBeenCalledWith(SESSION_ID);
+      expect(setSessionHasError).toHaveBeenCalledWith(SESSION_ID, expect.any(Number));
       if (RELEASE_DELAY > 0) {
         vi.advanceTimersByTime(RELEASE_DELAY - 1);
         expect(forwarded).toEqual([]);
@@ -398,6 +408,25 @@ describe('WithheldEventBuffer', () => {
       expect(views[0].view.id).toBe(MAIN_VIEW);
       expect(forwarded).not.toContain(orphan);
     });
+
+    it('keeps the view of the releasing error past the view limit, ended as it may be', () => {
+      buffer.collect(view(MAIN_VIEW, 0));
+      buffer.collect(view('errored-view', 1));
+      const releasingError = error('source', {}, 'errored-view');
+      buffer.collect(releasingError);
+      buffer.collect(view('errored-view', 1, false));
+      // During the jitter, more views than the limit allows arrive and end, every one of them
+      // updated after the errored view — the eviction order of ended views, were it the only rule.
+      for (let i = 1; i <= WITHHELD_BUFFER_VIEWS_LIMIT; i += 1) {
+        buffer.collect(view(`view-${i}`, i + 1, false));
+      }
+      vi.advanceTimersByTime(WITHHELD_BUFFER_RELEASE_MAX_DELAY);
+
+      expect(forwarded).toContain(releasingError);
+      expect(forwarded.filter((event) => event.type === 'view').map((event) => event.view.id)).toContain(
+        'errored-view'
+      );
+    });
   });
 
   describe('end of the session', () => {
@@ -423,7 +452,7 @@ describe('WithheldEventBuffer', () => {
     it('does not mistake the next session for the one that was thrown away', () => {
       buffer.collect(view(MAIN_VIEW, 1));
       expireSession();
-      session = { id: 'next-session-id', status: 'active', trackingType: TrackingType.TRACKED };
+      session = { id: 'next-session-id', status: 'active', trackingType: TrackingType.TRACKED, sampleRate: 100 };
 
       const next = detail('action', {}, { sessionId: 'next-session-id' });
       buffer.collect(next);
@@ -436,13 +465,25 @@ describe('WithheldEventBuffer', () => {
     it.each([
       ['an uncaught exception', () => notifyLifecycle(LifecycleKind.APP_MAY_EXIT)],
       ['a quit', () => appListeners.get('before-quit')!()],
-    ])('releases at once what is waiting for the jitter on %s', (_, mayExit) => {
+    ])('releases at once what is waiting for the jitter on %s, written before returning', (_, mayExit) => {
       buffer.collect(view(MAIN_VIEW, 1));
       buffer.collect(error());
 
       mayExit();
 
       expect(forwarded.map((event) => event.type)).toEqual(['view', 'error']);
+      // The process may not get another turn of the event loop, which is what a queued write needs.
+      expect(writtenNow).toEqual(forwarded);
+    });
+
+    it('queues the release of a session that merely ended, as there is time for it', () => {
+      buffer.collect(view(MAIN_VIEW, 1));
+      buffer.collect(error());
+
+      expireSession();
+
+      expect(forwarded.map((event) => event.type)).toEqual(['view', 'error']);
+      expect(writtenNow).toEqual([]);
     });
 
     it.each([

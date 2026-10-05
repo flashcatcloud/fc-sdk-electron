@@ -1,4 +1,5 @@
 import { dateNow } from '@flashcatcloud/browser-core';
+import { appendFileSync, mkdirSync, renameSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -40,6 +41,30 @@ export class BatchProducer {
       .catch(() => {
         // Silently ignore write errors to ensure the queue continues processing
       });
+  }
+
+  /**
+   * Writes `data` before returning, for a caller that may not get another turn of the event loop —
+   * the process may be about to exit, and the queue only writes on later turns.
+   *
+   * It lands behind what the queue has already written and ahead of what it has not; every line
+   * stays whole, only the order across the two differs. A rotation the queue has in flight is the
+   * one gap: the line then goes to a `.tmp` the rename has just emptied, which is picked up as an
+   * orphan on the next launch rather than lost. Write errors are dropped, as `post()` drops them.
+   */
+  postSync(data: unknown) {
+    try {
+      mkdirSync(this.trackPath, { recursive: true });
+      const serialized = `${JSON.stringify(data)}\n`;
+      const dataSize = Buffer.byteLength(serialized, 'utf8');
+      if (this.currentBatchSize + dataSize > this.batchSize && this.currentBatchSize > 0) {
+        this.rotateBatchSync();
+      }
+      appendFileSync(this.getCurrentBatchPath(), serialized, 'utf8');
+      this.currentBatchSize += dataSize;
+    } catch {
+      // Same contract as the queue: a write that fails is dropped.
+    }
   }
 
   /** Waits for pending writes to complete and rotates the current batch file. */
@@ -90,6 +115,21 @@ export class BatchProducer {
       return;
     }
     await this.renameBatchFile(this.currentBatchFile);
+    this.currentBatchFile = null;
+    this.currentBatchSize = 0;
+  }
+
+  /** `rotateBatch` for `postSync`: the rename is attempted in place, and the state is reset either way. */
+  private rotateBatchSync() {
+    if (!this.currentBatchFile) {
+      return;
+    }
+    const tmpPath = path.join(this.trackPath, this.currentBatchFile);
+    try {
+      renameSync(tmpPath, tmpPath.replace(/\.tmp$/, '.log'));
+    } catch {
+      // File doesn't exist or rename failed - silently ignore
+    }
     this.currentBatchFile = null;
     this.currentBatchSize = 0;
   }

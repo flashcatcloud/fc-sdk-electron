@@ -54,6 +54,11 @@ export class BatchManager {
     this.producer.post(data);
   }
 
+  /** Writes data to the current batch file before returning. See {@link BatchProducer.postSync}. */
+  postSync(data: unknown) {
+    this.producer.postSync(data);
+  }
+
   /** Drains the write queue, rotates the current batch, and uploads all pending files. */
   async flush() {
     await this.triggerUploadCycle();

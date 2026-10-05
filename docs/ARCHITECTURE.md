@@ -99,8 +99,9 @@ flowchart LR
 ### Sampling and withheld sessions
 
 `SessionManager` draws each session once (`sessionSampleRate`, then `sessionOnError` for what the
-rate missed) and persists the result with the session, in `_dd_s` and in the session history, so a
-resumed session and a crash reported on the next launch are judged by the draw they were made under.
+rate missed) and persists the result, with the rate it was drawn at, with the session — in `_dd_s`
+and in the session history — so a resumed session and a crash reported on the next launch are
+judged, and reported, by the draw they were made under.
 `SessionContext`'s RUM hook turns the draw into event attributes: it discards the events of a session
 not drawn, and of a withheld session that ended without an error (its late events), and stamps
 `session.sampled_for_error` and `_dd.configuration.session_sample_rate`.

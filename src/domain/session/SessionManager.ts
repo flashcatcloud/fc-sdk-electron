@@ -74,8 +74,8 @@ export class SessionManager {
   }
 
   getSession(): Session {
-    const { id, trackingType, hasError } = this.currentState;
-    return deepClone({ id, trackingType, hasError, status: this.status });
+    const { id, trackingType, sampleRate, hasError } = this.currentState;
+    return deepClone({ id, trackingType, sampleRate, hasError, status: this.status });
   }
 
   expire(): void {
@@ -88,18 +88,18 @@ export class SessionManager {
   }
 
   /**
-   * Record that a withheld session reported its error, which releases what it held. A no-op for
-   * any other session: writing the mark there would only cost disk writes.
+   * Record that a withheld session reported an error at `errorTime`, which releases what it held. A
+   * no-op for any other session: writing the mark there would only cost disk writes.
    *
    * Takes effect in memory at once, and reaches disk afterwards: "an error, then the application
    * quits" is the case this exists for, and it must not wait on a write.
    */
-  setSessionHasError(sessionId: string): void {
+  setSessionHasError(sessionId: string, errorTime: TimeStamp): void {
     if (sessionId === this.currentState.id && withholdsEvents(this.currentState)) {
       this.currentState.hasError = true;
       void this.saveCurrentState();
     }
-    this.sessionContext.setHasError(sessionId);
+    this.sessionContext.setHasError(sessionId, errorTime);
   }
 
   stop(): void {
@@ -114,7 +114,7 @@ export class SessionManager {
     const now = Date.now();
     const existingState = await loadSessionState();
 
-    this.sessionContext = await SessionContext.init(this.hooks, this.sampling.sessionSampleRate);
+    this.sessionContext = await SessionContext.init(this.hooks);
 
     if (existingState && isSessionValid(existingState, now)) {
       existingState.lastActivity = now;
@@ -141,6 +141,7 @@ export class SessionManager {
     const state: SessionState = {
       id: generateUUID(),
       trackingType: drawTrackingType(this.sampling),
+      sampleRate: this.sampling.sessionSampleRate,
       created: now,
       lastActivity: now,
     };
@@ -155,8 +156,8 @@ export class SessionManager {
   private setCurrent(state: SessionState): void {
     this.currentState = state;
     this.status = 'active';
-    const { id, trackingType, hasError } = state;
-    this.sessionContext.add({ id, trackingType, hasError });
+    const { id, trackingType, sampleRate, hasError } = state;
+    this.sessionContext.add({ id, trackingType, sampleRate, hasError });
   }
 
   /**
@@ -172,7 +173,9 @@ export class SessionManager {
     this.clearTimers();
     this.status = 'expired';
     this.sessionContext.close();
-    deleteSessionFile().catch(addError);
+    // Behind the queued writes: a save queued just before — the error mark, say — would otherwise
+    // land after the delete and resurrect the ended session on the next launch.
+    this.pendingSave = this.pendingSave.then(deleteSessionFile);
     this.eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_EXPIRED });
   }
 
@@ -252,10 +255,10 @@ async function loadSessionState(): Promise<SessionState | undefined> {
     const filePath = getSessionFilePath();
     await fs.access(filePath);
     const content = await fs.readFile(filePath, 'utf-8');
-    const state = JSON.parse(content) as Omit<SessionState, 'trackingType'> & Partial<SessionState>;
-    // A state written before sessions were sampled has no tracking type: every session was
-    // collected then, and a session keeps the decision it was created with.
-    return { ...state, trackingType: state.trackingType ?? TrackingType.TRACKED };
+    const state = JSON.parse(content) as Omit<SessionState, 'trackingType' | 'sampleRate'> & Partial<SessionState>;
+    // A state written before sessions were sampled has no draw: every session was collected then,
+    // and a session keeps the decision it was created with.
+    return { ...state, trackingType: state.trackingType ?? TrackingType.TRACKED, sampleRate: state.sampleRate ?? 100 };
   } catch {
     return undefined;
   }

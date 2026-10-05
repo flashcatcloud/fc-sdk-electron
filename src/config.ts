@@ -246,9 +246,7 @@ export function buildConfiguration(initConfig: InitConfiguration): Configuration
   const sessionSampleRate = initConfig.sessionSampleRate ?? 100;
   const sessionOnError = validateOptionalBoolean(initConfig.sessionOnError, 'sessionOnError', false);
   if (sessionOnError && sessionSampleRate === 100) {
-    displayWarn(
-      'sessionOnError only applies to sessions sessionSampleRate did not draw, and that rate is 100: it will never apply.'
-    );
+    displayWarn('sessionOnError has no effect while sessionSampleRate is 100: every session is already collected.');
   }
 
   return {

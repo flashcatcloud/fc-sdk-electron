@@ -83,7 +83,9 @@ export class CrashCollection {
    * A crash is reported a launch after it happened, by which time a session kept by `sessionOnError`
    * has lost everything it held in memory — including the view the crash hangs from, which the
    * backend needs to build the session at all. So when the crashed session had not reported an error
-   * yet, the crash releases it, and its view is rebuilt from the view history to go with it.
+   * by the time it crashed, the crash releases it, and its view is rebuilt from the view history to
+   * go with it. Judged as of the crash: an error the same session reported since, after a restart
+   * resumed it, released this launch's views, not the one the crash happened in.
    *
    * This is all the history such a crash gets: keeping the withheld buffer on disk instead would
    * cost a session that never errors constant writes.
@@ -95,7 +97,7 @@ export class CrashCollection {
       return;
     }
     // First, so the view and the crash pass assembly as events of a released session.
-    this.sessionManager.setSessionHasError(session.id);
+    this.sessionManager.setSessionHasError(session.id, crashTime);
     this.eventManager.notify({
       kind: EventKind.RAW,
       source: EventSource.MAIN,

@@ -396,18 +396,20 @@ before the logout still resolve to the user who was logged in then.
 
 `sessionSampleRate` is drawn once per session, in the main process, and decides for the renderers
 too: their events reach the intake through the main process, which drops those of a session it did
-not draw. A session resumed after a restart keeps the decision it was created with. A renderer's own
-`sessionSampleRate` does not apply to the events it sends over the bridge: the main process decides.
+not draw. A session resumed after a restart keeps the decision it was created with, and reports the
+rate it was drawn at. A renderer's own `sessionSampleRate` does not apply to the events it sends over
+the bridge: the main process decides, and its rate is what every event reports.
 
 `sessionOnError` keeps the sessions the rate did not draw on standby instead of dropping them:
 
 - The session's events — main process and renderers alike — are held in memory, never on disk, and
   only the last minute of them (64 KiB of detail, 200 events, plus up to 50 views). Nothing is
   uploaded.
-- At the session's first error, that minute is uploaded together with the error, 0–3 s later
-  (spread per session, so that one outage does not make every client upload at once), and the
-  session then reports as it happens, like any drawn session. An uncaught exception in the main
-  process uploads it at once instead, since the application may be about to exit.
+- At the session's first error, that minute is handed to the upload batch together with the error,
+  0–3 s later (spread per session, so that one outage does not make every client upload at once),
+  and the session then reports as it happens, like any drawn session. An uncaught exception in the
+  main process, or a quit, writes it to disk before returning instead, since the application may be
+  about to exit.
 - A session that ends without an error is thrown away whole, late events included.
 
 Only errors the application reports count: an error a renderer's `beforeSend` dropped, or one the

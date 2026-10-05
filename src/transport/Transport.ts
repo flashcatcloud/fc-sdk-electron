@@ -70,9 +70,13 @@ export class Transport {
    */
   private async setupTrackBatching(track: EventTrack) {
     const batchManager = await this.createBatchManager(track);
-    const post = (data: unknown) => batchManager.post(data);
     const withheldEventBuffer =
-      track === EventTrack.RUM ? new WithheldEventBuffer(this.eventManager, this.sessionManager, post) : undefined;
+      track === EventTrack.RUM
+        ? new WithheldEventBuffer(this.eventManager, this.sessionManager, {
+            post: (event) => batchManager.post(event),
+            postNow: (event) => batchManager.postSync(event),
+          })
+        : undefined;
 
     this.eventManager.registerHandler<ServerEvent>({
       canHandle: (event): event is ServerEvent => event.kind === EventKind.SERVER && event.track === track,
@@ -81,7 +85,7 @@ export class Transport {
         if (withheldEventBuffer && event.track === EventTrack.RUM && event.data.type !== 'telemetry') {
           withheldEventBuffer.collect(event.data);
         } else {
-          post(event.data);
+          batchManager.post(event.data);
         }
       },
     });

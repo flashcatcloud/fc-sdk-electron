@@ -7,6 +7,13 @@ import { mockFs } from '../../mocks.specUtil';
 vi.mock('node:fs/promises');
 const fsMocks = mockFs();
 
+const { appendFileSync, mkdirSync, renameSync } = vi.hoisted(() => ({
+  appendFileSync: vi.fn(),
+  mkdirSync: vi.fn(),
+  renameSync: vi.fn(),
+}));
+vi.mock('node:fs', () => ({ appendFileSync, mkdirSync, renameSync }));
+
 vi.mock('@flashcatcloud/browser-core', () => ({
   dateNow: vi.fn(() => 1234567890),
 }));
@@ -24,6 +31,9 @@ describe('BatchProducer', () => {
 
   beforeEach(() => {
     fsMocks.reset();
+    appendFileSync.mockReset();
+    mkdirSync.mockReset();
+    renameSync.mockReset();
     config = makeConfig();
 
     fsMocks.access.mockResolvedValue(undefined);
@@ -137,6 +147,46 @@ describe('BatchProducer', () => {
 
       await expect(producer.flush()).resolves.not.toThrow();
       expect(fsMocks.appendFile).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('postSync()', () => {
+    it('writes before returning, without waiting on the queue', async () => {
+      const producer = await BatchProducer.create(config);
+      fsMocks.appendFile.mockReturnValue(new Promise(() => undefined));
+      producer.post({ queued: true });
+
+      producer.postSync({ now: true });
+
+      expect(appendFileSync).toHaveBeenCalledWith(
+        path.join(config.trackPath, 'batch-1234567890.tmp'),
+        `${JSON.stringify({ now: true })}\n`,
+        'utf8'
+      );
+    });
+
+    it('counts what it wrote towards the batch size, and rotates in place when it is exceeded', async () => {
+      const producer = await BatchProducer.create(makeConfig({ batchSize: 20 }));
+      producer.postSync({ a: 'x'.repeat(10) });
+
+      producer.postSync({ b: 'y' });
+
+      expect(renameSync).toHaveBeenCalledWith(
+        path.join(config.trackPath, 'batch-1234567890.tmp'),
+        path.join(config.trackPath, 'batch-1234567890.log')
+      );
+      expect(appendFileSync).toHaveBeenCalledTimes(2);
+    });
+
+    it('drops a write that fails, like the queue does', async () => {
+      const producer = await BatchProducer.create(config);
+      appendFileSync.mockImplementationOnce(() => {
+        throw new Error('EACCES');
+      });
+
+      expect(() => producer.postSync({ a: 1 })).not.toThrow();
+      producer.postSync({ b: 2 });
+      expect(appendFileSync).toHaveBeenCalledTimes(2);
     });
   });
 

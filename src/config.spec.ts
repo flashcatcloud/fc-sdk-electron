@@ -503,7 +503,7 @@ describe('buildConfiguration', () => {
     it('warns that it can never apply while sessionSampleRate is 100', () => {
       buildConfiguration({ ...DEFAULT_CONFIG, sessionOnError: true });
 
-      expect(display.displayWarn).toHaveBeenCalledWith(expect.stringContaining('it will never apply'));
+      expect(display.displayWarn).toHaveBeenCalledWith(expect.stringContaining('has no effect'));
     });
   });
 });

@@ -319,8 +319,10 @@ describe('sessionManager', () => {
       sessionManager.expire();
 
       expect(sessionManager.getSession().status).toBe('expired');
-      expect(mfs.unlink).toHaveBeenCalled();
       expect(lifecycleEvents).toContain(LifecycleKind.SESSION_EXPIRED);
+      // The delete waits its turn behind the queued writes.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mfs.unlink).toHaveBeenCalled();
     });
   });
 
@@ -384,10 +386,29 @@ describe('sessionManager', () => {
 
         sessionManager = await SessionManager.start(eventManager, hooks, { sessionSampleRate, sessionOnError });
 
-        expect(sessionManager.getSession().trackingType).toBe(expected);
-        expect(savedSessionStates()[0]).toMatchObject({ trackingType: expected });
+        expect(sessionManager.getSession()).toMatchObject({ trackingType: expected, sampleRate: sessionSampleRate });
+        expect(savedSessionStates()[0]).toMatchObject({ trackingType: expected, sampleRate: sessionSampleRate });
       }
     );
+
+    it('reports the rate a resumed session was drawn at, not the one configured since', async () => {
+      const now = Date.now();
+      mfs.readFile.mockResolvedValue(
+        JSON.stringify({
+          id: 'existing',
+          created: now,
+          lastActivity: now,
+          trackingType: TrackingType.TRACKED,
+          sampleRate: 10,
+        })
+      );
+
+      sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
+
+      expect(hooks.triggerRum({ eventType: 'view', startTime: now as TimeStamp })).toMatchObject({
+        _dd: { configuration: { session_sample_rate: 10 } },
+      });
+    });
 
     it('keeps the decision a resumed session was created with, whatever the configuration says now', async () => {
       const now = Date.now();
@@ -432,9 +453,16 @@ describe('sessionManager', () => {
       const now = Date.now();
       mfs.readFile.mockResolvedValue(JSON.stringify({ id: 'existing', created: now, lastActivity: now }));
 
-      sessionManager = await SessionManager.start(eventManager, hooks, { sessionSampleRate: 0, sessionOnError: false });
+      sessionManager = await SessionManager.start(eventManager, hooks, {
+        sessionSampleRate: 20,
+        sessionOnError: false,
+      });
 
       expect(sessionManager.getSession()).toMatchObject({ id: 'existing', trackingType: TrackingType.TRACKED });
+      // Every session was collected then: it stands for itself, not for five.
+      expect(hooks.triggerRum({ eventType: 'view', startTime: now as TimeStamp })).toMatchObject({
+        _dd: { configuration: { session_sample_rate: 100 } },
+      });
     });
 
     it('draws again when the session is renewed', async () => {
@@ -468,7 +496,7 @@ describe('sessionManager', () => {
         await startWithheldSession();
         mfs.writeFile.mockReturnValue(new Promise(() => undefined));
 
-        sessionManager.setSessionHasError(sessionManager.getSession().id);
+        sessionManager.setSessionHasError(sessionManager.getSession().id, T0);
 
         expect(sessionManager.getSession().hasError).toBe(true);
       });
@@ -476,7 +504,7 @@ describe('sessionManager', () => {
       it('persists the mark with the session', async () => {
         await startWithheldSession();
 
-        sessionManager.setSessionHasError(sessionManager.getSession().id);
+        sessionManager.setSessionHasError(sessionManager.getSession().id, T0);
         await vi.advanceTimersByTimeAsync(0);
 
         expect(savedSessionStates()).toContainEqual(expect.objectContaining({ hasError: true }));
@@ -490,7 +518,7 @@ describe('sessionManager', () => {
           JSON.stringify({ id, created: 0, lastActivity: 0, trackingType: TrackingType.TRACKED_ON_ERROR })
         );
 
-        sessionManager.setSessionHasError(id);
+        sessionManager.setSessionHasError(id, T0);
         eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.END_USER_ACTIVITY });
         await vi.advanceTimersByTimeAsync(0);
 
@@ -514,7 +542,7 @@ describe('sessionManager', () => {
         expect(savedSessionStates()).toHaveLength(1);
 
         // …and the mark has to wait for it rather than race it.
-        sessionManager.setSessionHasError(id);
+        sessionManager.setSessionHasError(id, T0);
         await vi.advanceTimersByTimeAsync(0);
         expect(savedSessionStates()).toHaveLength(1);
 
@@ -525,12 +553,35 @@ describe('sessionManager', () => {
         expect(states[1]).toMatchObject({ hasError: true });
       });
 
+      it('lets a write queued before the session ended finish before the file is deleted', async () => {
+        await startWithheldSession();
+        let finishMarkWrite!: () => void;
+        mfs.writeFile.mockImplementation((filePath: string) =>
+          filePath.endsWith(SESSION_FILE_NAME)
+            ? new Promise<void>((resolve) => (finishMarkWrite = resolve))
+            : Promise.resolve()
+        );
+        mfs.unlink.mockResolvedValue(undefined);
+        sessionManager.setSessionHasError(sessionManager.getSession().id, T0);
+        await vi.advanceTimersByTimeAsync(0);
+
+        // The session ends while the mark is still being written: deleting first would let the
+        // write recreate the file, and the next launch resume a session that had ended.
+        sessionManager.expire();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mfs.unlink).not.toHaveBeenCalled();
+
+        finishMarkWrite();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mfs.unlink).toHaveBeenCalled();
+      });
+
       it('leaves a drawn session alone, and writes nothing', async () => {
         mockNoSessionFile();
         sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
         mfs.writeFile.mockClear();
 
-        sessionManager.setSessionHasError(sessionManager.getSession().id);
+        sessionManager.setSessionHasError(sessionManager.getSession().id, T0);
         await vi.advanceTimersByTimeAsync(0);
 
         expect(sessionManager.getSession().hasError).toBeUndefined();

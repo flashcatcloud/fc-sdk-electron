@@ -1,6 +1,6 @@
 import { app } from 'electron';
 import * as path from 'node:path';
-import { DISCARDED, round, SKIPPED, timeStampNow, type TimeStamp } from '@flashcatcloud/browser-core';
+import { DISCARDED, SKIPPED, timeStampNow, type TimeStamp } from '@flashcatcloud/browser-core';
 import type { FormatHooks } from '../../assembly';
 import { DiskValueHistory } from '../../tools/DiskValueHistory';
 import { SESSION_TIME_OUT_DELAY } from './session.constants';
@@ -32,6 +32,12 @@ export interface SessionRecord {
   id: string;
   trackingType: TrackingType;
   /**
+   * The `sessionSampleRate` the session was drawn at. Kept with the session because it is what the
+   * backend extrapolates a drawn session by: a session resumed under a configuration that changed
+   * the rate still stands for `100 / rate` sessions of the rate that drew it.
+   */
+  sampleRate: number;
+  /**
    * Set once a `TRACKED_ON_ERROR` session reports its first error, which releases what it withheld.
    * Never set on any other session.
    */
@@ -55,8 +61,7 @@ export class SessionContext {
 
   private constructor(
     private readonly history: DiskValueHistory<SessionRecord | string>,
-    hooks: FormatHooks,
-    sessionSampleRate: number
+    hooks: FormatHooks
   ) {
     hooks.registerRum((params) => {
       const record = this.find(params.startTime);
@@ -76,14 +81,16 @@ export class SessionContext {
         },
         // A session kept only because it errored stands for itself, not for `100 / rate` sessions
         // like a drawn one: 0 is what the backend reads as "do not extrapolate". Derived from the
-        // tracking type, so a resumed session and a crash reported a launch later get it too.
-        _dd: { configuration: { session_sample_rate: sampledForError ? 0 : round(sessionSampleRate, 3) } },
+        // record, so a resumed session and a crash reported a launch later get it too.
+        _dd: { configuration: { session_sample_rate: sampledForError ? 0 : record.sampleRate } },
       };
     });
 
     hooks.registerTelemetry((params) => {
       const record = this.find(params.startTime);
-      if (record === undefined) return SKIPPED;
+      // Telemetry is the SDK's own data and leaves either way; a session that is not collected is
+      // simply nothing to attribute it to, as in the browser SDK.
+      if (record === undefined || record.trackingType === TrackingType.NOT_TRACKED) return SKIPPED;
       return { session: { id: record.id } };
     });
 
@@ -94,14 +101,10 @@ export class SessionContext {
     });
   }
 
-  static async init(
-    hooks: FormatHooks,
-    sessionSampleRate: number,
-    expireDelay = SESSION_TIME_OUT_DELAY
-  ): Promise<SessionContext> {
+  static async init(hooks: FormatHooks, expireDelay = SESSION_TIME_OUT_DELAY): Promise<SessionContext> {
     const filePath = path.join(app.getPath('userData'), SESSION_HISTORY_FILE_NAME);
     const history = await DiskValueHistory.init<SessionRecord | string>({ filePath, expireDelay });
-    return new SessionContext(history, hooks, sessionSampleRate);
+    return new SessionContext(history, hooks);
   }
 
   /** The session in force at `startTime`, or `undefined` when there was none. */
@@ -120,15 +123,24 @@ export class SessionContext {
   }
 
   /**
-   * Record that a withheld session reported its error. Every entry of the session is updated: a
-   * session resumed after a restart has one entry per launch, and a crash of the earlier launch is
-   * resolved through the earlier entry.
+   * Record that a withheld session reported an error at `errorTime`: on the entry in force then,
+   * and on the active entry when the session is the current one, since from now on everything of
+   * it is uploaded.
+   *
+   * Not on every entry of the session: a session resumed after a restart has one entry per launch,
+   * and whether the earlier launch's entry still withholds is what tells a crash reported now that
+   * nothing of that launch — the view the crash happened in, to begin with — ever reached the
+   * intake. An error of the current launch must not answer that question for the earlier one.
    */
-  setHasError(sessionId: string): void {
+  setHasError(sessionId: string, errorTime: TimeStamp): void {
+    const entries = [this.history.find(errorTime)];
+    if (sessionId === this.activeSessionId) {
+      entries.push(this.history.find(timeStampNow()));
+    }
     let changed = false;
-    for (const { value } of this.history.getEntries()) {
-      if (typeof value !== 'string' && value.id === sessionId && withholdsEvents(value)) {
-        value.hasError = true;
+    for (const record of entries) {
+      if (typeof record !== 'string' && record?.id === sessionId && withholdsEvents(record)) {
+        record.hasError = true;
         changed = true;
       }
     }
@@ -143,5 +155,5 @@ export class SessionContext {
  * collected then, and a session keeps the decision it was created with.
  */
 function toSessionRecord(value: SessionRecord | string | undefined): SessionRecord | undefined {
-  return typeof value === 'string' ? { id: value, trackingType: TrackingType.TRACKED } : value;
+  return typeof value === 'string' ? { id: value, trackingType: TrackingType.TRACKED, sampleRate: 100 } : value;
 }

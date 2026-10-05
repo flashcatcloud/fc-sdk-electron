@@ -11,7 +11,7 @@ vi.mock('../../tools/display', () => ({
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { DISCARDED, type TimeStamp } from '@flashcatcloud/browser-core';
 import { createFormatHooks } from '../../assembly';
-import { SessionContext, TrackingType } from './SessionContext';
+import { SessionContext, TrackingType, withholdsEvents } from './SessionContext';
 
 vi.mock('node:fs/promises');
 const mfs = mockFs();
@@ -37,21 +37,21 @@ describe('SessionContext', () => {
   describe('before add()', () => {
     it('RUM hook returns DISCARDED', async () => {
       const hooks = createFormatHooks();
-      await SessionContext.init(hooks, 100, EXPIRE_DELAY);
+      await SessionContext.init(hooks, EXPIRE_DELAY);
 
       expect(hooks.triggerRum({ eventType: 'view', startTime: T0 })).toBe(DISCARDED);
     });
 
     it('span hook returns DISCARDED', async () => {
       const hooks = createFormatHooks();
-      await SessionContext.init(hooks, 100, EXPIRE_DELAY);
+      await SessionContext.init(hooks, EXPIRE_DELAY);
 
       expect(hooks.triggerSpan({ startTime: T0 })).toBe(DISCARDED);
     });
 
     it('telemetry hook returns SKIPPED (undefined)', async () => {
       const hooks = createFormatHooks();
-      await SessionContext.init(hooks, 100, EXPIRE_DELAY);
+      await SessionContext.init(hooks, EXPIRE_DELAY);
 
       expect(hooks.triggerTelemetry({ startTime: T0 })).toBeUndefined();
     });
@@ -60,9 +60,9 @@ describe('SessionContext', () => {
   describe('after add()', () => {
     it('RUM hook returns the session id', async () => {
       const hooks = createFormatHooks();
-      const context = await SessionContext.init(hooks, 100, EXPIRE_DELAY);
+      const context = await SessionContext.init(hooks, EXPIRE_DELAY);
 
-      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED });
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED, sampleRate: 100 });
 
       expect(hooks.triggerRum({ eventType: 'view', startTime: T0 })).toMatchObject({
         session: { id: 'session-abc' },
@@ -71,9 +71,9 @@ describe('SessionContext', () => {
 
     it('span hook returns the session id', async () => {
       const hooks = createFormatHooks();
-      const context = await SessionContext.init(hooks, 100, EXPIRE_DELAY);
+      const context = await SessionContext.init(hooks, EXPIRE_DELAY);
 
-      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED });
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED, sampleRate: 100 });
 
       expect(hooks.triggerSpan({ startTime: T0 })).toMatchObject({
         meta: {
@@ -84,9 +84,9 @@ describe('SessionContext', () => {
 
     it('telemetry hook returns the session id', async () => {
       const hooks = createFormatHooks();
-      const context = await SessionContext.init(hooks, 100, EXPIRE_DELAY);
+      const context = await SessionContext.init(hooks, EXPIRE_DELAY);
 
-      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED });
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED, sampleRate: 100 });
 
       expect(hooks.triggerTelemetry({ startTime: T0 })).toMatchObject({
         session: { id: 'session-abc' },
@@ -95,11 +95,11 @@ describe('SessionContext', () => {
 
     it('reflects the latest add()', async () => {
       const hooks = createFormatHooks();
-      const context = await SessionContext.init(hooks, 100, EXPIRE_DELAY);
+      const context = await SessionContext.init(hooks, EXPIRE_DELAY);
 
-      context.add({ id: 'session-first', trackingType: TrackingType.TRACKED }); // at T0
+      context.add({ id: 'session-first', trackingType: TrackingType.TRACKED, sampleRate: 100 }); // at T0
       vi.advanceTimersByTime(10); // advance to T10
-      context.add({ id: 'session-second', trackingType: TrackingType.TRACKED }); // at T10
+      context.add({ id: 'session-second', trackingType: TrackingType.TRACKED, sampleRate: 100 }); // at T10
 
       expect(hooks.triggerRum({ eventType: 'view', startTime: 10 as TimeStamp })).toMatchObject({
         session: { id: 'session-second' },
@@ -110,9 +110,9 @@ describe('SessionContext', () => {
   describe('after close()', () => {
     it('RUM hook still attributes events during the session period (crash attribution)', async () => {
       const hooks = createFormatHooks();
-      const context = await SessionContext.init(hooks, 100, EXPIRE_DELAY);
+      const context = await SessionContext.init(hooks, EXPIRE_DELAY);
 
-      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED }); // at T0 = 0
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED, sampleRate: 100 }); // at T0 = 0
       vi.advanceTimersByTime(10); // time is now 10
       context.close(); // closed at T10
 
@@ -124,10 +124,10 @@ describe('SessionContext', () => {
 
     it('RUM hook returns DISCARDED for events before the session started', async () => {
       const hooks = createFormatHooks();
-      const context = await SessionContext.init(hooks, 100, EXPIRE_DELAY);
+      const context = await SessionContext.init(hooks, EXPIRE_DELAY);
 
       vi.advanceTimersByTime(10); // advance to T10
-      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED }); // session started at T10
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED, sampleRate: 100 }); // session started at T10
       context.close();
 
       // event at T0 (before session started at T10) → DISCARDED
@@ -136,9 +136,9 @@ describe('SessionContext', () => {
 
     it('span hook still attributes events during the session period (crash attribution)', async () => {
       const hooks = createFormatHooks();
-      const context = await SessionContext.init(hooks, 100, EXPIRE_DELAY);
+      const context = await SessionContext.init(hooks, EXPIRE_DELAY);
 
-      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED }); // at T0 = 0
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED, sampleRate: 100 }); // at T0 = 0
       vi.advanceTimersByTime(10); // time is now 10
       context.close(); // closed at T10
 
@@ -152,10 +152,10 @@ describe('SessionContext', () => {
 
     it('span hook returns DISCARDED for events before the session started', async () => {
       const hooks = createFormatHooks();
-      const context = await SessionContext.init(hooks, 100, EXPIRE_DELAY);
+      const context = await SessionContext.init(hooks, EXPIRE_DELAY);
 
       vi.advanceTimersByTime(10); // advance to T10
-      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED }); // session started at T10
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED, sampleRate: 100 }); // session started at T10
       context.close();
 
       // event at T0 (before session started at T10) → DISCARDED
@@ -164,9 +164,9 @@ describe('SessionContext', () => {
 
     it('telemetry hook still attributes events during the session period', async () => {
       const hooks = createFormatHooks();
-      const context = await SessionContext.init(hooks, 100, EXPIRE_DELAY);
+      const context = await SessionContext.init(hooks, EXPIRE_DELAY);
 
-      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED }); // at T0 = 0
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED, sampleRate: 100 }); // at T0 = 0
       vi.advanceTimersByTime(10);
       context.close();
 
@@ -177,9 +177,9 @@ describe('SessionContext', () => {
 
     it('RUM hook returns DISCARDED for events after the session ended', async () => {
       const hooks = createFormatHooks();
-      const context = await SessionContext.init(hooks, 100, EXPIRE_DELAY);
+      const context = await SessionContext.init(hooks, EXPIRE_DELAY);
 
-      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED }); // at T0
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED, sampleRate: 100 }); // at T0
       vi.advanceTimersByTime(10); // now T10
       context.close(); // closed at T10
 
@@ -189,23 +189,30 @@ describe('SessionContext', () => {
   });
 
   describe('sampling', () => {
-    async function init(sessionSampleRate = 100) {
+    async function init() {
       const hooks = createFormatHooks();
-      const context = await SessionContext.init(hooks, sessionSampleRate, EXPIRE_DELAY);
+      const context = await SessionContext.init(hooks, EXPIRE_DELAY);
       return { hooks, context };
     }
 
-    it('discards the RUM events of a session the draw did not keep, but still attributes telemetry', async () => {
+    it('discards the RUM events of a session the draw did not keep, and attributes its telemetry to no session', async () => {
       const { hooks, context } = await init();
-      context.add({ id: 'session-abc', trackingType: TrackingType.NOT_TRACKED });
+      context.add({ id: 'session-abc', trackingType: TrackingType.NOT_TRACKED, sampleRate: 50 });
 
       expect(hooks.triggerRum({ eventType: 'error', startTime: T0 })).toBe(DISCARDED);
+      expect(hooks.triggerTelemetry({ startTime: T0 })).toBeUndefined();
+    });
+
+    it('still attributes the telemetry of a withheld session', async () => {
+      const { hooks, context } = await init();
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 50 });
+
       expect(hooks.triggerTelemetry({ startTime: T0 })).toMatchObject({ session: { id: 'session-abc' } });
     });
 
-    it('reports the configured rate on a drawn session, and no on-error marker', async () => {
-      const { hooks, context } = await init(12.5);
-      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED });
+    it('reports the rate a drawn session was drawn at, and no on-error marker', async () => {
+      const { hooks, context } = await init();
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED, sampleRate: 12.5 });
 
       const view = hooks.triggerRum({ eventType: 'view', startTime: T0 });
 
@@ -214,8 +221,8 @@ describe('SessionContext', () => {
     });
 
     it('marks the views of a session kept on error, and reports a rate of 0 on every event', async () => {
-      const { hooks, context } = await init(20);
-      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED_ON_ERROR });
+      const { hooks, context } = await init();
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 20 });
 
       const view = hooks.triggerRum({ eventType: 'view', startTime: T0 });
       const action = hooks.triggerRum({ eventType: 'action', startTime: T0 });
@@ -229,9 +236,9 @@ describe('SessionContext', () => {
     });
 
     it('keeps the marker and the rate of 0 once the session is released', async () => {
-      const { hooks, context } = await init(20);
-      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED_ON_ERROR });
-      context.setHasError('session-abc');
+      const { hooks, context } = await init();
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 20 });
+      context.setHasError('session-abc', T0);
 
       expect(hooks.triggerRum({ eventType: 'view', startTime: T0 })).toMatchObject({
         session: { sampled_for_error: true },
@@ -241,7 +248,7 @@ describe('SessionContext', () => {
 
     it('discards the stragglers of a withheld session that ended without an error', async () => {
       const { hooks, context } = await init();
-      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED_ON_ERROR });
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 100 });
       vi.advanceTimersByTime(10);
       context.close();
 
@@ -250,8 +257,8 @@ describe('SessionContext', () => {
 
     it('lets the stragglers of a released session through', async () => {
       const { hooks, context } = await init();
-      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED_ON_ERROR });
-      context.setHasError('session-abc');
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 100 });
+      context.setHasError('session-abc', T0);
       vi.advanceTimersByTime(10);
       context.close();
 
@@ -260,26 +267,67 @@ describe('SessionContext', () => {
       });
     });
 
-    it('marks every entry of a session, so a crash of an earlier launch is resolved as released', async () => {
+    it('lets a crash of an earlier launch through once it is marked, after the session ended', async () => {
       const { hooks, context } = await init();
-      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED_ON_ERROR }); // first launch, at T0
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 100 }); // at T0
       vi.advanceTimersByTime(10);
-      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED_ON_ERROR }); // resumed, at T10
-      vi.advanceTimersByTime(10);
-      context.add({ id: 'session-next', trackingType: TrackingType.TRACKED }); // at T20
+      context.close();
+      context.add({ id: 'session-next', trackingType: TrackingType.TRACKED, sampleRate: 100 }); // at T10
 
       expect(hooks.triggerRum({ eventType: 'error', startTime: T0 })).toBe(DISCARDED);
-      context.setHasError('session-abc');
+      context.setHasError('session-abc', T0);
       expect(hooks.triggerRum({ eventType: 'error', startTime: T0 })).toMatchObject({ session: { id: 'session-abc' } });
+    });
+
+    it('marks the entry in force at the time of the error only, one launch of a resumed session at a time', async () => {
+      const { context } = await init();
+      const T10 = 10 as TimeStamp;
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 0 }); // first launch, at T0
+      vi.advanceTimersByTime(10);
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 0 }); // resumed, at T10
+
+      // An error of the current launch says nothing about what the earlier launch uploaded.
+      context.setHasError('session-abc', T10);
+      expect(withholdsEvents(context.find(T10)!)).toBe(false);
+      expect(withholdsEvents(context.find(T0)!)).toBe(true);
+
+      // A crash of the earlier launch, reported now, does.
+      context.setHasError('session-abc', T0);
+      expect(withholdsEvents(context.find(T0)!)).toBe(false);
+    });
+
+    it('releases the current launch too when a crash of an earlier launch releases the session it resumed', async () => {
+      const { hooks, context } = await init();
+      const T10 = 10 as TimeStamp;
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 0 }); // first launch, at T0
+      vi.advanceTimersByTime(10);
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 0 }); // resumed, at T10
+
+      // The crash is the session's error: from now on everything of it is uploaded, this launch's
+      // events included — so once the session ends, its final view must not be read as a straggler.
+      context.setHasError('session-abc', T0);
+      vi.advanceTimersByTime(10);
+      context.close();
+
+      expect(hooks.triggerRum({ eventType: 'view', startTime: T10 })).toMatchObject({ session: { id: 'session-abc' } });
+    });
+
+    it('marks nothing when the session in force at the time is another one', async () => {
+      const { context } = await init();
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 0 });
+
+      context.setHasError('session-other', T0);
+
+      expect(withholdsEvents(context.find(T0)!)).toBe(true);
     });
 
     it('persists the error mark', async () => {
       const { context } = await init();
-      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED_ON_ERROR });
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 100 });
       await vi.advanceTimersByTimeAsync(0);
       mfs.writeFile.mockClear();
 
-      context.setHasError('session-abc');
+      context.setHasError('session-abc', T0);
       await vi.advanceTimersByTimeAsync(0);
 
       expect(mfs.writeFile).toHaveBeenCalledWith(
@@ -291,11 +339,11 @@ describe('SessionContext', () => {
 
     it('does not mark, nor write, a session that withholds nothing', async () => {
       const { context } = await init();
-      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED });
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED, sampleRate: 100 });
       await vi.advanceTimersByTimeAsync(0);
       mfs.writeFile.mockClear();
 
-      context.setHasError('session-abc');
+      context.setHasError('session-abc', T0);
       await vi.advanceTimersByTimeAsync(0);
 
       expect(mfs.writeFile).not.toHaveBeenCalled();
@@ -306,7 +354,7 @@ describe('SessionContext', () => {
       mfs.readFile.mockResolvedValue(
         JSON.stringify([{ startTime: 0, endTime: 5, value: { id: 'crashed', trackingType: '4', hasError: true } }])
       );
-      const { hooks } = await init(20);
+      const { hooks } = await init();
 
       expect(hooks.triggerRum({ eventType: 'error', startTime: T0 })).toMatchObject({
         session: { id: 'crashed' },
@@ -314,13 +362,13 @@ describe('SessionContext', () => {
       });
     });
 
-    it('reads an entry written before sessions were sampled as a drawn session', async () => {
+    it('reads an entry written before sessions were sampled as a session drawn at 100', async () => {
       mfs.readFile.mockResolvedValue(JSON.stringify([{ startTime: 0, endTime: 5, value: 'legacy-session' }]));
-      const { hooks } = await init(20);
+      const { hooks } = await init();
 
       expect(hooks.triggerRum({ eventType: 'error', startTime: T0 })).toMatchObject({
         session: { id: 'legacy-session' },
-        _dd: { configuration: { session_sample_rate: 20 } },
+        _dd: { configuration: { session_sample_rate: 100 } },
       });
     });
   });

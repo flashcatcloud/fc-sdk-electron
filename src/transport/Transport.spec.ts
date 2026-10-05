@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BatchSizes, BatchUploadFrequencies } from '../config';
 import type { RawEvent, ServerEvent } from '../event';
-import { EventKind, EventTrack, EventManager } from '../event';
+import { EventKind, EventTrack, EventManager, LifecycleKind } from '../event';
 import { createTestConfiguration } from '../mocks.specUtil';
 import { type Session, type SessionManager, TrackingType } from '../domain/session';
 import { Transport } from './Transport';
@@ -14,16 +14,18 @@ vi.mock('electron', () => ({
   },
 }));
 
-const { mockBatchPost, mockBatchFlush, mockBatchCreate } = vi.hoisted(() => {
+const { mockBatchPost, mockBatchPostSync, mockBatchFlush, mockBatchCreate } = vi.hoisted(() => {
   const mockBatchPost = vi.fn();
+  const mockBatchPostSync = vi.fn();
   const mockBatchFlush = vi.fn().mockResolvedValue(undefined);
   const mockBatchCreate = vi.fn().mockResolvedValue({
     post: mockBatchPost,
+    postSync: mockBatchPostSync,
     flush: mockBatchFlush,
     stop: vi.fn(),
   });
 
-  return { mockBatchPost, mockBatchFlush, mockBatchCreate };
+  return { mockBatchPost, mockBatchPostSync, mockBatchFlush, mockBatchCreate };
 });
 
 vi.mock('./batch', () => ({
@@ -42,7 +44,7 @@ describe('Transport', () => {
     vi.clearAllMocks();
     eventManager = new EventManager();
     config = createTestConfiguration();
-    session = { id: 'session-id', status: 'active', trackingType: TrackingType.TRACKED };
+    session = { id: 'session-id', status: 'active', trackingType: TrackingType.TRACKED, sampleRate: 100 };
     sessionManager = { getSession: () => session, setSessionHasError: vi.fn() } as unknown as SessionManager;
   });
 
@@ -78,6 +80,25 @@ describe('Transport', () => {
       const data = { type: 'action', session: { id: 'session-id' }, view: { id: 'view-id' } };
       eventManager.notify({ kind: EventKind.SERVER, track: EventTrack.RUM, data } as unknown as ServerEvent);
 
+      expect(mockBatchPost).not.toHaveBeenCalled();
+    });
+
+    it('should write the release of a withheld session before returning when the application may exit', async () => {
+      session.trackingType = TrackingType.TRACKED_ON_ERROR;
+      await Transport.create(config, eventManager, sessionManager);
+      const view = { type: 'view', date: 1, session: { id: 'session-id' }, view: { id: 'view-id', is_active: true } };
+      const error = {
+        type: 'error',
+        error: { source: 'source' },
+        session: { id: 'session-id' },
+        view: { id: 'view-id' },
+      };
+      eventManager.notify({ kind: EventKind.SERVER, track: EventTrack.RUM, data: view } as unknown as ServerEvent);
+      eventManager.notify({ kind: EventKind.SERVER, track: EventTrack.RUM, data: error } as unknown as ServerEvent);
+
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.APP_MAY_EXIT });
+
+      expect(mockBatchPostSync.mock.calls).toEqual([[view], [error]]);
       expect(mockBatchPost).not.toHaveBeenCalled();
     });
 

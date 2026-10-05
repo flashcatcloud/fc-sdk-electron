@@ -94,7 +94,7 @@ function mockDmpFile(name = 'crash.dmp', birthtimeMs = 0) {
 
 /** A session that is always collected, and a main-process view that always exists. */
 const TRACKED_SESSION_MANAGER = {
-  findSession: () => ({ id: 'session-id', trackingType: TrackingType.TRACKED }),
+  findSession: () => ({ id: 'session-id', trackingType: TrackingType.TRACKED, sampleRate: 0 }),
   setSessionHasError: vi.fn(),
 };
 
@@ -832,11 +832,15 @@ describe('CrashCollection', () => {
     });
 
     it('releases a session that had not reported an error, and rebuilds its view ahead of the crash', async () => {
-      const sessionManager = sessionManagerFor({ id: 'withheld', trackingType: TrackingType.TRACKED_ON_ERROR });
+      const sessionManager = sessionManagerFor({
+        id: 'withheld',
+        trackingType: TrackingType.TRACKED_ON_ERROR,
+        sampleRate: 0,
+      });
 
       await processCrash(sessionManager);
 
-      expect(sessionManager.setSessionHasError).toHaveBeenCalledWith('withheld');
+      expect(sessionManager.setSessionHasError).toHaveBeenCalledWith('withheld', CRASH_TIME);
       expect(calls).toEqual(['setSessionHasError', 'view', 'error']);
       expect(rawRumEvents[0]).toMatchObject({
         startTime: VIEW_START,
@@ -851,9 +855,12 @@ describe('CrashCollection', () => {
     });
 
     it.each([
-      ['a drawn session', { id: 'drawn', trackingType: TrackingType.TRACKED }],
-      ['a session already released', { id: 'released', trackingType: TrackingType.TRACKED_ON_ERROR, hasError: true }],
-      ['a session the draw did not keep', { id: 'not-kept', trackingType: TrackingType.NOT_TRACKED }],
+      ['a drawn session', { id: 'drawn', trackingType: TrackingType.TRACKED, sampleRate: 0 }],
+      [
+        'a session already released',
+        { id: 'released', trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 0, hasError: true },
+      ],
+      ['a session the draw did not keep', { id: 'not-kept', trackingType: TrackingType.NOT_TRACKED, sampleRate: 0 }],
       ['no session at all', undefined],
     ])('reports the crash alone for %s', async (_, session) => {
       const sessionManager = sessionManagerFor(session as SessionRecord | undefined);
