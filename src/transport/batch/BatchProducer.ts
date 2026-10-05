@@ -70,11 +70,32 @@ export class BatchProducer {
     await this.rotateBatch();
   }
 
+  /**
+   * An item leaves `pending` only once its append is issued: until then `writePendingSync` can
+   * still take it, and the asynchronous steps before the append (the directory check, a rotation)
+   * are where an exit would otherwise lose it.
+   */
   private async drain() {
     while (this.pending.length > 0) {
-      const data = this.pending.shift();
+      const data = this.pending[0];
+      const serialized = `${JSON.stringify(data)}\n`;
+      const dataSize = Buffer.byteLength(serialized, 'utf8');
       try {
-        await this.writeData(data);
+        await this.ensureTrackDirectoryExists();
+        if (this.currentBatchSize + dataSize > this.batchSize && this.currentBatchSize > 0) {
+          await this.rotateBatch();
+        }
+      } catch {
+        // The append below reports its own failure.
+      }
+      if (this.pending[0] !== data) {
+        // Written synchronously in the meantime.
+        continue;
+      }
+      this.pending.shift();
+      try {
+        await fs.appendFile(this.getCurrentBatchPath(), serialized, 'utf8');
+        this.currentBatchSize += dataSize;
       } catch {
         // Silently ignore write errors to ensure the queue continues processing
       }
@@ -132,7 +153,7 @@ export class BatchProducer {
     this.currentBatchSize = 0;
   }
 
-  /** `writeData` for `writePendingSync`. */
+  /** `drain`'s write of one item, for `writePendingSync`. */
   private writeDataSync(data: unknown) {
     mkdirSync(this.trackPath, { recursive: true });
     const serialized = `${JSON.stringify(data)}\n`;
@@ -159,32 +180,31 @@ export class BatchProducer {
     this.currentBatchSize = 0;
   }
 
-  /** Renames a `.tmp` batch file to `.log` so the consumer can pick it up. */
+  /**
+   * Renames a `.tmp` batch file to `.log` so the consumer can pick it up — never onto a `.log`
+   * that exists: a `.tmp` can share its name with one when an append still in flight recreated it
+   * after a synchronous rotation, and `rename` would replace the earlier batch with it.
+   */
   private async renameBatchFile(file: string) {
     const tmpPath = path.join(this.trackPath, file);
     const logPath = tmpPath.replace(/\.tmp$/, '.log');
 
     try {
       await fs.access(tmpPath);
-      await fs.rename(tmpPath, logPath);
+      await fs.rename(tmpPath, await this.freeLogPath(logPath));
     } catch {
       // File doesn't exist or rename failed - silently ignore
     }
   }
 
-  /** Serializes data as a JSON line and appends it to the current batch file, rotating first if the size limit would be exceeded. */
-  private async writeData(data: unknown) {
-    await this.ensureTrackDirectoryExists();
-
-    const serialized = `${JSON.stringify(data)}\n`;
-    const dataSize = Buffer.byteLength(serialized, 'utf8');
-
-    if (this.currentBatchSize + dataSize > this.batchSize && this.currentBatchSize > 0) {
-      await this.rotateBatch();
+  private async freeLogPath(logPath: string): Promise<string> {
+    for (let attempt = 0; ; attempt += 1) {
+      const candidate = attempt === 0 ? logPath : logPath.replace(/\.log$/, `-${attempt}.log`);
+      try {
+        await fs.stat(candidate);
+      } catch {
+        return candidate;
+      }
     }
-
-    const batchPath = this.getCurrentBatchPath();
-    await fs.appendFile(batchPath, serialized, 'utf8');
-    this.currentBatchSize += dataSize;
   }
 }

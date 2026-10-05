@@ -23,13 +23,13 @@ import { toIntakeTimeStamp } from '../../../tools/intakeTimeStamp';
 export class CrashCollection {
   private constructor(
     private readonly eventManager: EventManager,
-    private readonly sessionManager: Pick<SessionManager, 'findSession' | 'setSessionHasError'>,
+    private readonly sessionManager: Pick<SessionManager, 'findSession' | 'getSession' | 'setSessionHasError'>,
     private readonly findView: (startTime: TimeStamp) => MainView | undefined
   ) {}
 
   static start(
     eventManager: EventManager,
-    sessionManager: Pick<SessionManager, 'findSession' | 'setSessionHasError'>,
+    sessionManager: Pick<SessionManager, 'findSession' | 'getSession' | 'setSessionHasError'>,
     findView: (startTime: TimeStamp) => MainView | undefined
   ): CrashCollection {
     crashReporter.start({ uploadToServer: false, ignoreSystemCrashHandler: true });
@@ -96,8 +96,15 @@ export class CrashCollection {
     if (!session || !withholdsEvents(session) || !view) {
       return;
     }
-    // First, so the view and the crash pass assembly as events of a released session.
-    this.sessionManager.setSessionHasError(session.id, crashTime);
+    const current = this.sessionManager.getSession();
+    if (!(current.status === 'active' && current.id === session.id)) {
+      // A session that is over has nothing held for it, so the view and the crash go straight to
+      // the batch: marking it first is what lets them pass assembly, and it is as good as released.
+      // A session resumed since is another matter: what it holds, these two included, leaves at
+      // the release the crash earns it, and the mark belongs there — a mark written now would tell
+      // a crash of this launch that the view had reached the batch when it had not.
+      this.sessionManager.setSessionHasError(session.id, crashTime);
+    }
     this.eventManager.notify({
       kind: EventKind.RAW,
       source: EventSource.MAIN,

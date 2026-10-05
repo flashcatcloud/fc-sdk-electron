@@ -37,6 +37,8 @@ describe('BatchProducer', () => {
     config = makeConfig();
 
     fsMocks.access.mockResolvedValue(undefined);
+    // No `.log` exists unless a test says so.
+    fsMocks.stat.mockRejectedValue(new Error('ENOENT'));
     fsMocks.mkdir.mockResolvedValue(undefined);
     fsMocks.readdir.mockResolvedValue([]);
     fsMocks.appendFile.mockResolvedValue(undefined);
@@ -62,6 +64,19 @@ describe('BatchProducer', () => {
       await BatchProducer.create(config);
 
       expect(fsMocks.mkdir).not.toHaveBeenCalled();
+    });
+
+    it('never rotates an orphan onto a .log that exists', async () => {
+      fsMocks.readdir.mockResolvedValueOnce(['batch-111.tmp']);
+      // `batch-111.log` exists — an append in flight recreated the `.tmp` after a rotation.
+      fsMocks.stat.mockResolvedValueOnce({}).mockRejectedValueOnce(new Error('ENOENT'));
+
+      await BatchProducer.create(config);
+
+      expect(fsMocks.rename).toHaveBeenCalledWith(
+        path.join(config.trackPath, 'batch-111.tmp'),
+        path.join(config.trackPath, 'batch-111-1.log')
+      );
     });
 
     it('rotates orphaned .tmp files from previous sessions to .log', async () => {
@@ -163,6 +178,24 @@ describe('BatchProducer', () => {
         [tmp, `{"a":1}\n`, 'utf8'],
         [tmp, `{"b":2}\n`, 'utf8'],
       ]);
+      await producer.flush();
+      expect(fsMocks.appendFile).not.toHaveBeenCalled();
+    });
+
+    it('still writes an item the queue has taken up but not appended yet, and the queue then skips it', async () => {
+      const producer = await BatchProducer.create(config);
+      let finishDirectoryCheck!: () => void;
+      fsMocks.access.mockImplementationOnce(() => new Promise<void>((resolve) => (finishDirectoryCheck = resolve)));
+      producer.post({ checking: true });
+      await vi.waitFor(() => expect(fsMocks.access).toHaveBeenCalled());
+
+      // The queue is waiting on the directory check: the item is not on disk, and an exit now
+      // would lose it unless the synchronous write takes it.
+      producer.writePendingSync();
+
+      expect(appendFileSync).toHaveBeenCalledTimes(1);
+      expect(appendFileSync.mock.calls[0][1]).toBe(`{"checking":true}\n`);
+      finishDirectoryCheck();
       await producer.flush();
       expect(fsMocks.appendFile).not.toHaveBeenCalled();
     });

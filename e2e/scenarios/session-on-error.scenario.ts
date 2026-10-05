@@ -34,11 +34,10 @@ function rumEvents(intake: Intake): SessionEvent[] {
     .filter((body) => body.type !== 'telemetry');
 }
 
+/** Waits past the jitter, then flushes: the flush resolves once every pending batch is uploaded. */
 async function settle(mainPage: MainPage, waitMs = RELEASE_WAIT) {
   await new Promise((resolve) => setTimeout(resolve, waitMs));
   await mainPage.flushTransport();
-  // Uploads leave asynchronously after the flush resolves.
-  await new Promise((resolve) => setTimeout(resolve, 500));
 }
 
 /**

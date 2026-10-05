@@ -95,12 +95,18 @@ function mockDmpFile(name = 'crash.dmp', birthtimeMs = 0) {
 /** A session that is always collected, and a main-process view that always exists. */
 const TRACKED_SESSION_MANAGER = {
   findSession: () => ({ id: 'session-id', trackingType: TrackingType.TRACKED, sampleRate: 0 }),
+  getSession: () => ({
+    id: 'session-id',
+    trackingType: TrackingType.TRACKED,
+    sampleRate: 0,
+    status: 'active' as const,
+  }),
   setSessionHasError: vi.fn(),
 };
 
 function startCollection(
   eventManager: EventManager,
-  sessionManager: Pick<SessionManager, 'findSession' | 'setSessionHasError'> = TRACKED_SESSION_MANAGER
+  sessionManager: Pick<SessionManager, 'findSession' | 'getSession' | 'setSessionHasError'> = TRACKED_SESSION_MANAGER
 ) {
   return CrashCollection.start(eventManager, sessionManager, () => ({
     id: 'main-view-id',
@@ -110,7 +116,7 @@ function startCollection(
 
 async function startAndFlush(
   eventManager: EventManager,
-  sessionManager?: Pick<SessionManager, 'findSession' | 'setSessionHasError'>
+  sessionManager?: Pick<SessionManager, 'findSession' | 'getSession' | 'setSessionHasError'>
 ) {
   startCollection(eventManager, sessionManager);
   resolveWhenReady();
@@ -808,14 +814,21 @@ describe('CrashCollection', () => {
     const CRASH_TIME = 1000 as TimeStamp;
     let calls: string[];
 
-    function sessionManagerFor(session: SessionRecord | undefined) {
+    const WITHHELD: SessionRecord = { id: 'withheld', trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 0 };
+    const NEXT_SESSION: SessionRecord = { id: 'next', trackingType: TrackingType.TRACKED, sampleRate: 100 };
+
+    /** `session` is the one the crash happened in; `current` the one in force now. */
+    function sessionManagerFor(session: SessionRecord | undefined, current: SessionRecord = NEXT_SESSION) {
       return {
         findSession: () => session,
+        getSession: () => ({ ...current, status: 'active' as const }),
         setSessionHasError: vi.fn(() => calls.push('setSessionHasError')),
       };
     }
 
-    async function processCrash(sessionManager: Pick<SessionManager, 'findSession' | 'setSessionHasError'>) {
+    async function processCrash(
+      sessionManager: Pick<SessionManager, 'findSession' | 'getSession' | 'setSessionHasError'>
+    ) {
       mockDmpFile('crash.dmp', CRASH_TIME);
       vi.mocked(processMinidump).mockResolvedValue(createMinidumpResult());
       eventManager.registerHandler<RawRumEvent>({
@@ -831,15 +844,13 @@ describe('CrashCollection', () => {
       calls = [];
     });
 
-    it('releases a session that had not reported an error, and rebuilds its view ahead of the crash', async () => {
-      const sessionManager = sessionManagerFor({
-        id: 'withheld',
-        trackingType: TrackingType.TRACKED_ON_ERROR,
-        sampleRate: 0,
-      });
+    it('releases a session that is over and had not reported an error, and rebuilds its view ahead of the crash', async () => {
+      const sessionManager = sessionManagerFor(WITHHELD);
 
       await processCrash(sessionManager);
 
+      // Nothing of a session that is over is held, so the mark comes first: it is what lets the
+      // view and the crash pass assembly.
       expect(sessionManager.setSessionHasError).toHaveBeenCalledWith('withheld', CRASH_TIME);
       expect(calls).toEqual(['setSessionHasError', 'view', 'error']);
       expect(rawRumEvents[0]).toMatchObject({
@@ -852,6 +863,17 @@ describe('CrashCollection', () => {
         },
       });
       expect((rawRumEvents[1].data as RawRumError).error.is_crash).toBe(true);
+    });
+
+    it('leaves the mark to the release when the crashed session was resumed and is the current one', async () => {
+      const sessionManager = sessionManagerFor(WITHHELD, WITHHELD);
+
+      await processCrash(sessionManager);
+
+      // The rebuilt view and the crash join what this launch holds, and the mark lands when that
+      // is released — a mark now would say the view had reached the batch before it had.
+      expect(sessionManager.setSessionHasError).not.toHaveBeenCalled();
+      expect(calls).toEqual(['view', 'error']);
     });
 
     it.each([
