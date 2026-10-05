@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getUser: () => ipcRenderer.invoke('getUser'),
   clearUser: () => ipcRenderer.invoke('clearUser'),
   generateUncaughtException: () => ipcRenderer.invoke('generateUncaughtException'),
+  generateUncaughtExceptionAndExit: () => ipcRenderer.invoke('generateUncaughtExceptionAndExit'),
   generateUnhandledRejection: () => ipcRenderer.invoke('generateUnhandledRejection'),
   generateManualError: (startTime?: number) => ipcRenderer.invoke('generateManualError', startTime),
   startOperation: (name: string, options?: Record<string, unknown>) =>

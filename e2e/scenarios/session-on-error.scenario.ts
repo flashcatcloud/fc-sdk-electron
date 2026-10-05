@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { RumErrorEvent, RumViewEvent } from '@flashcatcloud/electron-sdk';
 import {
@@ -227,6 +227,54 @@ test.describe('sessionOnError, negative controls', () => {
     });
   });
 });
+
+test.describe('sessionOnError, host exit on an uncaught exception', () => {
+  test.use({ sdkConfig: ON_ERROR_ONLY });
+
+  test('writes the released history and the fatal error to disk before the host ends the process', async ({
+    intake,
+    sdkConfig,
+  }) => {
+    test.setTimeout(60_000);
+    const userDataDir = await createUserDataDir();
+    const { electronApp, mainPage } = await launchAppManually(intake, userDataDir, 'await', sdkConfig);
+    try {
+      // A main-process operation: its vital is held the moment it is reported.
+      await mainPage.startOperation('checkout');
+      const pid = electronApp.process().pid;
+
+      mainPage.generateUncaughtExceptionAndExit();
+      await ensureProcessGone(pid);
+
+      // The process ended from its own uncaughtException listener, with no later turn of the event
+      // loop: what is on disk is what the SDK wrote before returning from its listener.
+      const events = await readBatchEvents(join(userDataDir, 'rum'));
+      const types = events.map((event) => event.type);
+      expect(types).toContain('view');
+      expect(types).toContain('vital');
+      const errors = events.filter((event) => event.type === 'error') as unknown as RumErrorEvent[];
+      expect(errors.map((error) => error.error.message)).toEqual([expect.stringContaining('before exit')]);
+      // Nothing had been uploaded: the upload cycle never got to run.
+      expect(rumEvents(intake)).toEqual([]);
+    } finally {
+      await electronApp.close().catch(() => undefined);
+      await cleanupUserDataDir(userDataDir);
+    }
+  });
+});
+
+/** Every event in the RUM track's batch files, rotated or not. */
+async function readBatchEvents(trackDir: string): Promise<SessionEvent[]> {
+  const files = (await readdir(trackDir)).filter((file) => /\.(tmp|log)$/.test(file)).sort();
+  const events: SessionEvent[] = [];
+  for (const file of files) {
+    const content = await readFile(join(trackDir, file), 'utf8');
+    for (const line of content.split('\n').filter((line) => line.trim().length > 0)) {
+      events.push(JSON.parse(line) as SessionEvent);
+    }
+  }
+  return events;
+}
 
 for (const { title, config, reported } of [
   { title: 'reports the crash of a withheld session, with its view', config: ON_ERROR_ONLY, reported: true },

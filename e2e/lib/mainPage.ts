@@ -23,6 +23,7 @@ interface ElectronAppWindow {
     openBridgeFileWindowNoIsolation: () => Promise<void>;
     openBridgeHttpWindow: () => Promise<void>;
     killBridgeWindowRenderer: () => Promise<void>;
+    generateUncaughtExceptionAndExit: () => Promise<void>;
   };
 }
 
@@ -64,6 +65,13 @@ export class MainPage {
 
   async generateUncaughtException() {
     await this.page.locator('#generate-uncaught-exception').click();
+  }
+
+  /** Fire and forget: the process ends before the call could answer. */
+  generateUncaughtExceptionAndExit() {
+    void this.page
+      .evaluate(() => (globalThis as unknown as ElectronAppWindow).electronAPI.generateUncaughtExceptionAndExit())
+      .catch(() => undefined);
   }
 
   async generateUnhandledRejection() {

@@ -10,6 +10,7 @@ declare global {
       generateTelemetryErrors: (count: number) => Promise<void>;
       stopSession: () => Promise<void>;
       generateUncaughtException: () => Promise<void>;
+      generateUncaughtExceptionAndExit: () => Promise<void>;
       generateUnhandledRejection: () => Promise<void>;
       generateManualError: (startTime?: number) => Promise<void>;
       crash: () => Promise<void>;

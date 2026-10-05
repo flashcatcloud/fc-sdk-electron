@@ -114,6 +114,15 @@ void app.whenReady().then(async () => {
     });
   });
 
+  // What many applications do: end the process on an uncaught exception. Registered after the
+  // SDK's own listener, so the SDK gets its turn first — and only that turn.
+  ipcMain.handle('generateUncaughtExceptionAndExit', () => {
+    process.on('uncaughtException', () => process.exit(1));
+    setTimeout(() => {
+      throw new Error('test uncaught exception before exit');
+    });
+  });
+
   ipcMain.handle('generateUnhandledRejection', () => {
     void Promise.reject(new Error('test unhandled rejection'));
   });
