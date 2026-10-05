@@ -1,5 +1,5 @@
 import { app } from 'electron';
-import { writeFileSync } from 'node:fs';
+import { renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import {
@@ -110,10 +110,15 @@ export class SessionManager {
    * resumed by the next launch would withhold again what this one already uploaded.
    */
   writePendingSync(): void {
-    if (this.status === 'active') {
-      try {
-        writeFileSync(getSessionFilePath(), JSON.stringify(this.currentState), 'utf-8');
-      } catch (error) {
+    try {
+      if (this.status === 'active') {
+        writeFileAtomicSync(getSessionFilePath(), JSON.stringify(this.currentState));
+      } else {
+        // Its delete is queued behind the writes; the next launch must not resume it.
+        unlinkSync(getSessionFilePath());
+      }
+    } catch (error) {
+      if (!isMissingFile(error)) {
         displayError('Failed to save session state:', error);
       }
     }
@@ -271,6 +276,20 @@ function drawTrackingType({ sessionSampleRate, sessionOnError }: SamplingConfigu
 
 function getSessionFilePath(): string {
   return path.join(app.getPath('userData'), SESSION_FILE_NAME);
+}
+
+/**
+ * Replaces the file in one step, so that an asynchronous write of it already issued — which keeps
+ * writing to the file it opened — cannot overwrite or interleave with what is written here.
+ */
+function writeFileAtomicSync(filePath: string, content: string): void {
+  const tmpPath = `${filePath}.${process.pid}.tmp`;
+  writeFileSync(tmpPath, content, 'utf-8');
+  renameSync(tmpPath, filePath);
+}
+
+function isMissingFile(error: unknown): boolean {
+  return (error as { code?: string } | undefined)?.code === 'ENOENT';
 }
 
 function isSessionValid(state: SessionState, now: number): boolean {

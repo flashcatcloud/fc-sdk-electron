@@ -1,4 +1,4 @@
-import { ONE_KIBI_BYTE, ONE_SECOND, type TimeStamp, timeStampNow } from '@flashcatcloud/browser-core';
+import { ONE_KIBI_BYTE, ONE_SECOND, relativeNow, type TimeStamp, timeStampNow } from '@flashcatcloud/browser-core';
 import { EventKind, type EventManager, type LifecycleEvent, LifecycleKind } from '../event';
 import type { RumEvent } from '../domain/rum';
 import { type SessionManager, withholdsEvents } from '../domain/session';
@@ -44,7 +44,7 @@ type EvictionTier = (typeof EvictionTier)[keyof typeof EvictionTier];
 
 interface WithheldView {
   event: RumEvent;
-  /** When its latest update arrived. */
+  /** When its latest update arrived, on the monotonic clock: a wall-clock correction must not age the buffer. */
   time: number;
 }
 
@@ -92,8 +92,10 @@ export class WithheldEventBuffer {
   /** Views of errors forwarded on their own for exceeding the budget: protected from eviction like a held error's. */
   private oversizeErrorViewIds = new Set<string>();
   private releaseTimeoutId: ReturnType<typeof setTimeout> | undefined;
-  /** When the release was scheduled, which is what freezes the window — see {@link prune}. */
+  /** When the release was scheduled, on the monotonic clock: what freezes the window — see {@link prune}. */
   private releaseScheduledAt: number | undefined;
+  /** The same moment on the wall clock, which is what the session's history is kept in. */
+  private releaseErrorTime: TimeStamp | undefined;
 
   constructor(
     eventManager: EventManager,
@@ -146,7 +148,7 @@ export class WithheldEventBuffer {
       // Upsert: a view event is cumulative, so the latest one supersedes the ones before it. The
       // delete moves it to the end, so the map stays ordered by last update.
       this.views.delete(event.view.id);
-      this.views.set(event.view.id, { event, time: Date.now() });
+      this.views.set(event.view.id, { event, time: relativeNow() });
       this.evictViewsOverLimit(event.view.id);
       this.prune();
       return;
@@ -159,7 +161,7 @@ export class WithheldEventBuffer {
       this.droppedCount += 1;
       return;
     }
-    this.details.push({ event, viewId: event.view.id, time: Date.now(), bytes, tier: getEvictionTier(event) });
+    this.details.push({ event, viewId: event.view.id, time: relativeNow(), bytes, tier: getEvictionTier(event) });
     this.bytes += bytes;
 
     this.prune();
@@ -203,7 +205,7 @@ export class WithheldEventBuffer {
   private prune(): void {
     // Once a release is scheduled the window stops moving: a delayed timer must not throw away the
     // very minute the release exists to deliver.
-    const oldestAllowed = (this.releaseScheduledAt ?? Date.now()) - WITHHELD_BUFFER_DURATION;
+    const oldestAllowed = (this.releaseScheduledAt ?? relativeNow()) - WITHHELD_BUFFER_DURATION;
     let cutoff = 0;
     while (cutoff < this.details.length && this.details[cutoff].time < oldestAllowed) {
       this.bytes -= this.details[cutoff].bytes;
@@ -252,7 +254,8 @@ export class WithheldEventBuffer {
     if (this.releaseTimeoutId !== undefined) {
       return;
     }
-    this.releaseScheduledAt = Date.now();
+    this.releaseScheduledAt = relativeNow();
+    this.releaseErrorTime = timeStampNow();
     this.releaseTimeoutId = setTimeout(() => this.release(), computeReleaseDelay(this.withheldForSessionId!));
   }
 
@@ -280,10 +283,7 @@ export class WithheldEventBuffer {
     this.prune();
     // Marked as of when the error arrived, which is inside the session's entry even if the session
     // ended since: a mark on the entry is what lets the session's final events through assembly.
-    this.sessionManager.setSessionHasError(
-      this.withheldForSessionId!,
-      (this.releaseScheduledAt ?? timeStampNow()) as TimeStamp
-    );
+    this.sessionManager.setSessionHasError(this.withheldForSessionId!, this.releaseErrorTime ?? timeStampNow());
 
     // Oldest first: the backend builds the session out of whichever of its views arrives first.
     const views = [...this.views.values()].map((view) => view.event).sort((left, right) => left.date - right.date);
@@ -310,6 +310,7 @@ export class WithheldEventBuffer {
     clearTimeout(this.releaseTimeoutId);
     this.releaseTimeoutId = undefined;
     this.releaseScheduledAt = undefined;
+    this.releaseErrorTime = undefined;
     this.views = new Map();
     this.details = [];
     this.bytes = 0;

@@ -22,6 +22,7 @@ import {
   EventTrack,
   LifecycleKind,
   type RawRumEvent,
+  type ServerRumEvent,
 } from '../../../event';
 import { createFormatHooks, type FormatHooks } from '../../../assembly';
 import { createServerRumEvent, createServerRumView } from '../../../mocks.specUtil';
@@ -263,6 +264,19 @@ describe('ViewCollection', () => {
         source: EventSource.MAIN,
         data: createServerRumEvent('error', { view: { id: 'previous-launch-view' } }),
       });
+
+      // Only the initial event, no update
+      expect(rawRumEvents).toHaveLength(1);
+    });
+
+    it('leaves a telemetry event alone, view or not, as one assembled after the view closed has none', () => {
+      expect(() =>
+        eventManager.notify({
+          kind: EventKind.SERVER,
+          track: EventTrack.RUM,
+          data: { type: 'telemetry', telemetry: { type: 'log', status: 'error', message: 'boom' } },
+        } as unknown as ServerRumEvent)
+      ).not.toThrow();
 
       // Only the initial event, no update
       expect(rawRumEvents).toHaveLength(1);

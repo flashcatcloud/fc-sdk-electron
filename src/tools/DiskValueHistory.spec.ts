@@ -11,8 +11,8 @@ import { DiskValueHistory } from './DiskValueHistory';
 import { TimeStampHistoryEntry } from './TimeStampValueHistory';
 
 vi.mock('node:fs/promises');
-const { writeFileSync } = vi.hoisted(() => ({ writeFileSync: vi.fn() }));
-vi.mock('node:fs', () => ({ writeFileSync }));
+const { writeFileSync, renameSync } = vi.hoisted(() => ({ writeFileSync: vi.fn(), renameSync: vi.fn() }));
+vi.mock('node:fs', () => ({ writeFileSync, renameSync }));
 const mfs = mockFs();
 
 const FILE_PATH = '/test/history.json';
@@ -187,7 +187,14 @@ describe('DiskValueHistory', () => {
 
       history.persistSync();
 
-      expect(writeFileSync).toHaveBeenCalledWith(FILE_PATH, expect.stringContaining('"session-a"'), 'utf-8');
+      // To a file of its own, renamed into place: a write already issued keeps writing to the file
+      // it opened and cannot interleave with this one.
+      expect(writeFileSync).toHaveBeenCalledWith(
+        expect.stringContaining(`${FILE_PATH}.`),
+        expect.stringContaining('"session-a"'),
+        'utf-8'
+      );
+      expect(renameSync).toHaveBeenCalledWith(expect.stringContaining(`${FILE_PATH}.`), FILE_PATH);
     });
   });
 

@@ -151,16 +151,17 @@ export class ViewCollection {
     }
 
     const type = event.data.type;
+    if (type !== 'action' && type !== 'error' && type !== 'resource') {
+      return;
+    }
     // Only the current view's own: a crash reported on the next launch belongs to the view it
     // happened in, which is rebuilt with its own count.
     if (event.data.view.id !== this.currentView.id) {
       return;
     }
-    if (type === 'action' || type === 'error' || type === 'resource') {
-      this.currentView.counters[type].count++;
-      this.currentView.documentVersion++;
-      this.scheduleViewUpdate();
-    }
+    this.currentView.counters[type].count++;
+    this.currentView.documentVersion++;
+    this.scheduleViewUpdate();
   }
 
   private keepSessionAlive(): void {

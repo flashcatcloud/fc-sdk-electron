@@ -75,7 +75,8 @@ describe('WithheldEventBuffer', () => {
   let buffer: WithheldEventBuffer;
 
   beforeEach(() => {
-    vi.useFakeTimers();
+    // `performance` too: the buffer ages by the monotonic clock, which `setSystemTime` leaves alone.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] });
     vi.setSystemTime(1_000_000);
     eventManager = new EventManager();
     session = { id: SESSION_ID, status: 'active', trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 0 };
@@ -250,6 +251,18 @@ describe('WithheldEventBuffer', () => {
 
       expect(forwarded).toContain(recent);
       expect(forwarded).not.toContain(old);
+    });
+
+    it('ages by the monotonic clock, so a wall-clock correction before the error does not prune the history', () => {
+      buffer.collect(view(MAIN_VIEW, 1));
+      const history = detail('action');
+      buffer.collect(history);
+      // The system clock jumps two minutes ahead; next to no time passes.
+      vi.setSystemTime(Date.now() + 2 * WITHHELD_BUFFER_DURATION);
+      buffer.collect(error());
+      vi.advanceTimersByTime(WITHHELD_BUFFER_RELEASE_MAX_DELAY);
+
+      expect(forwarded).toContain(history);
     });
 
     it('freezes the window when the release is scheduled, so a late timer does not prune the history', () => {

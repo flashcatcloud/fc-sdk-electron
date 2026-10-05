@@ -410,7 +410,7 @@ the bridge: the main process decides, and its rate is what every event reports.
   and the session then reports as it happens, like any drawn session. An uncaught exception in the
   main process, or a quit, writes a release already earned to disk before returning instead, since
   the application may be about to exit — provided the application's own `uncaughtException` listener
-  is registered after `init()`, so that the SDK's runs first.
+  is registered after `await init(...)` has completed, so that the SDK's runs first.
 - A session that ends without an error is thrown away whole, late events included.
 
 Only errors the application reports count: an error a renderer's `beforeSend` dropped, or one the

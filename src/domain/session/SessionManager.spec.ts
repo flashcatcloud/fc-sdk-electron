@@ -1,7 +1,11 @@
 import { mockFs } from '../../mocks.specUtil';
 vi.mock('node:fs/promises');
-const { writeFileSync } = vi.hoisted(() => ({ writeFileSync: vi.fn() }));
-vi.mock('node:fs', () => ({ writeFileSync }));
+const { writeFileSync, renameSync, unlinkSync } = vi.hoisted(() => ({
+  writeFileSync: vi.fn(),
+  renameSync: vi.fn(),
+  unlinkSync: vi.fn(),
+}));
+vi.mock('node:fs', () => ({ writeFileSync, renameSync, unlinkSync }));
 vi.mock('electron', () => ({
   app: {
     getPath: vi.fn(() => '/mock/user/data'),
@@ -661,25 +665,38 @@ describe('sessionManager', () => {
 
         sessionManager.writePendingSync();
 
+        // Written to a file of its own and renamed into place, so that a write already issued cannot
+        // overwrite or interleave with it.
         const written = writeFileSync.mock.calls.map(([filePath, content]) => [String(filePath), String(content)]);
-        expect(written.find(([filePath]) => filePath.endsWith(SESSION_FILE_NAME))?.[1]).toContain('"hasError":true');
-        expect(written.find(([filePath]) => filePath.endsWith('_dd_session_history'))?.[1]).toContain(
+        expect(written.find(([filePath]) => filePath.includes(`/${SESSION_FILE_NAME}.`))?.[1]).toContain(
           '"hasError":true'
+        );
+        expect(written.find(([filePath]) => filePath.includes('/_dd_session_history.'))?.[1]).toContain(
+          '"hasError":true'
+        );
+        expect(renameSync).toHaveBeenCalledWith(
+          expect.stringContaining(`/${SESSION_FILE_NAME}.`),
+          expect.stringMatching(/\/_dd_s$/)
+        );
+        expect(renameSync).toHaveBeenCalledWith(
+          expect.stringContaining('/_dd_session_history.'),
+          expect.stringMatching(/_dd_session_history$/)
         );
       });
 
-      it('does not write the state of a session that has ended, when the application may exit', async () => {
+      it('deletes the file of a session that has ended rather than writing it, when the application may exit', async () => {
         await startWithheldSession();
-        mfs.unlink.mockResolvedValue(undefined);
+        // The queued delete has not run yet: the application is exiting right after stopSession().
+        mfs.unlink.mockReturnValue(new Promise(() => undefined));
         sessionManager.expire();
-        await vi.advanceTimersByTimeAsync(0);
         writeFileSync.mockClear();
 
         sessionManager.writePendingSync();
 
         expect(writeFileSync.mock.calls.map(([filePath]) => String(filePath))).not.toContainEqual(
-          expect.stringMatching(new RegExp(`/${SESSION_FILE_NAME}$`))
+          expect.stringContaining(`/${SESSION_FILE_NAME}.`)
         );
+        expect(unlinkSync).toHaveBeenCalledWith(expect.stringMatching(new RegExp(`/${SESSION_FILE_NAME}$`)));
       });
 
       it('leaves a drawn session alone, and writes nothing', async () => {
