@@ -2,7 +2,7 @@ import { test as base, _electron as electron, type ElectronApplication, type Pag
 import { basename, join } from 'node:path';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { Intake } from './intake';
+import { Intake, type RemoteConfigBehaviour } from './intake';
 import { TestServer } from './testServer';
 import { MainPage } from './mainPage';
 import type { InitConfiguration } from '@flashcatcloud/electron-sdk';
@@ -51,6 +51,8 @@ export interface TestFixtures {
   rumBrowserSdk: Record<string, unknown> | null;
   /** Merged over the SDK configuration every scenario starts from. */
   sdkConfig: Partial<InitConfiguration>;
+  /** What the fake config endpoint answers from the first request on. Unset: 404. */
+  remoteConfig: RemoteConfigBehaviour | undefined;
 }
 
 /**
@@ -59,9 +61,9 @@ export interface TestFixtures {
  */
 export const test = base.extend<TestFixtures>({
   intake: [
-    // eslint-disable-next-line no-empty-pattern
-    async ({}, use) => {
+    async ({ remoteConfig }, use) => {
       const intake = new Intake();
+      intake.setRemoteConfig(remoteConfig);
       await intake.start();
       await use(intake);
       await intake.stop();
@@ -102,6 +104,7 @@ export const test = base.extend<TestFixtures>({
 
   rumBrowserSdk: [null, { option: true }],
   sdkConfig: [{}, { option: true }],
+  remoteConfig: [undefined, { option: true }],
 });
 
 /** How the test app sequences `init()` against window creation. See `getInitMode` in its main.ts. */

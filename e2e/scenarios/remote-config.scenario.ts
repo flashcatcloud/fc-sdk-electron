@@ -1,0 +1,438 @@
+import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import type { InitConfiguration } from '@flashcatcloud/electron-sdk';
+import { test, expect, launchAppManually, createUserDataDir, cleanupUserDataDir } from '../lib/helpers';
+import type { Intake } from '../lib/intake';
+import type { MainPage } from '../lib/mainPage';
+
+/**
+ * Remote configuration, end to end, against the fake intake's config endpoint — never a real one:
+ * a fake configuration version reported to a real backend would show up in the console's version
+ * statistics.
+ *
+ * Every scenario comes with a negative control: the same steps under a configuration that differs
+ * only in what the scenario claims makes the difference.
+ */
+
+/** Comfortably past the release jitter of an on-error session, which is at most 3 s. */
+const RELEASE_WAIT = 3_500;
+/** Long enough for a configuration answer to be applied and the bridge to hear of a session change. */
+const APPLY_WAIT = 1_000;
+
+interface SessionEvent {
+  type: string;
+  date: number;
+  session: { id: string; sampled_for_error?: boolean };
+  view: { id: string; is_active?: boolean };
+  _dd?: { configuration?: { session_sample_rate?: number; rc_version?: number } };
+}
+
+/** A response the way the real endpoint writes it. */
+function configuration(
+  version: number,
+  activation: 'immediate' | 'next_session',
+  rum: { sessionSampleRate?: number; sessionOnError?: boolean }
+) {
+  return {
+    body: {
+      schema_version: 1,
+      version,
+      ttl: 600,
+      enabled: true,
+      activation,
+      refresh_on_foreground: false,
+      rum,
+      custom: { scenario: 'e2e' },
+    },
+  };
+}
+
+/** Every RUM event received — of one session only, when given: an ended session's final view update may still arrive. */
+function rumEvents(intake: Intake, sessionId?: string): SessionEvent[] {
+  return intake
+    .getAllEvents()
+    .map((event) => event.body as SessionEvent)
+    .filter((body) => body.type !== 'telemetry' && (sessionId === undefined || body.session.id === sessionId));
+}
+
+async function settle(mainPage: MainPage, waitMs = RELEASE_WAIT) {
+  await new Promise((resolve) => setTimeout(resolve, waitMs));
+  await mainPage.flushTransport();
+}
+
+/** Waits for the first answer to have been applied, and for the bridge to have heard of it. */
+async function waitForConfiguration(intake: Intake) {
+  await intake.waitForConfigRequests(1);
+  await new Promise((resolve) => setTimeout(resolve, APPLY_WAIT));
+}
+
+test.afterEach(async ({ intake }, testInfo) => {
+  const captureDir = process.env.FC_E2E_CAPTURE_DIR;
+  if (!captureDir) {
+    return;
+  }
+  await mkdir(captureDir, { recursive: true });
+  const fileName = `remote-config - ${testInfo.titlePath
+    .slice(1)
+    .join(' - ')
+    .replace(/[^\w.-]+/g, '_')}.json`;
+  await writeFile(
+    join(captureDir, fileName),
+    JSON.stringify({ configRequests: intake.getConfigRequests(), events: intake.getAllEvents() }, null, 2)
+  );
+});
+
+test.describe('remote configuration', () => {
+  test.describe.configure({ timeout: 60_000 });
+
+  test.describe('the request', () => {
+    test.use({
+      sdkConfig: { remoteConfigurationEnabled: true },
+      remoteConfig: configuration(1, 'next_session', {}),
+    });
+
+    test('asks once at init and again at each new session, saying who it is and what it runs', async ({
+      intake,
+      mainPage,
+    }) => {
+      const [first] = await intake.waitForConfigRequests(1);
+      expect(first.params).toEqual({
+        client_token: 'test-client-token',
+        sdk: 'electron',
+        sdk_version: expect.any(String),
+        env: 'test',
+        app_version: '1.0.0',
+      });
+
+      await mainPage.renewSession();
+      const [, second] = await intake.waitForConfigRequests(2);
+      expect(second.params.applied_version).toBe('1');
+      // Its ETag, sent back: an unchanged configuration costs a 304.
+      expect(second.headers['if-none-match']).toMatch(/^".+"$/);
+    });
+  });
+
+  test.describe('without remoteConfigurationEnabled (control)', () => {
+    test.use({ remoteConfig: configuration(1, 'immediate', { sessionSampleRate: 0 }) });
+
+    test('asks nothing, and a rate of 0 published for it changes nothing', async ({ intake, mainPage }) => {
+      await new Promise((resolve) => setTimeout(resolve, APPLY_WAIT));
+
+      expect(intake.getConfigRequests()).toEqual([]);
+      expect(await mainPage.getBridgeSessionId()).not.toBe('');
+    });
+  });
+
+  test.describe('rate 0 with sessionOnError, immediate (§7.1)', () => {
+    test.use({
+      // "Only error sessions" at init too: the session the configuration finds is an on-error one.
+      sdkConfig: { sessionSampleRate: 0, sessionOnError: true, remoteConfigurationEnabled: true },
+      remoteConfig: configuration(1, 'immediate', { sessionSampleRate: 0, sessionOnError: true }),
+    });
+
+    test('leaves the on-error session running, and its error releases what it held', async ({ intake, mainPage }) => {
+      await waitForConfiguration(intake);
+      const configuredAt = intake.getConfigRequests()[0].timestamp;
+      const sessionId = await mainPage.getBridgeSessionId();
+      expect(sessionId).not.toBe('');
+      await settle(mainPage, 0);
+      expect(rumEvents(intake)).toEqual([]);
+
+      await mainPage.generateManualError();
+      await settle(mainPage);
+
+      const events = rumEvents(intake);
+      expect(events.some((event) => event.type === 'error')).toBe(true);
+      expect(new Set(events.map((event) => event.session.id))).toEqual(new Set([sessionId]));
+      // The view the session opened with, at init — before the configuration was even asked for.
+      const views = events.filter((event) => event.type === 'view');
+      expect(Math.min(...views.map((view) => view.date))).toBeLessThan(configuredAt);
+      for (const view of views) {
+        expect(view.session.sampled_for_error).toBe(true);
+      }
+      for (const event of events) {
+        expect(event._dd?.configuration?.session_sample_rate).toBe(0);
+        // Drawn before any configuration was delivered: there is no version it was drawn under.
+        expect(event._dd?.configuration?.rc_version).toBeUndefined();
+      }
+      expect(intake.getProtocolViolations()).toEqual([]);
+    });
+  });
+
+  test.describe('rate 0 with sessionOnError turned off, immediate (control for §7.1)', () => {
+    test.use({
+      sdkConfig: { sessionSampleRate: 0, sessionOnError: true, remoteConfigurationEnabled: true },
+      remoteConfig: configuration(1, 'immediate', { sessionSampleRate: 0, sessionOnError: false }),
+    });
+
+    test('ends the on-error session, and an error then releases nothing', async ({ intake, mainPage }) => {
+      await waitForConfiguration(intake);
+
+      expect(await mainPage.getBridgeSessionId()).toBe('');
+      await mainPage.generateManualError();
+      await settle(mainPage);
+      expect(rumEvents(intake)).toEqual([]);
+    });
+  });
+
+  test.describe('rate 0, immediate: the emergency stop', () => {
+    test.use({
+      sdkConfig: { remoteConfigurationEnabled: true },
+      remoteConfig: configuration(2, 'immediate', { sessionSampleRate: 0 }),
+    });
+
+    test('ends the drawn session, and the next one is not collected', async ({ intake, mainPage, testServer }) => {
+      await waitForConfiguration(intake);
+      expect(await mainPage.getBridgeSessionId()).toBe('');
+      await settle(mainPage, 0);
+      const ended = rumEvents(intake).filter((event) => event.type === 'view');
+      expect(ended.length).toBeGreaterThan(0);
+      // The view of the session that ended reports it as over.
+      expect(ended.some((view) => view.view.is_active === false)).toBe(true);
+      const endedSessionId = ended[0].session.id;
+
+      intake.clear();
+      await mainPage.generateActivity();
+      await mainPage.mainFetch(testServer.urlFor(200));
+      await settle(mainPage, 0);
+
+      expect(await mainPage.getBridgeSessionId()).toBe('');
+      expect(rumEvents(intake).filter((event) => event.session.id !== endedSessionId)).toEqual([]);
+    });
+  });
+
+  test.describe('rate 0, next session (control for the emergency stop)', () => {
+    test.use({
+      sdkConfig: { remoteConfigurationEnabled: true },
+      remoteConfig: configuration(2, 'next_session', { sessionSampleRate: 0 }),
+    });
+
+    test('leaves the drawn session collecting', async ({ intake, mainPage, testServer }) => {
+      await waitForConfiguration(intake);
+      const sessionId = await mainPage.getBridgeSessionId();
+      expect(sessionId).not.toBe('');
+
+      await mainPage.mainFetch(testServer.urlFor(200));
+      await settle(mainPage, 0);
+
+      const resources = rumEvents(intake).filter((event) => event.type === 'resource');
+      expect(resources.length).toBeGreaterThan(0);
+      for (const resource of resources) {
+        expect(resource.session.id).toBe(sessionId);
+        expect(resource._dd?.configuration?.session_sample_rate).toBe(100);
+      }
+    });
+  });
+
+  test.describe('next session (deferred)', () => {
+    test.use({
+      sdkConfig: { remoteConfigurationEnabled: true },
+      remoteConfig: configuration(3, 'next_session', { sessionSampleRate: 0, sessionOnError: true }),
+    });
+
+    test('keeps the current session as drawn, and draws the next one under the new values', async ({
+      intake,
+      mainPage,
+      testServer,
+    }) => {
+      await waitForConfiguration(intake);
+      const current = await mainPage.getBridgeSessionId();
+      await mainPage.mainFetch(testServer.urlFor(200));
+      await settle(mainPage, 0);
+      const before = rumEvents(intake);
+      expect(before.some((event) => event.type === 'resource')).toBe(true);
+      for (const event of before) {
+        expect(event.session.id).toBe(current);
+        expect(event._dd?.configuration?.session_sample_rate).toBe(100);
+        expect(event._dd?.configuration?.rc_version).toBeUndefined();
+      }
+
+      intake.clear();
+      await mainPage.renewSession();
+      const next = await mainPage.getBridgeSessionId();
+      expect(next).not.toBe('');
+      expect(next).not.toBe(current);
+      await mainPage.mainFetch(testServer.urlFor(200));
+      await settle(mainPage);
+      // An on-error session: nothing until it errors.
+      expect(rumEvents(intake, next)).toEqual([]);
+
+      await mainPage.generateManualError();
+      await settle(mainPage);
+      const after = rumEvents(intake, next);
+      expect(after.some((event) => event.type === 'error')).toBe(true);
+      for (const event of after) {
+        expect(event.session.id).toBe(next);
+        expect(event._dd?.configuration?.session_sample_rate).toBe(0);
+        expect(event._dd?.configuration?.rc_version).toBe(3);
+      }
+      expect(intake.getProtocolViolations()).toEqual([]);
+    });
+  });
+
+  test.describe('next session without a configuration (control for deferred)', () => {
+    test.use({ sdkConfig: { remoteConfigurationEnabled: true } });
+
+    test('draws the next session under the init values', async ({ intake, mainPage, testServer }) => {
+      await waitForConfiguration(intake);
+      await mainPage.renewSession();
+      await mainPage.mainFetch(testServer.urlFor(200));
+      await settle(mainPage, 0);
+
+      const resources = rumEvents(intake).filter((event) => event.type === 'resource');
+      expect(resources.length).toBeGreaterThan(0);
+      for (const resource of resources) {
+        expect(resource._dd?.configuration?.session_sample_rate).toBe(100);
+        expect(resource._dd?.configuration?.rc_version).toBeUndefined();
+      }
+    });
+  });
+
+  test.describe('sessionOnError turned on for a session drawn at rate 0, immediate', () => {
+    test.use({
+      sdkConfig: { sessionSampleRate: 0, remoteConfigurationEnabled: true },
+      remoteConfig: configuration(4, 'immediate', { sessionOnError: true }),
+    });
+
+    test('ends the session so the next activity draws again, as an on-error session', async ({ intake, mainPage }) => {
+      await waitForConfiguration(intake);
+      expect(await mainPage.getBridgeSessionId()).toBe('');
+
+      await mainPage.generateActivity();
+      const redrawn = await mainPage.getBridgeSessionId();
+      expect(redrawn).not.toBe('');
+
+      await mainPage.generateManualError();
+      await settle(mainPage);
+      const events = rumEvents(intake);
+      expect(events.some((event) => event.type === 'error')).toBe(true);
+      for (const event of events) {
+        expect(event.session.id).toBe(redrawn);
+        expect(event._dd?.configuration?.session_sample_rate).toBe(0);
+        expect(event._dd?.configuration?.rc_version).toBe(4);
+      }
+      expect(events.filter((event) => event.type === 'view').every((view) => view.session.sampled_for_error)).toBe(
+        true
+      );
+    });
+  });
+
+  test.describe('sessionOnError turned on for a session drawn at rate 0, next session (control)', () => {
+    test.use({
+      sdkConfig: { sessionSampleRate: 0, remoteConfigurationEnabled: true },
+      remoteConfig: configuration(4, 'next_session', { sessionOnError: true }),
+    });
+
+    test('keeps the session it has, which collects nothing', async ({ intake, mainPage }) => {
+      await waitForConfiguration(intake);
+
+      await mainPage.generateActivity();
+      expect(await mainPage.getBridgeSessionId()).toBe('');
+      await mainPage.generateManualError();
+      await settle(mainPage);
+      expect(rumEvents(intake)).toEqual([]);
+    });
+  });
+});
+
+test.describe('remote configuration kept for the next launch', () => {
+  // The app every test launches anyway collects nothing, so all events come from the launches below.
+  test.use({ sdkConfig: { sessionSampleRate: 0 } });
+  test.describe.configure({ timeout: 90_000 });
+
+  const ENABLED: Partial<InitConfiguration> = { remoteConfigurationEnabled: true };
+
+  /** Launch one: receives the configuration, keeps it, ends its session so the next launch draws anew. */
+  async function receiveAndKeep(intake: Intake, userDataDir: string) {
+    intake.setRemoteConfig(configuration(5, 'next_session', { sessionSampleRate: 0, sessionOnError: true }));
+    const first = await launchAppManually(intake, userDataDir, 'await', ENABLED);
+    try {
+      await intake.waitForConfigRequests(1);
+      await waitForFile(join(userDataDir, '_fc_remote_config'));
+      await first.mainPage.stopSession();
+    } finally {
+      await first.electronApp.close();
+    }
+    intake.clear();
+    // Offline from now on, as far as the configuration is concerned.
+    intake.setRemoteConfig({ reset: true });
+  }
+
+  test('draws the first session of a cold start, while offline, with the configuration kept on disk', async ({
+    intake,
+    testServer,
+  }) => {
+    const userDataDir = await createUserDataDir();
+    try {
+      await receiveAndKeep(intake, userDataDir);
+
+      const second = await launchAppManually(intake, userDataDir, 'await', ENABLED);
+      try {
+        await intake.waitForConfigRequests(1);
+        expect(intake.getConfigRequests()[0].params.applied_version).toBe('5');
+        // On-error, as kept: collected, so the bridge answers it, but nothing leaves without an error.
+        const sessionId = await second.mainPage.getBridgeSessionId();
+        expect(sessionId).not.toBe('');
+        await second.mainPage.mainFetch(testServer.urlFor(200));
+        await settle(second.mainPage);
+        expect(rumEvents(intake, sessionId)).toEqual([]);
+
+        await second.mainPage.generateManualError();
+        await settle(second.mainPage);
+        const events = rumEvents(intake, sessionId);
+        expect(events.some((event) => event.type === 'error')).toBe(true);
+        for (const event of events) {
+          expect(event._dd?.configuration?.session_sample_rate).toBe(0);
+          expect(event._dd?.configuration?.rc_version).toBe(5);
+        }
+      } finally {
+        await second.electronApp.close();
+      }
+    } finally {
+      await cleanupUserDataDir(userDataDir);
+    }
+  });
+
+  test('draws it under the init values when nothing was kept (control)', async ({ intake, testServer }) => {
+    const userDataDir = await createUserDataDir();
+    try {
+      await receiveAndKeep(intake, userDataDir);
+      await rm(join(userDataDir, '_fc_remote_config'));
+
+      const second = await launchAppManually(intake, userDataDir, 'await', ENABLED);
+      try {
+        await intake.waitForConfigRequests(1);
+        expect(intake.getConfigRequests()[0].params.applied_version).toBeUndefined();
+        const sessionId = await second.mainPage.getBridgeSessionId();
+        await second.mainPage.mainFetch(testServer.urlFor(200));
+        await settle(second.mainPage, 0);
+
+        const resources = rumEvents(intake, sessionId).filter((event) => event.type === 'resource');
+        expect(resources.length).toBeGreaterThan(0);
+        for (const resource of resources) {
+          expect(resource._dd?.configuration?.session_sample_rate).toBe(100);
+          expect(resource._dd?.configuration?.rc_version).toBeUndefined();
+        }
+      } finally {
+        await second.electronApp.close();
+      }
+    } finally {
+      await cleanupUserDataDir(userDataDir);
+    }
+  });
+});
+
+async function waitForFile(filePath: string, timeout = 10_000) {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    try {
+      await stat(filePath);
+      return;
+    } catch {
+      if (Date.now() >= deadline) {
+        throw new Error(`${filePath} did not appear within ${timeout}ms`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+}
