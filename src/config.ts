@@ -58,6 +58,21 @@ export interface InitConfiguration {
    * of 100 there is nothing left for it to apply to.
    */
   sessionOnError?: boolean;
+  /**
+   * Let the console change `sessionSampleRate` and `sessionOnError` without a new release of the
+   * application, and deliver the application's own `custom` values (see `getRemoteConfig()`).
+   * Defaults to `false`: nothing is requested and the init values apply.
+   *
+   * The main process asks for the configuration at init and whenever a new session starts, and
+   * keeps the last good answer on disk, so the next launch draws its first session with it before
+   * the network answers. A delivered value takes precedence over the init value; a value the
+   * console did not set leaves the init value in place. A change applies to the next session,
+   * unless the console asks for it to apply at once — see the README, Remote configuration.
+   *
+   * Set it here, in the main process, and not in the renderers' browser SDK: the main process owns
+   * the sessions and their sampling, and a renderer under the bridge ignores its own.
+   */
+  remoteConfigurationEnabled?: boolean;
   telemetrySampleRate?: number;
   batchSize?: BatchSize;
   uploadFrequency?: UploadFrequency;
@@ -114,6 +129,7 @@ export interface Configuration {
   proxy?: string;
   sessionSampleRate: number;
   sessionOnError: boolean;
+  remoteConfigurationEnabled: boolean;
   telemetrySampleRate: number;
   batchSize?: BatchSize;
   uploadFrequency?: UploadFrequency;
@@ -245,7 +261,13 @@ export function buildConfiguration(initConfig: InitConfiguration): Configuration
   const proxy = validateOptionalString(initConfig.proxy);
   const sessionSampleRate = initConfig.sessionSampleRate ?? 100;
   const sessionOnError = validateOptionalBoolean(initConfig.sessionOnError, 'sessionOnError', false);
-  if (sessionOnError && sessionSampleRate === 100) {
+  const remoteConfigurationEnabled = validateOptionalBoolean(
+    initConfig.remoteConfigurationEnabled,
+    'remoteConfigurationEnabled',
+    false
+  );
+  // Not with remote configuration: the console may lower the rate the switch then applies to.
+  if (sessionOnError && sessionSampleRate === 100 && !remoteConfigurationEnabled) {
     displayWarn(
       'sessionOnError does not affect new sessions at sessionSampleRate 100. Resumed sessions retain their previous sampling decision.'
     );
@@ -261,6 +283,7 @@ export function buildConfiguration(initConfig: InitConfiguration): Configuration
     proxy,
     sessionSampleRate,
     sessionOnError,
+    remoteConfigurationEnabled,
     telemetrySampleRate: validateTelemetrySampleRate(initConfig.telemetrySampleRate),
     defaultPrivacyLevel: validateDefaultPrivacyLevel(initConfig.defaultPrivacyLevel),
     allowedWebViewHosts: validateAllowedWebViewHosts(initConfig.allowedWebViewHosts),

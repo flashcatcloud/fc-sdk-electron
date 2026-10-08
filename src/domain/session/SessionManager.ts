@@ -40,7 +40,10 @@ interface SessionState extends SessionRecord {
   lastActivity: number;
 }
 
-export type SamplingConfiguration = Pick<Configuration, 'sessionSampleRate' | 'sessionOnError'>;
+/** What a draw reads: the rate and the on-error switch in force, and the remote version they came from. */
+export interface SamplingConfiguration extends Pick<Configuration, 'sessionSampleRate' | 'sessionOnError'> {
+  rcVersion?: number;
+}
 
 /**
  * Track session lifecycle
@@ -49,8 +52,10 @@ export type SamplingConfiguration = Pick<Configuration, 'sessionSampleRate' | 's
  * - after SESSION_EXPIRATION_DELAY without activity, expire the Session
  * - after SESSION_TIME_OUT_DELAY if the Session is still active, expire the Session
  * - on activity, if the Session is expired, create a new Session
- * - when a Session is created, draw whether it is collected (see {@link TrackingType}); a resumed
- *   Session keeps the decision it was created with
+ * - when a Session is created, draw whether it is collected (see {@link TrackingType}) under the
+ *   sampling in force then; a resumed Session keeps the decision it was created with
+ * - when the remote configuration asks for a change to apply at once, end the Session only where
+ *   the new sampling is decisive for it (see {@link SessionManager.applySamplingChange})
  */
 export class SessionManager {
   /** The current session as it is saved: the one copy of its id, draw and error mark. */
@@ -66,26 +71,61 @@ export class SessionManager {
   private constructor(
     private readonly eventManager: EventManager,
     private readonly hooks: FormatHooks,
-    private readonly sampling: SamplingConfiguration
+    /** Read at each draw, never in between: the init values, or what the console delivered over them. */
+    private readonly getSampling: () => SamplingConfiguration
   ) {}
 
   static async start(
     eventManager: EventManager,
     hooks: FormatHooks,
-    sampling: SamplingConfiguration
+    getSampling: () => SamplingConfiguration
   ): Promise<SessionManager> {
-    const manager = new SessionManager(eventManager, hooks, sampling);
+    const manager = new SessionManager(eventManager, hooks, getSampling);
     await manager.init();
     return manager;
   }
 
   getSession(): Session {
-    const { id, trackingType, sampleRate, hasError } = this.currentState;
-    return deepClone({ id, trackingType, sampleRate, hasError, status: this.status });
+    return deepClone({ ...toSessionRecord(this.currentState), status: this.status });
   }
 
   expire(): void {
     this.expireSession();
+  }
+
+  /**
+   * Ends the running session where the sampling now in force is decisive for it, so that the next
+   * activity draws a new one under it. Called when a remote configuration that asks to apply at
+   * once (`activation: immediate`) has changed the sampling; anything else waits for the next
+   * session, because a session's draw is locked for its whole life.
+   *
+   * Only two cases are decisive:
+   * - A session that was not collected and was drawn at rate 0 lost no lottery: nothing was ever
+   *   drawn for it. A rate leaving 0, or the on-error switch turning on, would now keep some such
+   *   sessions, so it draws again. One that lost a draw at a real rate keeps its outcome, or the
+   *   fleet would be re-rolled and a rate `p` would turn into `p²`.
+   * - A collected session meets the emergency stop, rate 0 — unless it is an on-error session and
+   *   the switch stays on: rate 0 next to the switch is that switch's ordinary setting, and ending
+   *   the session would throw away exactly the history the switch exists to keep.
+   *
+   * Idempotent: a session drawn under the sampling now in force is never decisive, so the same
+   * configuration arriving again ends nothing.
+   */
+  applySamplingChange(): void {
+    if (this.status !== 'active') {
+      return;
+    }
+    const next = this.getSampling();
+    const { trackingType, sampleRate } = this.currentState;
+    if (trackingType === TrackingType.NOT_TRACKED) {
+      if (sampleRate === 0 && (next.sessionSampleRate > 0 || next.sessionOnError)) {
+        this.expireSession();
+      }
+      return;
+    }
+    if (next.sessionSampleRate === 0 && !(next.sessionOnError && trackingType === TrackingType.TRACKED_ON_ERROR)) {
+      this.expireSession();
+    }
   }
 
   /** The session in force at `startTime`, current or past, or `undefined` when there was none. */
@@ -163,10 +203,12 @@ export class SessionManager {
 
   private async createNewSession(): Promise<void> {
     const now = Date.now();
+    const sampling = this.getSampling();
     const state: SessionState = {
       id: generateUUID(),
-      trackingType: drawTrackingType(this.sampling),
-      sampleRate: this.sampling.sessionSampleRate,
+      trackingType: drawTrackingType(sampling),
+      sampleRate: sampling.sessionSampleRate,
+      ...(sampling.rcVersion === undefined ? {} : { rcVersion: sampling.rcVersion }),
       created: now,
       lastActivity: now,
     };
@@ -181,8 +223,7 @@ export class SessionManager {
   private setCurrent(state: SessionState): void {
     this.currentState = state;
     this.status = 'active';
-    const { id, trackingType, sampleRate, hasError } = state;
-    this.sessionContext.add({ id, trackingType, sampleRate, hasError });
+    this.sessionContext.add(toSessionRecord(state));
   }
 
   /**
@@ -271,6 +312,17 @@ function drawTrackingType({ sessionSampleRate, sessionOnError }: SamplingConfigu
     return TrackingType.TRACKED;
   }
   return sessionOnError ? TrackingType.TRACKED_ON_ERROR : TrackingType.NOT_TRACKED;
+}
+
+/** The record part of a state, without its timestamps. Absent fields stay absent. */
+function toSessionRecord({ id, trackingType, sampleRate, rcVersion, hasError }: SessionState): SessionRecord {
+  return {
+    id,
+    trackingType,
+    sampleRate,
+    ...(rcVersion === undefined ? {} : { rcVersion }),
+    ...(hasError === undefined ? {} : { hasError }),
+  };
 }
 
 function getSessionFilePath(): string {

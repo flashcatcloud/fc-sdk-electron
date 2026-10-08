@@ -107,6 +107,47 @@ describe('SessionContext', () => {
     });
   });
 
+  describe('remote configuration version', () => {
+    it('reports the version a session was drawn under, and keeps reporting it after the session ended', async () => {
+      const hooks = createFormatHooks();
+      const context = await SessionContext.init(hooks, EXPIRE_DELAY);
+
+      context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED, sampleRate: 20, rcVersion: 6 });
+      vi.advanceTimersByTime(10);
+      context.close();
+
+      expect(hooks.triggerRum({ eventType: 'error', startTime: T0 })).toMatchObject({
+        _dd: { configuration: { session_sample_rate: 20, rc_version: 6 } },
+      });
+    });
+
+    it.each([
+      { title: 'a whole version', rcVersion: 2, kept: true },
+      { title: 'a negative version', rcVersion: -1, kept: false },
+      { title: 'a fractional version', rcVersion: 2.5, kept: false },
+      { title: 'a version as a string', rcVersion: '2', kept: false },
+    ])('restores a history entry with $title only if it is well formed', async ({ rcVersion, kept }) => {
+      mfs.readFile.mockResolvedValue(
+        JSON.stringify([
+          {
+            startTime: 0,
+            endTime: 10,
+            value: { id: 'session-abc', trackingType: TrackingType.TRACKED, sampleRate: 100, rcVersion },
+          },
+        ])
+      );
+      const hooks = createFormatHooks();
+      await SessionContext.init(hooks, EXPIRE_DELAY);
+
+      const result = hooks.triggerRum({ eventType: 'error', startTime: T0 });
+      if (kept) {
+        expect(result).toMatchObject({ session: { id: 'session-abc' }, _dd: { configuration: { rc_version: 2 } } });
+      } else {
+        expect(result).toBe(DISCARDED);
+      }
+    });
+  });
+
   describe('after close()', () => {
     it('RUM hook still attributes events during the session period (crash attribution)', async () => {
       const hooks = createFormatHooks();
