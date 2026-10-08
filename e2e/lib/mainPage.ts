@@ -24,6 +24,9 @@ interface ElectronAppWindow {
     openBridgeHttpWindow: () => Promise<void>;
     killBridgeWindowRenderer: () => Promise<void>;
     generateUncaughtExceptionAndExit: () => Promise<void>;
+    generateManualErrorAndExit: () => Promise<void>;
+    generateManualErrorOnWillQuit: () => Promise<void>;
+    generateManualErrorAndAppExit: () => Promise<void>;
   };
 }
 
@@ -71,6 +74,27 @@ export class MainPage {
   generateUncaughtExceptionAndExit() {
     void this.page
       .evaluate(() => (globalThis as unknown as ElectronAppWindow).electronAPI.generateUncaughtExceptionAndExit())
+      .catch(() => undefined);
+  }
+
+  /** Fire and forget, as above. */
+  generateManualErrorAndExit() {
+    void this.page
+      .evaluate(() => (globalThis as unknown as ElectronAppWindow).electronAPI.generateManualErrorAndExit())
+      .catch(() => undefined);
+  }
+
+  /** Fire and forget, as above. */
+  generateManualErrorOnWillQuit() {
+    void this.page
+      .evaluate(() => (globalThis as unknown as ElectronAppWindow).electronAPI.generateManualErrorOnWillQuit())
+      .catch(() => undefined);
+  }
+
+  /** Fire and forget, as above. */
+  generateManualErrorAndAppExit() {
+    void this.page
+      .evaluate(() => (globalThis as unknown as ElectronAppWindow).electronAPI.generateManualErrorAndAppExit())
       .catch(() => undefined);
   }
 

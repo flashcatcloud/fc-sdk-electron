@@ -9,7 +9,7 @@ const fsMocks = mockFs();
 
 const { appendFileSync, existsSync, mkdirSync, renameSync } = vi.hoisted(() => ({
   appendFileSync: vi.fn(),
-  existsSync: vi.fn((_path: string) => false),
+  existsSync: vi.fn<(candidate: string) => boolean>(() => false),
   mkdirSync: vi.fn(),
   renameSync: vi.fn(),
 }));
@@ -272,6 +272,43 @@ describe('BatchProducer', () => {
       );
     });
 
+    it('writes to a new batch while a flush is rotating the current one, and that batch is rotated later', async () => {
+      const producer = await BatchProducer.create(config);
+      const { dateNow } = await import('@flashcatcloud/browser-core');
+      vi.mocked(dateNow).mockReturnValueOnce(1000).mockReturnValueOnce(2000);
+      producer.post({ a: 1 });
+      await vi.waitFor(() => expect(fsMocks.appendFile).toHaveBeenCalledTimes(1));
+      let finishRename!: () => void;
+      fsMocks.rename.mockImplementationOnce(() => new Promise<void>((resolve) => (finishRename = resolve)));
+      const flushed = producer.flush();
+      await vi.waitFor(() => expect(fsMocks.rename).toHaveBeenCalledTimes(1));
+
+      // The batch being rotated is no longer the current one, so the exit flush opens a new batch
+      // rather than recreating the file the rename is taking away.
+      producer.post({ b: 2 });
+      producer.writePendingSync();
+
+      expect(appendFileSync).toHaveBeenCalledWith(path.join(config.trackPath, 'batch-2000.tmp'), `{"b":2}\n`, 'utf8');
+      finishRename();
+      await flushed;
+      await producer.flush();
+      expect(fsMocks.rename).toHaveBeenCalledWith(
+        path.join(config.trackPath, 'batch-2000.tmp'),
+        path.join(config.trackPath, 'batch-2000.log')
+      );
+    });
+
+    it('creates the track directory once for a whole synchronous write, not per item', async () => {
+      const producer = await BatchProducer.create(config);
+      producer.post({ a: 1 });
+      producer.post({ b: 2 });
+      producer.post({ c: 3 });
+
+      producer.writePendingSync();
+
+      expect(mkdirSync).toHaveBeenCalledTimes(1);
+    });
+
     it('leaves a write the queue already started to complete on its own', async () => {
       const producer = await BatchProducer.create(config);
       let finishWrite!: () => void;
@@ -302,7 +339,7 @@ describe('BatchProducer', () => {
         [path.join(config.trackPath, 'batch-1234567890.tmp'), path.join(config.trackPath, 'batch-1234567890.log')],
         [path.join(config.trackPath, 'batch-1234567891.tmp'), path.join(config.trackPath, 'batch-1234567891.log')],
       ]);
-      expect(appendFileSync.mock.calls.map(([file]) => file)).toEqual([
+      expect(appendFileSync.mock.calls.map(([file]) => String(file))).toEqual([
         path.join(config.trackPath, 'batch-1234567890.tmp'),
         path.join(config.trackPath, 'batch-1234567891.tmp'),
         path.join(config.trackPath, 'batch-1234567892.tmp'),
@@ -313,7 +350,7 @@ describe('BatchProducer', () => {
       const producer = await BatchProducer.create(makeConfig({ batchSize: 20 }));
       producer.post({ a: 'x'.repeat(10) });
       producer.post({ b: 'y'.repeat(10) });
-      existsSync.mockImplementation((candidate: string) => String(candidate).endsWith('batch-1234567890.log'));
+      existsSync.mockImplementation((candidate) => candidate.endsWith('batch-1234567890.log'));
 
       producer.writePendingSync();
 

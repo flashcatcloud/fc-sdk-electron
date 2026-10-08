@@ -123,6 +123,24 @@ void app.whenReady().then(async () => {
     });
   });
 
+  // An error reported in the same turn as process.exit(): only the 'exit' listeners run after it.
+  ipcMain.handle('generateManualErrorAndExit', () => {
+    addError(new Error('manual error before process.exit'));
+    process.exit(1);
+  });
+
+  // An error reported while quitting, from a listener registered after the SDK's.
+  ipcMain.handle('generateManualErrorOnWillQuit', () => {
+    app.on('will-quit', () => addError(new Error('manual error on will-quit')));
+    app.quit();
+  });
+
+  // app.exit() skips the quit events; what it leaves the SDK is what this scenario pins.
+  ipcMain.handle('generateManualErrorAndAppExit', () => {
+    addError(new Error('manual error before app.exit'));
+    app.exit(1);
+  });
+
   ipcMain.handle('generateUnhandledRejection', () => {
     void Promise.reject(new Error('test unhandled rejection'));
   });

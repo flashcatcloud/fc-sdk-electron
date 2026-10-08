@@ -11,6 +11,9 @@ declare global {
       stopSession: () => Promise<void>;
       generateUncaughtException: () => Promise<void>;
       generateUncaughtExceptionAndExit: () => Promise<void>;
+      generateManualErrorAndExit: () => Promise<void>;
+      generateManualErrorOnWillQuit: () => Promise<void>;
+      generateManualErrorAndAppExit: () => Promise<void>;
       generateUnhandledRejection: () => Promise<void>;
       generateManualError: (startTime?: number) => Promise<void>;
       crash: () => Promise<void>;

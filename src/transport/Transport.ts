@@ -54,10 +54,15 @@ export class Transport {
         event.kind === EventKind.LIFECYCLE && event.lifecycle === LifecycleKind.APP_MAY_EXIT,
       handle: () => transport.writePendingSync(),
     });
-    app.on(
-      'before-quit',
-      monitor(() => eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.APP_MAY_EXIT }))
+    // Every point a quit passes, and the last one a `process.exit()` runs: an error reported after
+    // one of them — by a later listener, while quitting — is still taken along by the next. Each
+    // pass writes only what arrived since the one before.
+    const mayExit = monitor(() =>
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.APP_MAY_EXIT })
     );
+    app.on('before-quit', mayExit);
+    app.on('will-quit', mayExit);
+    process.on('exit', mayExit);
 
     return transport;
   }
@@ -102,8 +107,10 @@ export class Transport {
     this.eventManager.registerHandler<ServerEvent>({
       canHandle: (event): event is ServerEvent => event.kind === EventKind.SERVER && event.track === track,
       handle: (event) => {
-        // `canHandle` already filtered on the track at runtime; the repeat is what narrows `data`.
-        if (withheldEventBuffer && event.track === EventTrack.RUM && event.data.type !== 'telemetry') {
+        // By provenance, not by what the event calls itself: the SDK's own telemetry is assembled
+        // without a source, and is the one thing that bypasses the buffer. A renderer's event
+        // carries one whatever its `type` says.
+        if (withheldEventBuffer && event.track === EventTrack.RUM && 'source' in event) {
           withheldEventBuffer.collect(event.data);
         } else {
           batchManager.post(event.data);

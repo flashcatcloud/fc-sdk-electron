@@ -61,6 +61,9 @@ export class BatchProducer {
    * drops it.
    */
   writePendingSync() {
+    if (this.pending.length > 0) {
+      mkdirSync(this.trackPath, { recursive: true });
+    }
     while (this.pending.length > 0) {
       const data = this.pending.shift();
       try {
@@ -175,17 +178,15 @@ export class BatchProducer {
     if (!file) {
       return;
     }
+    // Detached before the rename is awaited: a write meanwhile opens a new batch, rather than
+    // recreating the file the rename is taking away.
+    this.currentBatchFile = null;
+    this.currentBatchSize = 0;
     await this.renameBatchFile(file);
-    // Unless the batch moved on while the rename was in flight: the newer batch is the current one.
-    if (this.currentBatchFile === file) {
-      this.currentBatchFile = null;
-      this.currentBatchSize = 0;
-    }
   }
 
   /** `drain`'s write of one item, for `writePendingSync`. */
   private writeDataSync(data: unknown) {
-    mkdirSync(this.trackPath, { recursive: true });
     const serialized = `${JSON.stringify(data)}\n`;
     const dataSize = Buffer.byteLength(serialized, 'utf8');
     if (this.inFlightFile !== null && this.inFlightFile === this.currentBatchFile) {
