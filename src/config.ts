@@ -159,7 +159,7 @@ function validateOptionalString(value: unknown): string | undefined {
 /** Same contract as the browser SDK: an out-of-range rate fails `init` rather than being guessed at. */
 function isValidSessionSampleRate(value: unknown): boolean {
   if (value !== undefined && value !== null && !isPercentage(value)) {
-    displayError("Configuration error: 'sessionSampleRate' must be a number between 0 and 100");
+    displayError("SDK initialization failed: 'sessionSampleRate' must be a finite number from 0 to 100");
     return false;
   }
   return true;
@@ -246,7 +246,9 @@ export function buildConfiguration(initConfig: InitConfiguration): Configuration
   const sessionSampleRate = initConfig.sessionSampleRate ?? 100;
   const sessionOnError = validateOptionalBoolean(initConfig.sessionOnError, 'sessionOnError', false);
   if (sessionOnError && sessionSampleRate === 100) {
-    displayWarn('sessionOnError has no effect while sessionSampleRate is 100: every new session is collected anyway.');
+    displayWarn(
+      'sessionOnError does not affect new sessions at sessionSampleRate 100. Resumed sessions retain their previous sampling decision.'
+    );
   }
 
   return {

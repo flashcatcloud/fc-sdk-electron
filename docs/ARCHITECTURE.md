@@ -110,10 +110,13 @@ not drawn, and of a withheld session that ended without an error (its late event
 events alike, already final. It holds a withheld session's events and releases them at the session's
 first error; telemetry bypasses it. `CrashCollection` releases the session of a crash reported on the
 next launch itself, rebuilding the crashed view from the view history. When the application may be
-about to exit (`APP_MAY_EXIT`: an uncaught exception in the main process, or a quit), the buffer
-releases what has earned its release and `Transport` then writes every queued event, and the session
-state, before returning, since the batch otherwise writes on later turns of the event loop; an append
-already issued is not completed synchronously. See the JSDoc of each class.
+about to exit (`APP_MAY_EXIT`: an uncaught exception in the main process, `before-quit`, `will-quit`,
+and the process `exit` event), the buffer releases what has earned its release and `Transport` then
+writes every queued event, and the session state, before returning, since the batch otherwise writes
+on later turns of the event loop; an append already issued is not completed synchronously. Each pass
+writes only what arrived since the one before, so an error reported between two of them is taken
+along by the next. The session state and history files are replaced whole, through a temp file and a
+rename, in the order the writes were requested (`StateFile`). See the JSDoc of each class.
 
 ### Event Manager
 

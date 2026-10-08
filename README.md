@@ -382,7 +382,7 @@ before the logout still resolve to the user who was logged in then.
 | `env`                         | `string`                                 | No       | —                        | Application environment                                                                                                                |
 | `version`                     | `string`                                 | No       | —                        | Application version                                                                                                                    |
 | `sessionSampleRate`           | `number`                                 | No       | `100`                    | Percentage of sessions collected (0–100). An out-of-range value fails `init`. See [Sampling](#sampling)                                |
-| `sessionOnError`              | `boolean`                                | No       | `false`                  | Keep the sessions `sessionSampleRate` did not draw, uploaded only if they report an error. See [Sampling](#sampling)                   |
+| `sessionOnError`              | `boolean`                                | No       | `false`                  | Keeps the sessions `sessionSampleRate` did not draw in memory, uploading them only if they report an error. See [Sampling](#sampling)  |
 | `telemetrySampleRate`         | `number`                                 | No       | `20`                     | Telemetry sample rate (0–100)                                                                                                          |
 | `batchSize`                   | `'SMALL' \| 'MEDIUM' \| 'LARGE'`         | No       | —                        | Batch size for event uploads                                                                                                           |
 | `uploadFrequency`             | `'RARE' \| 'NORMAL' \| 'FREQUENT'`       | No       | —                        | Upload frequency for event batches                                                                                                     |
@@ -402,15 +402,18 @@ the bridge: the main process decides, and its rate is what every event reports.
 
 `sessionOnError` keeps the sessions the rate did not draw on standby instead of dropping them:
 
-- The session's events — main process and renderers alike — are held in memory, never on disk, and
-  only the last minute of them (64 KiB of detail, 200 events, plus up to 50 views). No RUM event of
-  it is uploaded.
-- At the session's first error, that minute is handed to the upload batch together with the error,
+- The session's events — main process and renderers alike — are held in memory, never on disk:
+  up to 60 seconds of what preceded the error, subject to the limits (64 KiB of detail, 200 events,
+  plus up to 50 views). No RUM event of the session is uploaded while it is withheld.
+- At the session's first error, what is held is handed to the upload batch together with the error,
   0–3 s later (spread per session, so that one outage does not make every client upload at once),
-  and the session then reports as it happens, like any drawn session. An uncaught exception in the
-  main process, or a quit, writes a release already earned to disk before returning instead, since
-  the application may be about to exit — provided the application's own `uncaughtException` listener
-  is registered after `await init(...)` has completed, so that the SDK's runs first.
+  and the session then reports as it happens, like any drawn session. When the application may be
+  about to exit, a release already earned is written to disk before returning instead: on an
+  uncaught exception in the main process (provided the application's own `uncaughtException`
+  listener is registered after `await init(...)` has completed, so that the SDK's runs first), on
+  `before-quit` and `will-quit`, and on the process `exit` event, which `process.exit()` and
+  `app.exit()` still run — so an error reported while quitting, or in the same turn as the exit
+  call, reaches disk too.
 - A session that ends without an error is thrown away whole, late events included.
 
 Only errors the application reports count: an error a renderer's `beforeSend` dropped, or one the

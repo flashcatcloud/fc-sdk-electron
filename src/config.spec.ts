@@ -469,7 +469,7 @@ describe('buildConfiguration', () => {
 
       expect(buildConfiguration(config)).toBeUndefined();
       expect(display.displayError).toHaveBeenCalledWith(
-        "Configuration error: 'sessionSampleRate' must be a number between 0 and 100"
+        "SDK initialization failed: 'sessionSampleRate' must be a finite number from 0 to 100"
       );
     });
 
@@ -503,7 +503,7 @@ describe('buildConfiguration', () => {
     it('warns that it can never apply while sessionSampleRate is 100', () => {
       buildConfiguration({ ...DEFAULT_CONFIG, sessionOnError: true });
 
-      expect(display.displayWarn).toHaveBeenCalledWith(expect.stringContaining('has no effect'));
+      expect(display.displayWarn).toHaveBeenCalledWith(expect.stringContaining('does not affect new sessions'));
     });
   });
 });
