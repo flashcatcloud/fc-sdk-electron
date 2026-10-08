@@ -68,6 +68,12 @@ fractional crash `date` (`fs.Stats.birthtimeMs`) and a fractional resource `date
 start in nanoseconds) all the way through the `v0.1.0` release. When adding a scenario for a new
 event type, assert `intake.getProtocolViolations()` is empty.
 
+The fake intake also serves the remote configuration endpoint (`GET /api/v2/rum/config`): a test
+sets what it answers with the `remoteConfig` fixture option or `intake.setRemoteConfig()` — a body
+(with an `ETag`, and a 304 when it is sent back), a status, or a dropped connection — and reads what
+the SDK asked with `intake.getConfigRequests()`. Remote configuration is never tested against a real
+backend: a fake configuration version reported there shows up in the console's version statistics.
+
 ### Not covered
 
 - **APM spans.** FlashCat exposes no `/api/v2/spans` ingest, so the SPANS track is not uploaded and

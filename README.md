@@ -371,6 +371,14 @@ device.
 Events already reported keep the identity they were reported with, and events describing a moment
 before the logout still resolve to the user who was logged in then.
 
+### `getRemoteConfig(): Record<string, unknown> | undefined`
+
+The application's own `custom` values, as delivered by the console's remote configuration — a copy,
+or `undefined` when `remoteConfigurationEnabled` is off, nothing has been delivered yet, or the
+console set none. It answers from the configuration kept on disk until the server answers, so it can
+be read right after `init` resolves. Anyone holding the client token can read these values: put
+nothing secret in them. See [Remote configuration](#remote-configuration).
+
 ### Configuration Options
 
 | Option                        | Type                                     | Required | Default                  | Description                                                                                                                            |
@@ -383,6 +391,7 @@ before the logout still resolve to the user who was logged in then.
 | `version`                     | `string`                                 | No       | —                        | Application version                                                                                                                    |
 | `sessionSampleRate`           | `number`                                 | No       | `100`                    | Percentage of sessions collected (0–100). An out-of-range value fails `init`. See [Sampling](#sampling)                                |
 | `sessionOnError`              | `boolean`                                | No       | `false`                  | Keeps the sessions `sessionSampleRate` did not draw in memory, uploading them only if they report an error. See [Sampling](#sampling)  |
+| `remoteConfigurationEnabled`  | `boolean`                                | No       | `false`                  | Let the console change the sampling and deliver `custom` values. See [Remote configuration](#remote-configuration)                     |
 | `telemetrySampleRate`         | `number`                                 | No       | `20`                     | Telemetry sample rate (0–100)                                                                                                          |
 | `batchSize`                   | `'SMALL' \| 'MEDIUM' \| 'LARGE'`         | No       | —                        | Batch size for event uploads                                                                                                           |
 | `uploadFrequency`             | `'RARE' \| 'NORMAL' \| 'FREQUENT'`       | No       | —                        | Upload frequency for event batches                                                                                                     |
@@ -439,6 +448,55 @@ await init({
 > events must reach the main process to be held — so with `sessionReplayDirectUpload` on, its replay
 > is uploaded whether or not the session ever reports an error. Do not combine the two until the
 > Browser SDK can withhold replay for a bridged session.
+
+### Remote configuration
+
+With `remoteConfigurationEnabled: true`, the console can change `sessionSampleRate` and
+`sessionOnError` without a new release of the application, and hand it `custom` values (read with
+`getRemoteConfig()`). Off by default: nothing is requested and the init values apply.
+
+```ts
+await init({
+  // ...
+  sessionSampleRate: 100, // used until the console says otherwise, and for any knob it does not set
+  remoteConfigurationEnabled: true,
+});
+```
+
+- **Precedence.** A value the console sets takes precedence over the init value; a value it does not
+  set leaves the init value in place. While the console's configuration is switched off, the init
+  values apply.
+- **When it is asked for.** By the main process, at `init` and whenever a new session starts — a
+  change can only matter at a draw, and every draw is a new session. A failed request (offline,
+  timeout, an error status, a body that is not a configuration) changes nothing and is retried after
+  about 5 s and 60 s, then not until the next session. Nothing in `init` waits for it.
+- **Kept on disk.** The last configuration accepted is kept in the application's `userData`
+  directory, so the next launch draws its first session with it before the network answers — or
+  without the network at all. It applies only to the same intake, application, `env` and `version`.
+  An SDK upgrade keeps the values but asks for the full configuration again rather than revalidating
+  the one the previous version read.
+- **When a change applies.** A session's draw is locked for its whole life, so by default
+  (`next_session`) a change applies from the next session on. When the console asks for a change to
+  apply immediately, the running session is ended — and the next user activity draws a new one —
+  only where the new values decide it:
+  - a collected session ends when the rate becomes `0` (the emergency stop), unless it is a session
+    kept by `sessionOnError` and the switch stays on — rate `0` next to the switch is that switch's
+    ordinary setting;
+  - a session that was not collected, and was drawn at rate `0`, ends when the rate rises above `0`
+    or `sessionOnError` turns on, so that it is drawn again. One that lost a draw at a real rate keeps
+    its outcome.
+
+  Any other change waits for the next session.
+
+- **What events report.** A session reports the rate it was drawn at (`0` for a session kept by
+  `sessionOnError`) and, when its draw read a delivered configuration, that configuration's version
+  as `_dd.configuration.rc_version` — on main process and renderer events alike, resumed sessions and
+  next-launch crash reports included.
+
+**Renderers.** The main process owns the sessions and their sampling, so enable remote configuration
+in the main process only. A renderer's Browser SDK under the bridge does not fetch a configuration
+of its own, and the main process overwrites the sampling attributes and `rc_version` of every event
+a renderer sends, so nothing is applied twice.
 
 ### Pre-warmed windows
 
