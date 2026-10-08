@@ -213,6 +213,43 @@ describe('WithheldEventBuffer', () => {
       expect(forwarded.map((event) => event.type)).toEqual(['view', 'action']);
     });
 
+    it('is released by an error that carries no error object, and holds events that carry no resource or view', () => {
+      buffer.collect(view(MAIN_VIEW, 1));
+      const bareResource = {
+        type: 'resource',
+        date: Date.now(),
+        session: { id: SESSION_ID },
+        view: { id: MAIN_VIEW },
+      } as unknown as RumEvent;
+      const viewlessAction = { type: 'action', date: Date.now(), session: { id: SESSION_ID } } as unknown as RumEvent;
+      const bareError = {
+        type: 'error',
+        date: Date.now(),
+        session: { id: SESSION_ID },
+        view: { id: MAIN_VIEW },
+      } as unknown as RumEvent;
+      expect(() => buffer.collect(bareResource)).not.toThrow();
+      expect(() => buffer.collect(viewlessAction)).not.toThrow();
+      expect(() => buffer.collect(bareError)).not.toThrow();
+      vi.advanceTimersByTime(WITHHELD_BUFFER_RELEASE_MAX_DELAY);
+
+      expect(forwarded).toContain(bareError);
+      expect(forwarded).toContain(viewlessAction);
+      expect(forwarded).toContain(bareResource);
+    });
+
+    it('never evicts the error that earned the release, even from a buffer full of errors that did not', () => {
+      buffer.collect(view(MAIN_VIEW, 1));
+      for (let i = 0; i < WITHHELD_BUFFER_EVENTS_LIMIT; i += 1) {
+        buffer.collect(error('agent'));
+      }
+      const releasing = error('source');
+      buffer.collect(releasing);
+      vi.advanceTimersByTime(WITHHELD_BUFFER_RELEASE_MAX_DELAY);
+
+      expect(forwarded).toContain(releasing);
+    });
+
     it('leaves the events of another session alone', () => {
       buffer.collect(view(MAIN_VIEW, 1));
       const other = detail('action', {}, { sessionId: 'previous-session-id' });

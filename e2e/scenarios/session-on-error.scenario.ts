@@ -266,6 +266,90 @@ test.describe('sessionOnError, host exit on an uncaught exception', () => {
   });
 });
 
+test.describe('sessionOnError, errors reported as the application leaves', () => {
+  test.use({ sdkConfig: ON_ERROR_ONLY });
+
+  for (const { title, leave, message, exitCode } of [
+    {
+      title: 'reported in the same turn as process.exit()',
+      leave: (mainPage: MainPage) => mainPage.generateManualErrorAndExit(),
+      message: 'before process.exit',
+      exitCode: 1,
+    },
+    {
+      title: 'reported from a will-quit listener registered after the SDK',
+      leave: (mainPage: MainPage) => mainPage.generateManualErrorOnWillQuit(),
+      message: 'on will-quit',
+      exitCode: 0,
+    },
+    {
+      title: 'reported in the same turn as app.exit()',
+      leave: (mainPage: MainPage) => mainPage.generateManualErrorAndAppExit(),
+      message: 'before app.exit',
+      exitCode: 1,
+    },
+  ]) {
+    test(`writes the error ${title}, and the history held before it, to disk`, async ({ intake, sdkConfig }) => {
+      test.setTimeout(60_000);
+      const userDataDir = await createUserDataDir();
+      const { electronApp, mainPage } = await launchAppManually(intake, userDataDir, 'await', sdkConfig);
+      try {
+        await mainPage.startOperation('checkout');
+        const child = electronApp.process();
+
+        leave(mainPage);
+        await ensureProcessGone(child.pid);
+        expect(child.exitCode).toBe(exitCode);
+
+        const events = await readBatchEvents(join(userDataDir, 'rum'));
+        const types = events.map((event) => event.type);
+        expect(types).toContain('view');
+        expect(types).toContain('vital');
+        const errors = events.filter((event) => event.type === 'error') as unknown as RumErrorEvent[];
+        expect(errors.map((error) => error.error.message)).toEqual([expect.stringContaining(message)]);
+        expect(rumEvents(intake)).toEqual([]);
+      } finally {
+        await electronApp.close().catch(() => undefined);
+        await cleanupUserDataDir(userDataDir);
+      }
+    });
+  }
+});
+
+test.describe('sessionOnError, renderer envelopes', () => {
+  test.use({ sdkConfig: ON_ERROR_ONLY, rumBrowserSdk: {} });
+
+  test('neither uploads nor is released by a renderer envelope that calls itself telemetry', async ({
+    intake,
+    mainPage,
+    electronApp,
+  }) => {
+    const bridgeWindow = await mainPage.openBridgeFileWindow(electronApp);
+    await bridgeWindow.sendRaw({
+      eventType: 'rum',
+      event: { type: 'telemetry', date: Date.now(), telemetry: { type: 'log', status: 'error', message: 'smuggled' } },
+    });
+    await settle(mainPage);
+    const telemetryMessages = () =>
+      intake
+        .getAllEvents()
+        .map((event) => event.body as { type: string; telemetry?: { message?: string } })
+        .filter((body) => body.type === 'telemetry')
+        .map((body) => body.telemetry?.message);
+    // The envelope went nowhere: no RUM event left, and nothing carries its text. What did leave
+    // is the SDK's own telemetry reporting the rejection, which is the proof of it.
+    expect(rumEvents(intake)).toEqual([]);
+    expect(telemetryMessages()).not.toContain('smuggled');
+    expect(telemetryMessages()).toContainEqual(expect.stringContaining('Unsupported RUM event type from a renderer'));
+
+    // Positive control: a genuine renderer error releases the session, and the envelope is not among it.
+    await bridgeWindow.generateError('kept renderer error');
+    await settle(mainPage);
+    expect(rumEvents(intake).map((event) => event.type)).toContain('error');
+    expect(telemetryMessages()).not.toContain('smuggled');
+  });
+});
+
 /** Every event in the RUM track's batch files, rotated or not. */
 async function readBatchEvents(trackDir: string): Promise<SessionEvent[]> {
   const files = (await readdir(trackDir)).filter((file) => /\.(tmp|log)$/.test(file)).sort();

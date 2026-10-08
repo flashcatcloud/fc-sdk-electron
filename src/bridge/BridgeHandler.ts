@@ -2,6 +2,7 @@ import { ipcMain, webContents } from 'electron';
 import type { IpcMainEvent } from 'electron';
 import { EventKind, EventSource, EventFormat, LifecycleKind } from '../event';
 import type { EventManager, LifecycleEvent, RawRumEvent } from '../event';
+import type { RumEvent } from '../domain/rum';
 import { monitor, addError as addTelemetryError } from '../domain/telemetry';
 import { BRIDGE_CHANNEL, CONFIG_CHANNEL, CONFIG_PUSH_CHANNEL } from '../common';
 import type { BridgeConfig } from '../common';
@@ -11,6 +12,15 @@ import type { ViewTimingCorrector } from '../domain/ViewTimingCorrector';
 import type { StackPathNormalizer } from '../domain/StackPathNormalizer';
 
 type BridgeEventType = 'rum' | 'log' | 'internal_telemetry';
+
+const RUM_EVENT_TYPES = new Set<unknown>([
+  'view',
+  'action',
+  'error',
+  'resource',
+  'long_task',
+  'vital',
+] satisfies RumEvent['type'][]);
 
 interface BridgeEvent {
   eventType: BridgeEventType;
@@ -104,7 +114,15 @@ export class BridgeHandler {
     }
 
     switch (bridgeEvent.eventType) {
-      case 'rum':
+      case 'rum': {
+        // Only the RUM event types the intake accepts: an envelope claiming to be telemetry, say,
+        // is neither a RUM event nor the SDK's own telemetry, and would bypass what applies to
+        // either.
+        const type = (bridgeEvent.event as { type?: unknown } | undefined)?.type;
+        if (!RUM_EVENT_TYPES.has(type)) {
+          addTelemetryError(new Error(`Unsupported RUM event type from a renderer: ${String(type)}`));
+          break;
+        }
         this.trackRenderer(bridgeEvent.event, webContentsId);
         // Both rewrite the event in place, before it is handed over: everything downstream
         // treats the bridged event as final. They are independent of one another and the order
@@ -121,6 +139,7 @@ export class BridgeHandler {
           data: bridgeEvent.event,
         } as RawRumEvent);
         break;
+      }
       case 'log':
         // TODO(RUM-15047)
         break;

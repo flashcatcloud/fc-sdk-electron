@@ -91,6 +91,8 @@ export class WithheldEventBuffer {
   private withheldForSessionId: string | undefined;
   /** Views of errors forwarded on their own for exceeding the budget: protected from eviction like a held error's. */
   private oversizeErrorViewIds = new Set<string>();
+  /** The error that earned the release: never evicted, whatever else the buffer holds. */
+  private armingEvent: RumEvent | undefined;
   private releaseTimeoutId: ReturnType<typeof setTimeout> | undefined;
   /** When the release was scheduled, on the monotonic clock: what freezes the window — see {@link prune}. */
   private releaseScheduledAt: number | undefined;
@@ -125,11 +127,14 @@ export class WithheldEventBuffer {
 
     if (sessionId === this.withheldForSessionId) {
       const bytes = event.type === 'error' ? computeEventBytes(event) : undefined;
+      if (this.releaseTimeoutId === undefined && event.type === 'error') {
+        this.armingEvent = event;
+      }
       if (bytes !== undefined && bytes > WITHHELD_BUFFER_BYTES_LIMIT) {
         // The session has earned its release, but an error larger than the whole budget would evict
         // the history it is meant to come with. It goes to the batch on its own instead; the history
         // still waits for the jitter, which exists for exactly the correlated outage at hand.
-        this.oversizeErrorViewIds.add(event.view.id);
+        this.oversizeErrorViewIds.add(viewIdOf(event));
         this.forward(event);
       } else {
         // Typically the error itself: it joins what is held, so the whole history leaves in order.
@@ -145,11 +150,17 @@ export class WithheldEventBuffer {
   /** `measuredBytes` is the event's serialized size, when the caller already measured it. */
   private hold(event: RumEvent, measuredBytes?: number): void {
     if (event.type === 'view') {
+      const viewId = event.view?.id;
+      if (viewId === undefined) {
+        // A view without an id is no container for anything.
+        this.droppedCount += 1;
+        return;
+      }
       // Upsert: a view event is cumulative, so the latest one supersedes the ones before it. The
       // delete moves it to the end, so the map stays ordered by last update.
-      this.views.delete(event.view.id);
-      this.views.set(event.view.id, { event, time: relativeNow() });
-      this.evictViewsOverLimit(event.view.id);
+      this.views.delete(viewId);
+      this.views.set(viewId, { event, time: relativeNow() });
+      this.evictViewsOverLimit(viewId);
       this.prune();
       return;
     }
@@ -161,7 +172,7 @@ export class WithheldEventBuffer {
       this.droppedCount += 1;
       return;
     }
-    this.details.push({ event, viewId: event.view.id, time: relativeNow(), bytes, tier: getEvictionTier(event) });
+    this.details.push({ event, viewId: viewIdOf(event), time: relativeNow(), bytes, tier: getEvictionTier(event) });
     this.bytes += bytes;
 
     this.prune();
@@ -236,10 +247,13 @@ export class WithheldEventBuffer {
         return true;
       }
     }
-    // Only errors are left: the newest goes, so an error storm cannot push out the first error.
-    if (this.details.length > 0) {
-      this.evictAt(this.details.length - 1);
-      return true;
+    // Only errors are left: the newest goes, so an error storm cannot push out the first error —
+    // and never the one that earned the release, whatever else is held.
+    for (let index = this.details.length - 1; index >= 0; index -= 1) {
+      if (this.details[index].event !== this.armingEvent) {
+        this.evictAt(index);
+        return true;
+      }
     }
     return false;
   }
@@ -317,6 +331,7 @@ export class WithheldEventBuffer {
     this.droppedCount = 0;
     this.withheldForSessionId = undefined;
     this.oversizeErrorViewIds = new Set();
+    this.armingEvent = undefined;
   }
 }
 
@@ -325,11 +340,16 @@ export class WithheldEventBuffer {
  * session into an error session for any customer whose network blocks the intake.
  */
 function isReleasingError(event: RumEvent): boolean {
-  return event.type === 'error' && event.error.source !== 'agent';
+  return event.type === 'error' && event.error?.source !== 'agent';
 }
 
 function isActiveView(view: RumEvent): boolean {
-  return view.type === 'view' && view.view.is_active !== false;
+  return view.type === 'view' && view.view?.is_active !== false;
+}
+
+/** A renderer may send an event without one; it is then held and released like any other, under no view. */
+function viewIdOf(event: RumEvent): string {
+  return event.view?.id ?? '';
 }
 
 /** Node's count: browser-core's reaches for `window.TextEncoder` on non-ASCII text, which the main process has not. */
@@ -346,7 +366,7 @@ function getEvictionTier(event: RumEvent): EvictionTier {
     case 'resource': {
       // A request that failed is part of how the error happened; one that succeeded rarely is. An
       // unknown status code is treated like an ordinary success.
-      const statusCode = event.resource.status_code ?? -1;
+      const statusCode = event.resource?.status_code ?? -1;
       return statusCode === 0 || statusCode >= 400 ? EvictionTier.LAST : EvictionTier.FIRST;
     }
     default:
