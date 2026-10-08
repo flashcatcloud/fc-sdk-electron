@@ -1,5 +1,4 @@
 import { app } from 'electron';
-import { renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import {
@@ -14,8 +13,14 @@ import type { Configuration } from '../../config';
 import { type EndUserActivityEvent, EventKind, EventManager, LifecycleKind } from '../../event';
 import type { FormatHooks } from '../../assembly';
 import { addError, setTimeout } from '../telemetry';
-import { displayError } from '../../tools/display';
-import { SessionContext, type SessionRecord, TrackingType, withholdsEvents } from './SessionContext';
+import {
+  parseSessionRecord,
+  SessionContext,
+  type SessionRecord,
+  TrackingType,
+  withholdsEvents,
+} from './SessionContext';
+import { StateFile } from '../../tools/StateFile';
 import { SESSION_TIME_OUT_DELAY } from './session.constants';
 
 export const SESSION_EXPIRATION_DELAY = 15 * ONE_MINUTE;
@@ -51,8 +56,8 @@ export class SessionManager {
   /** The current session as it is saved: the one copy of its id, draw and error mark. */
   private currentState!: SessionState;
   private status: SessionStatus = 'active';
-  /** Every write of `currentState`, in order, so that a late write cannot undo an earlier one. */
-  private pendingSave: Promise<void> = Promise.resolve();
+  /** `SESSION_FILE_NAME`: every write and delete of it lands in the order requested, see {@link StateFile}. */
+  private readonly stateFile = new StateFile(getSessionFilePath(), 'session state');
   private sessionContext!: SessionContext;
   private inactivityTimeoutId: ReturnType<typeof setTimeout> | undefined;
   private sessionTimeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -110,17 +115,11 @@ export class SessionManager {
    * resumed by the next launch would withhold again what this one already uploaded.
    */
   writePendingSync(): void {
-    try {
-      if (this.status === 'active') {
-        writeFileAtomicSync(getSessionFilePath(), JSON.stringify(this.currentState));
-      } else {
-        // Its delete is queued behind the writes; the next launch must not resume it.
-        unlinkSync(getSessionFilePath());
-      }
-    } catch (error) {
-      if (!isMissingFile(error)) {
-        displayError('Failed to save session state:', error);
-      }
+    if (this.status === 'active') {
+      this.stateFile.writeSync(JSON.stringify(this.currentState));
+    } else {
+      // Its delete is queued behind the writes; the next launch must not resume it.
+      this.stateFile.deleteSync();
     }
     this.sessionContext.persistSync();
   }
@@ -135,6 +134,7 @@ export class SessionManager {
 
   private async init(): Promise<void> {
     const now = Date.now();
+    this.stateFile.sweep();
     const existingState = await loadSessionState();
 
     this.sessionContext = await SessionContext.init(this.hooks);
@@ -190,8 +190,7 @@ export class SessionManager {
    * run one after another, so the last one on disk is always the latest state.
    */
   private saveCurrentState(): Promise<void> {
-    this.pendingSave = this.pendingSave.then(() => saveSessionState(this.currentState));
-    return this.pendingSave;
+    return this.stateFile.write(() => JSON.stringify(this.currentState));
   }
 
   private expireSession(): void {
@@ -200,7 +199,7 @@ export class SessionManager {
     this.sessionContext.close();
     // Behind the queued writes: a save queued just before — the error mark, say — would otherwise
     // land after the delete and resurrect the ended session on the next launch.
-    this.pendingSave = this.pendingSave.then(deleteSessionFile);
+    void this.stateFile.delete();
     this.eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_EXPIRED });
   }
 
@@ -278,20 +277,6 @@ function getSessionFilePath(): string {
   return path.join(app.getPath('userData'), SESSION_FILE_NAME);
 }
 
-/**
- * Replaces the file in one step, so that an asynchronous write of it already issued — which keeps
- * writing to the file it opened — cannot overwrite or interleave with what is written here.
- */
-function writeFileAtomicSync(filePath: string, content: string): void {
-  const tmpPath = `${filePath}.${process.pid}.tmp`;
-  writeFileSync(tmpPath, content, 'utf-8');
-  renameSync(tmpPath, filePath);
-}
-
-function isMissingFile(error: unknown): boolean {
-  return (error as { code?: string } | undefined)?.code === 'ENOENT';
-}
-
 function isSessionValid(state: SessionState, now: number): boolean {
   const isNotExpired = now - state.lastActivity < SESSION_EXPIRATION_DELAY;
   const isNotTimedOut = now - state.created < SESSION_TIME_OUT_DELAY;
@@ -302,30 +287,26 @@ async function loadSessionState(): Promise<SessionState | undefined> {
   try {
     const filePath = getSessionFilePath();
     await fs.access(filePath);
-    const content = await fs.readFile(filePath, 'utf-8');
-    const state = JSON.parse(content) as Omit<SessionState, 'trackingType' | 'sampleRate'> & Partial<SessionState>;
-    // A state written before sessions were sampled has no draw: every session was collected then,
-    // and a session keeps the decision it was created with.
-    return { ...state, trackingType: state.trackingType ?? TrackingType.TRACKED, sampleRate: state.sampleRate ?? 100 };
+    return parseSessionState(JSON.parse(await fs.readFile(filePath, 'utf-8')));
   } catch {
     return undefined;
   }
 }
 
-async function saveSessionState(state: SessionState): Promise<void> {
-  try {
-    const filePath = getSessionFilePath();
-    await fs.writeFile(filePath, JSON.stringify(state), 'utf-8');
-  } catch (error) {
-    displayError('Failed to save session state:', error);
-  }
-}
-
-async function deleteSessionFile(): Promise<void> {
-  try {
-    const filePath = getSessionFilePath();
-    await fs.unlink(filePath);
-  } catch {
-    // File might not exist, ignore error
-  }
+/**
+ * The state `value` holds, or `undefined` when it is not one — a corrupt file, a hand edit — so that
+ * a fresh session is drawn rather than a draw that was never made resumed. A state written before
+ * sessions were sampled has no draw: every session was collected then, and a session keeps the
+ * decision it was created with.
+ */
+function parseSessionState(value: unknown): SessionState | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const { created, lastActivity, trackingType, sampleRate, ...rest } = value as Record<string, unknown>;
+  if (!Number.isFinite(created) || !Number.isFinite(lastActivity)) return undefined;
+  const record = parseSessionRecord({
+    ...rest,
+    trackingType: trackingType ?? TrackingType.TRACKED,
+    sampleRate: sampleRate ?? 100,
+  });
+  return record && { ...record, created: created as number, lastActivity: lastActivity as number };
 }

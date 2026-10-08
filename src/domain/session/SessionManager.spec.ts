@@ -166,7 +166,7 @@ describe('sessionManager', () => {
       await vi.advanceTimersByTimeAsync(SESSION_EXPIRATION_DELAY);
 
       expect(sessionManager.getSession().status).toBe('expired');
-      expect(mfs.unlink).toHaveBeenCalled();
+      expect(unlinkSync).toHaveBeenCalled();
       expect(lifecycleEvents).toContain(LifecycleKind.SESSION_EXPIRED);
     });
 
@@ -299,7 +299,7 @@ describe('sessionManager', () => {
       // Session should still be created in memory
 
       expect(sessionManager.getSession().status).toBe('active');
-      expect(display.displayError).toHaveBeenCalledWith('Failed to save session state:', expect.any(Error));
+      expect(display.displayError).toHaveBeenCalledWith('Failed to write session state:', expect.any(Error));
     });
 
     it('handles JSON parse errors gracefully', async () => {
@@ -328,7 +328,7 @@ describe('sessionManager', () => {
       expect(lifecycleEvents).toContain(LifecycleKind.SESSION_EXPIRED);
       // The delete waits its turn behind the queued writes.
       await vi.advanceTimersByTimeAsync(0);
-      expect(mfs.unlink).toHaveBeenCalled();
+      expect(unlinkSync).toHaveBeenCalled();
     });
   });
 
@@ -372,7 +372,7 @@ describe('sessionManager', () => {
 
     function savedSessionStates(): Record<string, unknown>[] {
       return mfs.writeFile.mock.calls
-        .filter(([filePath]) => (filePath as string).endsWith(SESSION_FILE_NAME))
+        .filter(([filePath]) => (filePath as string).includes(`/${SESSION_FILE_NAME}.`))
         .map(([, content]) => JSON.parse(content as string) as Record<string, unknown>);
     }
 
@@ -441,7 +441,7 @@ describe('sessionManager', () => {
       await vi.advanceTimersByTimeAsync(0);
 
       const histories = mfs.writeFile.mock.calls
-        .filter(([filePath]) => (filePath as string).endsWith('_dd_session_history'))
+        .filter(([filePath]) => (filePath as string).includes('/_dd_session_history.'))
         .map(([, content]) => JSON.parse(content as string) as { endTime: number | null; startTime: number }[]);
       const latest = histories[histories.length - 1];
       expect(latest).toHaveLength(2);
@@ -510,6 +510,26 @@ describe('sessionManager', () => {
       sessionManager = await SessionManager.start(eventManager, hooks, SAMPLING);
 
       expect(sessionManager.getSession().hasError).toBe(true);
+    });
+
+    it.each([
+      [
+        'a string where the error mark should be a boolean',
+        { trackingType: TrackingType.TRACKED_ON_ERROR, hasError: 'false' },
+      ],
+      ['a tracking type that is not one of the known ones', { trackingType: 0 }],
+      ['a rate that is not a finite number', { trackingType: TrackingType.TRACKED, sampleRate: 'NaN' }],
+      ['no id', { id: '' }],
+    ])('starts a fresh session rather than resuming a saved state with %s', async (_, malformed) => {
+      const now = Date.now();
+      mfs.readFile.mockResolvedValue(
+        JSON.stringify({ id: 'existing', created: now, lastActivity: now, sampleRate: 100, ...malformed })
+      );
+
+      sessionManager = await SessionManager.start(eventManager, hooks, { sessionSampleRate: 0, sessionOnError: true });
+
+      expect(sessionManager.getSession().id).not.toBe('existing');
+      expect(sessionManager.getSession().trackingType).toBe(TrackingType.TRACKED_ON_ERROR);
     });
 
     it('resumes a session saved before sessions were sampled as a drawn one', async () => {
@@ -620,7 +640,7 @@ describe('sessionManager', () => {
         await startWithheldSession();
         let finishMarkWrite!: () => void;
         mfs.writeFile.mockImplementation((filePath: string) =>
-          filePath.endsWith(SESSION_FILE_NAME)
+          filePath.includes(`/${SESSION_FILE_NAME}.`)
             ? new Promise<void>((resolve) => (finishMarkWrite = resolve))
             : Promise.resolve()
         );
@@ -632,11 +652,11 @@ describe('sessionManager', () => {
         // write recreate the file, and the next launch resume a session that had ended.
         sessionManager.expire();
         await vi.advanceTimersByTimeAsync(0);
-        expect(mfs.unlink).not.toHaveBeenCalled();
+        expect(unlinkSync).not.toHaveBeenCalled();
 
         finishMarkWrite();
         await vi.advanceTimersByTimeAsync(0);
-        expect(mfs.unlink).toHaveBeenCalled();
+        expect(unlinkSync).toHaveBeenCalled();
       });
 
       it('writes nothing for a session that has ended, so the file it had cannot come back', async () => {

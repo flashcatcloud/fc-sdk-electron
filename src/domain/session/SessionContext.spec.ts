@@ -331,7 +331,7 @@ describe('SessionContext', () => {
       await vi.advanceTimersByTimeAsync(0);
 
       expect(mfs.writeFile).toHaveBeenCalledWith(
-        expect.stringContaining('_dd_session_history'),
+        expect.stringContaining('_dd_session_history.'),
         expect.stringContaining('"hasError":true'),
         'utf-8'
       );
@@ -352,7 +352,9 @@ describe('SessionContext', () => {
 
     it('restores the sampling of past sessions from disk, for a crash reported on the next launch', async () => {
       mfs.readFile.mockResolvedValue(
-        JSON.stringify([{ startTime: 0, endTime: 5, value: { id: 'crashed', trackingType: '4', hasError: true } }])
+        JSON.stringify([
+          { startTime: 0, endTime: 5, value: { id: 'crashed', trackingType: '4', sampleRate: 0, hasError: true } },
+        ])
       );
       const { hooks } = await init();
 
@@ -361,6 +363,24 @@ describe('SessionContext', () => {
         _dd: { configuration: { session_sample_rate: 0 } },
       });
     });
+
+    it.each([
+      [
+        'a string where the error mark should be a boolean',
+        { id: 'bad', trackingType: '4', sampleRate: 0, hasError: 'false' },
+      ],
+      ['an unknown tracking type', { id: 'bad', trackingType: 7, sampleRate: 0 }],
+      ['a rate that is not a finite number', { id: 'bad', trackingType: '2', sampleRate: null }],
+      ['no id', { trackingType: '2', sampleRate: 100 }],
+    ])(
+      'discards the events of a session whose saved record is malformed (%s), rather than uploading them',
+      async (_, value) => {
+        mfs.readFile.mockResolvedValue(JSON.stringify([{ startTime: 0, endTime: 5, value }]));
+        const { hooks } = await init();
+
+        expect(hooks.triggerRum({ eventType: 'error', startTime: T0 })).toBe(DISCARDED);
+      }
+    );
 
     it('reads an entry written before sessions were sampled as a session drawn at 100', async () => {
       mfs.readFile.mockResolvedValue(JSON.stringify([{ startTime: 0, endTime: 5, value: 'legacy-session' }]));

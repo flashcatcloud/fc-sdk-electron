@@ -130,7 +130,7 @@ describe('DiskValueHistory', () => {
       await vi.advanceTimersByTimeAsync(0);
 
       expect(mfs.writeFile).toHaveBeenCalledWith(
-        FILE_PATH,
+        expect.stringContaining(`${FILE_PATH}.`),
         JSON.stringify([{ startTime: T0, endTime: null, value: 'session-a' }]),
         'utf-8'
       );
@@ -176,7 +176,7 @@ describe('DiskValueHistory', () => {
 
       // Both writes carry the closed entry: the first one ran after the close.
       for (const [, content] of mfs.writeFile.mock.calls as [string, string][]) {
-        expect(JSON.parse(content)[0]).toMatchObject({ endTime: T10 });
+        expect((JSON.parse(content) as TimeStampHistoryEntry<string>[])[0]).toMatchObject({ endTime: T10 });
       }
     });
 

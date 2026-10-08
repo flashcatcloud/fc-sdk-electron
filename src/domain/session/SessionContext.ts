@@ -143,8 +143,8 @@ export class SessionContext {
       entries.push(this.history.find(timeStampNow()));
     }
     let changed = false;
-    for (const record of entries) {
-      if (typeof record !== 'string' && record?.id === sessionId && withholdsEvents(record)) {
+    for (const record of entries.map(parseSessionRecord)) {
+      if (record?.id === sessionId && withholdsEvents(record)) {
         record.hasError = true;
         changed = true;
       }
@@ -157,8 +157,25 @@ export class SessionContext {
 
 /**
  * Entries written before sessions were sampled hold the bare session id. Every session was
- * collected then, and a session keeps the decision it was created with.
+ * collected then, and a session keeps the decision it was created with. Anything else must be a
+ * well-formed record: a malformed one — a corrupt file, a hand edit — is no session at all, so its
+ * events are discarded rather than uploaded under a draw that was never made.
  */
-function toSessionRecord(value: SessionRecord | string | undefined): SessionRecord | undefined {
-  return typeof value === 'string' ? { id: value, trackingType: TrackingType.TRACKED, sampleRate: 100 } : value;
+function toSessionRecord(value: unknown): SessionRecord | undefined {
+  return typeof value === 'string'
+    ? { id: value, trackingType: TrackingType.TRACKED, sampleRate: 100 }
+    : parseSessionRecord(value);
+}
+
+const TRACKING_TYPES = new Set<unknown>(Object.values(TrackingType));
+
+/** The record `value` is, or `undefined` when it is not one: a non-empty id, a known type, a finite rate, a boolean mark. */
+export function parseSessionRecord(value: unknown): SessionRecord | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const { id, trackingType, sampleRate, hasError } = value as Record<string, unknown>;
+  if (typeof id !== 'string' || id === '') return undefined;
+  if (!TRACKING_TYPES.has(trackingType)) return undefined;
+  if (typeof sampleRate !== 'number' || !Number.isFinite(sampleRate)) return undefined;
+  if (hasError !== undefined && typeof hasError !== 'boolean') return undefined;
+  return value as SessionRecord;
 }

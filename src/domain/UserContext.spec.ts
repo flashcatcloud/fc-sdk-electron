@@ -266,7 +266,11 @@ describe('UserContext', () => {
       context.set(ALICE);
       await vi.advanceTimersByTimeAsync(0);
 
-      expect(mfs.writeFile).toHaveBeenCalledWith('/mock/user/data/_dd_user_history', expect.any(String), 'utf-8');
+      expect(mfs.writeFile).toHaveBeenCalledWith(
+        expect.stringContaining('/mock/user/data/_dd_user_history.'),
+        expect.any(String),
+        'utf-8'
+      );
     });
 
     it('should resolve an identity recorded by a previous run', async () => {

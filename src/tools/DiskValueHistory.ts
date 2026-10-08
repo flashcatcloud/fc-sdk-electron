@@ -1,8 +1,7 @@
-import { renameSync, writeFileSync } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import type { TimeStamp } from '@flashcatcloud/browser-core';
 import { TimeStampValueHistory, type TimeStampHistoryEntry } from './TimeStampValueHistory';
-import { displayError } from './display';
+import { StateFile } from './StateFile';
 
 /**
  * Disk-backed extension of TimeStampValueHistory. All in-memory operations delegate to an
@@ -18,16 +17,17 @@ import { displayError } from './display';
  * are restored as active (endTime = Infinity).
  *
  * Error handling: write failures are logged via displayError and do not throw.
- * Read/parse failures leave the history empty (silent fallback).
+ * Read/parse failures leave the history empty (silent fallback); an entry whose times are not
+ * numbers is skipped.
  */
 export class DiskValueHistory<T> {
   private readonly history: TimeStampValueHistory<T>;
-  private readonly filePath: string;
-  private pendingWrite: Promise<void> = Promise.resolve();
+  private readonly file: StateFile;
 
   private constructor(history: TimeStampValueHistory<T>, filePath: string) {
     this.history = history;
-    this.filePath = filePath;
+    this.file = new StateFile(filePath, 'value history');
+    this.file.sweep();
   }
 
   static async init<T>(opts: { filePath: string; expireDelay: number }): Promise<DiskValueHistory<T>> {
@@ -49,6 +49,7 @@ export class DiskValueHistory<T> {
     // Iterate oldest-to-newest to rebuild history in chronological order
     for (let i = rawEntries.length - 1; i >= 0; i--) {
       const entry = rawEntries[i];
+      if (!isWellFormed(entry)) continue;
       // Skip entries that would be immediately pruned
       if (entry.endTime !== null && (entry.endTime as number) < expireThreshold) continue;
       history.add(entry.value, entry.startTime);
@@ -88,25 +89,16 @@ export class DiskValueHistory<T> {
    * still queued never lands a state older than one written since.
    */
   persist(): void {
-    this.pendingWrite = this.pendingWrite
-      .then(() => fs.writeFile(this.filePath, JSON.stringify(this.history.getEntries()), 'utf-8'))
-      .catch((error) => {
-        displayError('Failed to persist value history:', error);
-      });
+    void this.file.write(() => JSON.stringify(this.history.getEntries()));
   }
 
-  /**
-   * `persist` before returning, for a process that may be about to exit. The file is replaced in
-   * one step, so that a write already issued — which keeps writing to the file it opened — cannot
-   * overwrite or interleave with it.
-   */
+  /** `persist` before returning, for a process that may be about to exit. See {@link StateFile}. */
   persistSync(): void {
-    const tmpPath = `${this.filePath}.${process.pid}.tmp`;
-    try {
-      writeFileSync(tmpPath, JSON.stringify(this.history.getEntries()), 'utf-8');
-      renameSync(tmpPath, this.filePath);
-    } catch (error) {
-      displayError('Failed to persist value history:', error);
-    }
+    this.file.writeSync(JSON.stringify(this.history.getEntries()));
   }
+}
+
+function isWellFormed(entry: unknown): entry is TimeStampHistoryEntry<unknown> {
+  const { startTime, endTime } = (entry ?? {}) as { startTime?: unknown; endTime?: unknown };
+  return Number.isFinite(startTime) && (endTime === null || Number.isFinite(endTime));
 }
