@@ -176,8 +176,8 @@ export function clearUser(): void {
 /**
  * The application's own `custom` values, as delivered by the console's remote configuration —
  * a copy, or `undefined` when `remoteConfigurationEnabled` is off, nothing has been delivered yet,
- * or the console set none. Answers from the last configuration kept on disk until the server
- * answers, so it can be read right after `init` resolves.
+ * or the console set none. Until the server answers, it is read from the last configuration
+ * kept on disk, so it can be read right after `init` resolves.
  *
  * The name matches `flashcatRum.getRemoteConfig()` in `@flashcatcloud/browser-rum`. Anyone holding
  * the client token can read these values: put nothing secret in them.

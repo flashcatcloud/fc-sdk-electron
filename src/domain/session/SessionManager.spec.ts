@@ -818,6 +818,30 @@ describe('sessionManager', () => {
         expect(vi.getTimerCount()).toBe(0);
       });
 
+      it('does not announce a renewal of a session that ended once saved, before the renewal was announced', async () => {
+        await startSession({ sessionSampleRate: 100, sessionOnError: false });
+        sessionManager.expire();
+        lifecycleEvents.length = 0;
+        // An immediate stop that lands right after the new session's save was checked: as its timers
+        // are being scheduled, before the renewal is announced.
+        const schedule = globalThis.setTimeout;
+        let stopped = false;
+        vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: () => void, delay?: number) => {
+          if (!stopped) {
+            stopped = true;
+            applyChange({ sessionSampleRate: 0, sessionOnError: false });
+          }
+          return schedule(callback, delay);
+        }) as typeof setTimeout);
+
+        eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.END_USER_ACTIVITY });
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(stopped).toBe(true);
+        expect(sessionManager.getSession().status).toBe('expired');
+        expect(lifecycleEvents).not.toContain(LifecycleKind.SESSION_RENEW);
+      });
+
       it('leaves no timer behind that could end a later session early', async () => {
         await startSession({ sessionSampleRate: 100, sessionOnError: false });
         sessionManager.expire();

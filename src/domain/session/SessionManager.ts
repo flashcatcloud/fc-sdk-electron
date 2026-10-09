@@ -192,7 +192,7 @@ export class SessionManager {
         this.scheduleSessionTimeout(existingState.created);
       }
     } else {
-      await this.createNewSession();
+      await this.createNewSession(false);
     }
 
     this.activitySubscription = this.eventManager.registerHandler<EndUserActivityEvent>({
@@ -205,11 +205,12 @@ export class SessionManager {
   }
 
   /**
-   * Creates and saves a session, and answers whether it is still the active one once saved: a
-   * configuration that applies at once can end it while it is being written, and nothing may then
-   * be scheduled for it or announced about it.
+   * Creates and saves a session, then schedules its timers and, for a `renewal`, announces it — only
+   * while it is still the active one: a configuration that applies at once can end it while it is
+   * being written. The announcement follows the last check in the same continuation, with no `await`
+   * between them for anything to end the session in.
    */
-  private async createNewSession(): Promise<boolean> {
+  private async createNewSession(renewal: boolean): Promise<void> {
     const now = Date.now();
     const sampling = this.getSampling();
     const state: SessionState = {
@@ -224,12 +225,14 @@ export class SessionManager {
     this.setCurrent(state);
     await this.saveCurrentState();
     if (!this.isCurrent(state)) {
-      return false;
+      return;
     }
 
     this.scheduleInactivityTimeout();
     this.scheduleSessionTimeout(state.created);
-    return true;
+    if (renewal && this.isCurrent(state)) {
+      this.eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_RENEW });
+    }
   }
 
   /** Whether `state` is still the session in force, and still active, after an `await`. */
@@ -263,9 +266,7 @@ export class SessionManager {
 
   private async updateActivity(): Promise<void> {
     if (this.isExpired()) {
-      if (await this.createNewSession()) {
-        this.eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_RENEW });
-      }
+      await this.createNewSession(true);
       return;
     }
 
