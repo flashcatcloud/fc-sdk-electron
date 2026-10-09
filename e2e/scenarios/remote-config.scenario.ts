@@ -1,5 +1,6 @@
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { ElectronApplication } from '@playwright/test';
 import type { InitConfiguration } from '@flashcatcloud/electron-sdk';
 import { test, expect, launchAppManually, createUserDataDir, cleanupUserDataDir } from '../lib/helpers';
 import type { Intake } from '../lib/intake';
@@ -32,7 +33,8 @@ function configuration(
   version: number,
   activation: 'immediate' | 'next_session',
   rum: { sessionSampleRate?: number; sessionOnError?: boolean },
-  ttl = 600
+  ttl = 600,
+  refreshOnForeground = false
 ) {
   return {
     body: {
@@ -41,7 +43,7 @@ function configuration(
       ttl,
       enabled: true,
       activation,
-      refresh_on_foreground: false,
+      refresh_on_foreground: refreshOnForeground,
       rum,
       custom: { scenario: 'e2e' },
     },
@@ -242,31 +244,67 @@ test.describe('remote configuration', () => {
     });
   });
 
-  test.describe('an emergency stop published while a session runs (ttl revalidation)', () => {
-    test.use({
-      sdkConfig: { remoteConfigurationEnabled: true },
-      // 1 s asks for more than the SDK allows: it revalidates after its 60 s floor.
-      remoteConfig: configuration(1, 'next_session', {}, 1),
-    });
+  test.describe('refresh when the user comes back (refresh_on_foreground)', () => {
+    test.use({ sdkConfig: { remoteConfigurationEnabled: true } });
 
-    test('reaches the running session at the next revalidation, with no new session to carry it', async ({
-      intake,
-      mainPage,
-    }) => {
-      test.setTimeout(120_000);
-      await waitForApplied(mainPage);
-      expect(await mainPage.getBridgeSessionId()).not.toBe('');
+    /**
+     * The user coming back, as the SDK hears it. Emitted on `app` rather than produced by focusing a
+     * window: the test windows are hidden, and real focus is not reliable on a headless runner.
+     */
+    async function focusApp(electronApp: ElectronApplication) {
+      await electronApp.evaluate(({ app, BrowserWindow }) => {
+        app.emit('browser-window-focus', {}, BrowserWindow.getAllWindows()[0]);
+      });
+    }
 
-      intake.setRemoteConfig(configuration(2, 'immediate', { sessionSampleRate: 0 }));
-      const [first, second] = await intake.waitForConfigRequests(2, 90_000);
+    /** Publishes an emergency stop, then lets `waitMs` pass, then the user comes back. */
+    async function stopThenFocus(intake: Intake, electronApp: ElectronApplication, waitMs: number) {
+      intake.setRemoteConfig(configuration(2, 'immediate', { sessionSampleRate: 0 }, 1, true));
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      await focusApp(electronApp);
       await new Promise((resolve) => setTimeout(resolve, APPLY_WAIT));
+    }
 
-      expect(await mainPage.getBridgeSessionId()).toBe('');
-      // The timer asked, not a session: nothing renewed in between, and no sooner than the floor.
-      expect(second.timestamp - first.timestamp).toBeGreaterThanOrEqual(59_000);
-      expect(second.params.applied_version).toBe('1');
-      expect(second.headers['if-none-match']).toMatch(/^".+"$/);
-    });
+    for (const { title, allowed, waitMs, refreshed } of [
+      {
+        title: 'delivers an emergency stop to the running session once the ttl has passed',
+        allowed: true,
+        // 1 s asks for less than the SDK allows: it honours its 60 s floor.
+        waitMs: 61_000,
+        refreshed: true,
+      },
+      {
+        title: 'asks nothing when the operator does not allow it (control)',
+        allowed: false,
+        waitMs: 61_000,
+        refreshed: false,
+      },
+      { title: 'asks nothing before the ttl has passed (control)', allowed: true, waitMs: 1_000, refreshed: false },
+    ]) {
+      test.describe(title, () => {
+        test.use({ remoteConfig: configuration(1, 'next_session', {}, 1, allowed) });
+
+        test('on focus', async ({ intake, mainPage, electronApp }) => {
+          test.setTimeout(120_000);
+          await waitForApplied(mainPage);
+          const sessionId = await mainPage.getBridgeSessionId();
+          expect(sessionId).not.toBe('');
+
+          await stopThenFocus(intake, electronApp, waitMs);
+
+          const requests = intake.getConfigRequests();
+          if (refreshed) {
+            expect(requests).toHaveLength(2);
+            expect(requests[1].params.applied_version).toBe('1');
+            expect(requests[1].headers['if-none-match']).toMatch(/^".+"$/);
+            expect(await mainPage.getBridgeSessionId()).toBe('');
+          } else {
+            expect(requests).toHaveLength(1);
+            expect(await mainPage.getBridgeSessionId()).toBe(sessionId);
+          }
+        });
+      });
+    }
   });
 
   test.describe('next session (deferred)', () => {
