@@ -466,14 +466,15 @@ await init({
 - **Precedence.** A value the console sets takes precedence over the init value; a value it does not
   set leaves the init value in place. While the console's configuration is switched off, the init
   values apply.
-- **When it is asked for.** By the main process: at `init`, whenever a new session starts, and again
-  every `ttl` the server gives while the application runs (10 minutes by default, never more often
-  than once a minute), revalidating with the ETag it holds. A desktop session can live four hours, so
-  this interval — not the session's end — is the longest a change, an emergency stop included, takes
-  to reach a running client. There is never more than one request in flight, and nothing in `init`
-  waits for one.
+- **When it is asked for.** By the main process, at `init` and whenever a new session starts — there
+  is no timer between sessions. When the console allows it (`refresh_on_foreground`, off by
+  default), also when the user comes back to the application — a window of it gains focus — and
+  what it holds is at least the server's `ttl` old (10 minutes by default, never less than one
+  minute), revalidating with the ETag it holds. Without that permission, a session that never goes
+  idle keeps the configuration it has until it turns over, after up to four hours. There is never
+  more than one request in flight, and nothing in `init` waits for one.
 - **Failures.** Network failures, timeouts, malformed responses, HTTP 429 and 5xx responses change
-  nothing and are retried after about 5 s and 60 s, then at the next session or revalidation. Other
+  nothing and are retried after about 5 s and 60 s, then at the next session or foreground refresh. Other
   HTTP errors are not retried. Either way the configuration in force stays as it was.
 - **Kept on disk.** The last configuration accepted is kept in the application's `userData`
   directory — written before returning when the application quits, if its write has not landed yet.
