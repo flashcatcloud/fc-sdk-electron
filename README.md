@@ -468,7 +468,8 @@ await init({
   values apply.
 - **When it is asked for.** By the main process, at `init` and whenever a new session starts — there
   is no timer between sessions. When the console allows it (`refresh_on_foreground`, off by
-  default), also when the user comes back to the application — a window of it gains focus — and
+  default), also when the user comes back to the application — a window of it gains focus; moving
+  focus between the application's own windows counts too, and the ttl absorbs it — and
   the last completed request, successful or failed, finished at least the server's `ttl` ago (10
   minutes by default, never less than one minute), revalidating with the ETag it holds. Such a
   refresh leaves a retry already pending to ask in its place, and does not start a new round of
@@ -506,16 +507,18 @@ await init({
     or `sessionOnError` turns on, so that it is drawn again. One that lost a draw at a real rate keeps
     its outcome.
 
-  Any other change waits for the next session.
+  Any other change waits for the next session, and none ends a session drawn under a newer version
+  than its own: answers can arrive out of order, and an older configuration never overrides a newer
+  draw.
 
 - **What events report.** A session reports the rate it was drawn at (`0` for a session kept by
   `sessionOnError`) and, when its draw read a delivered configuration, that configuration's version
   as `_dd.configuration.rc_version` — on main process and renderer events alike, resumed sessions and
   next-launch crash reports included.
 
-**Renderers.** The main process owns the sessions and their sampling, so enable remote configuration
-in the main process only. A renderer's Browser SDK under the bridge does not fetch a configuration
-of its own, and the main process overwrites the sampling attributes and `rc_version` of every event
+**Renderers.** The main process owns the sessions and their sampling. A renderer's Browser SDK under
+the bridge needs no configuration of its own (enable it in the main process only), and the main
+process overwrites the sampling attributes and `rc_version` of every event
 a renderer sends, so nothing is applied twice.
 
 ### Pre-warmed windows
