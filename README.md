@@ -375,7 +375,7 @@ before the logout still resolve to the user who was logged in then.
 
 The application's own `custom` values, as delivered by the console's remote configuration — a copy,
 or `undefined` when `remoteConfigurationEnabled` is off, nothing has been delivered yet, or the
-console set none. It answers from the configuration kept on disk until the server answers, so it can
+console set none. Until the server answers, it is read from the configuration kept on disk, so it can
 be read right after `init` resolves. Anyone holding the client token can read these values: put
 nothing secret in them. See [Remote configuration](#remote-configuration).
 
@@ -471,21 +471,26 @@ await init({
   default), also when the user comes back to the application — a window of it gains focus — and
   the last completed request, successful or failed, finished at least the server's `ttl` ago (10
   minutes by default, never less than one minute), revalidating with the ETag it holds. Such a
-  refresh waits for a retry already pending and does not start a new round of retries. Without that permission, a session that never goes
+  refresh leaves a retry already pending to ask in its place, and does not start a new round of
+  retries. Without that permission, a session that never goes
   idle keeps the configuration it has until it turns over, after up to four hours. There is never
   more than one request in flight, and nothing in `init` waits for one.
 - **Failures.** Network failures, timeouts, malformed responses, HTTP 429 and 5xx responses change
   nothing and are retried with successive delays of approximately 5 s and 60 s, each with ±20%
-  jitter, then at the next session. Other HTTP errors are not retried. Either way the configuration in force stays as it was.
+  jitter. That two-attempt budget belongs to the session: a new session resets it, and once it is
+  spent, a foreground refresh the console allows still makes one attempt, with no retries behind it.
+  Other HTTP errors are not retried. Either way the configuration in force stays as it was.
 - **Kept on disk.** The last configuration accepted is kept in the application's `userData`
-  directory — written before returning when the application quits, if its write has not landed or
-  failed. New sessions use it before the network answers, or without the network at all. A valid
-  session resumed from the previous launch keeps its original draw, subject to immediate activation:
-  when what was kept asks to apply immediately, the session is judged by it at startup, as below, and
-  ended only where it decides it. It applies only to the same intake, application,
-  `env` and `version`. An SDK upgrade keeps the values but asks for the full configuration again
-  rather than revalidating the one the previous version read, and judges the running session again
-  if this version reads it differently.
+  directory. A graceful exit retries pending or failed writes; a forced termination can leave an
+  older cache. New sessions use it before the network answers, or without the network at all. It
+  applies only to the same intake, application, `env` and `version`.
+- **Resumed sessions.** A valid session resumed from the previous launch keeps its original draw,
+  subject to immediate activation: when what was kept asks to apply immediately, the session is
+  judged by it at startup, as below, unless it was drawn under a newer version than the one kept —
+  an older configuration never overrides a newer draw.
+- **SDK upgrades.** An upgrade keeps the values but asks for the full configuration again rather
+  than revalidating the one the previous version read, and judges the running session again if this
+  version reads it differently.
 - **Nothing published.** An application whose configuration was never published is answered with
   version 0: whatever else the answer carries, the init values apply and no version is reported.
 - **Trust.** Anyone holding the client token can read these values, so put nothing secret in them;
