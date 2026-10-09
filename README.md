@@ -469,24 +469,27 @@ await init({
 - **When it is asked for.** By the main process, at `init` and whenever a new session starts — there
   is no timer between sessions. When the console allows it (`refresh_on_foreground`, off by
   default), also when the user comes back to the application — a window of it gains focus — and
-  what it holds is at least the server's `ttl` old (10 minutes by default, never less than one
-  minute), revalidating with the ETag it holds. Without that permission, a session that never goes
+  the last completed request, successful or failed, finished at least the server's `ttl` ago (10
+  minutes by default, never less than one minute), revalidating with the ETag it holds. Such a
+  refresh waits for a retry already pending and does not start a new round of retries. Without that permission, a session that never goes
   idle keeps the configuration it has until it turns over, after up to four hours. There is never
   more than one request in flight, and nothing in `init` waits for one.
 - **Failures.** Network failures, timeouts, malformed responses, HTTP 429 and 5xx responses change
-  nothing and are retried after about 5 s and 60 s, then at the next session or foreground refresh. Other
-  HTTP errors are not retried. Either way the configuration in force stays as it was.
+  nothing and are retried with successive delays of approximately 5 s and 60 s, each with ±20%
+  jitter, then at the next session. Other HTTP errors are not retried. Either way the configuration in force stays as it was.
 - **Kept on disk.** The last configuration accepted is kept in the application's `userData`
-  directory — written before returning when the application quits, if its write has not landed yet.
-  New sessions use it before the network answers, or without the network at all. A valid session
-  resumed from the previous launch keeps its original draw, subject to immediate activation: when
-  what was kept asks to apply immediately and is newer than what the session was drawn under, the
-  session is judged by it at startup, as below. It applies only to the same intake, application,
+  directory — written before returning when the application quits, if its write has not landed or
+  failed. New sessions use it before the network answers, or without the network at all. A valid
+  session resumed from the previous launch keeps its original draw, subject to immediate activation:
+  when what was kept asks to apply immediately, the session is judged by it at startup, as below, and
+  ended only where it decides it. It applies only to the same intake, application,
   `env` and `version`. An SDK upgrade keeps the values but asks for the full configuration again
   rather than revalidating the one the previous version read, and judges the running session again
   if this version reads it differently.
 - **Nothing published.** An application whose configuration was never published is answered with
-  version 0, switched off: the init values apply, and no version is reported.
+  version 0: whatever else the answer carries, the init values apply and no version is reported.
+- **Trust.** Anyone holding the client token can read these values, so put nothing secret in them;
+  and whoever can answer the configured `proxy` or intake can also set them, the sampling included.
 - **When a change applies.** A session's draw is locked for its whole life, so by default
   (`next_session`) a change applies from the next session on. When the console asks for a change to
   apply immediately, the running session is ended — and the next user activity draws a new one —
