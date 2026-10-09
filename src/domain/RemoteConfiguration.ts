@@ -122,7 +122,7 @@ type RequestOutcome = 'done' | 'retry';
  * Off unless `remoteConfigurationEnabled`: no request, no file, and the init values apply.
  */
 export class RemoteConfiguration {
-  private readonly stateFile = new StateFile(getFilePath(), 'remote configuration');
+  private readonly stateFile = new StateFile(getFilePath(), 'the remote configuration cache');
   private readonly identity: string;
   private delivered: Delivered | undefined;
   private etag: string | undefined;
@@ -140,6 +140,8 @@ export class RemoteConfiguration {
   private stopped = false;
 
   private constructor(private readonly config: Configuration) {
+    // The client token is not part of it: the configuration belongs to the application, so a token
+    // rotated for the same application, env and version is answered the same.
     this.identity = JSON.stringify([config.proxy ?? config.site, config.applicationId, config.env, config.version]);
   }
 
@@ -181,12 +183,15 @@ export class RemoteConfiguration {
    * Judges the session the launch starts with by the configuration the previous launch kept, when
    * it asked to apply at once. That launch may have ended a session in memory and ended itself
    * before the session file was deleted; a session drawn under that very version, read differently
-   * by an SDK from before an upgrade, is the same case. The judgement ends nothing a draw under the
-   * configuration in force would keep, so it needs no version to compare. Called before anything is
-   * collected, so nothing of such a session is.
+   * by an SDK from before an upgrade, is the same case. Same-version configurations are judged again
+   * — the judgement ends nothing a draw under them would keep. A session drawn under a newer version
+   * is left alone: the configuration and the session live in different files, the newer one's write
+   * may be what was lost, and an older configuration must not override a newer draw. Called before
+   * anything is collected, so nothing of an ended session is.
    */
   applyKept(sessions: SessionOwner): void {
-    if (this.delivered?.activation === Activation.IMMEDIATE) {
+    const kept = this.delivered;
+    if (kept?.activation === Activation.IMMEDIATE && (sessions.getSession().rcVersion ?? 0) <= kept.version) {
       sessions.applySamplingChange();
     }
   }
@@ -283,10 +288,12 @@ export class RemoteConfiguration {
       return;
     }
     const { version, values, custom, activation, ttl, refreshOnForeground } = stored;
+    // Version 0 is no configuration, whatever a file says it holds — as it is from the network.
+    const published = version > 0;
     this.delivered = {
       version,
-      values,
-      ...(custom ? { custom } : {}),
+      values: published ? values : {},
+      ...(published && custom ? { custom } : {}),
       activation: activation ?? Activation.NEXT_SESSION,
       ...(ttl === undefined ? {} : { ttl }),
       refreshOnForeground: refreshOnForeground ?? false,
@@ -375,7 +382,7 @@ export class RemoteConfiguration {
       if (!this.warnedUnsupportedSchema) {
         this.warnedUnsupportedSchema = true;
         displayWarn(
-          `Remote configuration ignored: the server answered with schema_version ${parsed.unsupportedSchema}, which this SDK (${__SDK_VERSION__}) cannot read. Check that the SDK and the server agree on the schema; the settings already in force (init values or the last good configuration) remain in effect.`
+          `Remote configuration ignored: unsupported schema_version ${parsed.unsupportedSchema} (SDK ${__SDK_VERSION__}). Existing settings remain active. Check SDK/server compatibility.`
         );
       }
       return 'done';
@@ -388,6 +395,9 @@ export class RemoteConfiguration {
     const held = this.delivered;
     // Settings only ever change under a higher number, so a lower one is an older answer arriving
     // late; applying it would put this client back on settings the console has already replaced.
+    // The backend allocates each published version as MAX(version) + 1, republishes a rollback under
+    // a new number, and prunes only versions older than the latest; version 0 means nothing was ever
+    // published, so a published application never answers 0 or a lower number again.
     if (held !== undefined && delivered.version < held.version) {
       return;
     }

@@ -361,7 +361,7 @@ describe('RemoteConfiguration', () => {
 
       expect(configuration.getSampling()).toEqual({ sessionSampleRate: 100, sessionOnError: false });
       expect(displayWarn).toHaveBeenCalledTimes(1);
-      expect(displayWarn).toHaveBeenCalledWith(expect.stringContaining('schema_version 2, which this SDK (test)'));
+      expect(displayWarn).toHaveBeenCalledWith(expect.stringContaining('unsupported schema_version 2 (SDK test)'));
       await vi.advanceTimersByTimeAsync(RETRY_DELAYS[1] * 2);
       expect(fetchMock).toHaveBeenCalledTimes(1);
 
@@ -436,6 +436,16 @@ describe('RemoteConfiguration', () => {
       expect(configuration.getCustom()).toBeUndefined();
       expect(requestedUrl().searchParams.has('applied_version')).toBe(false);
       expect(requestHeaders()).toEqual({});
+    });
+
+    it('reads a kept version 0 as no configuration, whatever it holds', async () => {
+      mfs.readFile.mockResolvedValue(storedFile({ version: 0, values: { sessionSampleRate: 0 } }));
+      fetchMock.mockReturnValue(new Promise(() => undefined));
+
+      const configuration = await start();
+
+      expect(configuration.getSampling()).toEqual({ sessionSampleRate: 100, sessionOnError: false });
+      expect(configuration.getCustom()).toBeUndefined();
     });
 
     it('ignores a file that is not JSON', async () => {
@@ -1086,6 +1096,13 @@ describe('RemoteConfiguration', () => {
       );
 
       expect(sessions.getSession().status).toBe('expired');
+    });
+
+    it('leaves a session drawn under a newer version than what was kept: the kept one is the older', async () => {
+      // The newer configuration's write was lost; the session drawn under it was saved.
+      const sessions = await restart({ trackingType: TrackingType.TRACKED, sampleRate: 100, rcVersion: 10 }, STOP);
+
+      expect(sessions.getSession().status).toBe('active');
     });
 
     it('leaves a same-version session alone when what was kept applies to the next session', async () => {
