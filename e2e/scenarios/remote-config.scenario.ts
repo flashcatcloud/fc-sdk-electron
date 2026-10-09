@@ -22,6 +22,11 @@ const RELEASE_WAIT = 3_500;
  * ending. Only an absence needs it: everything that does happen is waited for by what it shows.
  */
 const ABSENCE_WAIT = 1_000;
+/**
+ * How long an answer may take to be applied: more than one request that hangs until the SDK's 10 s
+ * timeout and the first retry after it, about 5 s (±20%), with slack for a loaded machine.
+ */
+const APPLY_TIMEOUT = 25_000;
 
 interface SessionEvent {
   type: string;
@@ -74,7 +79,7 @@ async function settle(mainPage: MainPage, waitMs = RELEASE_WAIT) {
  * the same IPC channel as the session pushes, behind them, so by the time it is seen the renderer
  * has also heard of any session the answer ended.
  */
-async function waitForApplied(mainPage: MainPage, marker: string, timeout = 10_000) {
+async function waitForApplied(mainPage: MainPage, marker: string, timeout = APPLY_TIMEOUT) {
   const deadline = Date.now() + timeout;
   while ((await mainPage.getRemoteConfig())?.marker !== marker) {
     if (Date.now() >= deadline) {
