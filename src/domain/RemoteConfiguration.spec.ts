@@ -7,8 +7,12 @@ const { writeFileSync, renameSync, unlinkSync, readdirSync } = vi.hoisted(() => 
   readdirSync: vi.fn(() => []),
 }));
 vi.mock('node:fs', () => ({ writeFileSync, renameSync, unlinkSync, readdirSync }));
+const { appListeners } = vi.hoisted(() => ({ appListeners: new Map<string, () => void>() }));
 vi.mock('electron', () => ({
-  app: { getPath: vi.fn(() => '/mock/user/data') },
+  app: {
+    getPath: vi.fn(() => '/mock/user/data'),
+    on: vi.fn((event: string, listener: () => void) => appListeners.set(event, listener)),
+  },
 }));
 vi.mock('../tools/display', () => ({ displayError: vi.fn(), displayWarn: vi.fn() }));
 
@@ -17,11 +21,15 @@ import type { Configuration } from '../config';
 import { EventKind, EventManager, LifecycleKind } from '../event';
 import { displayWarn } from '../tools/display';
 import {
+  DEFAULT_TTL,
+  MIN_TTL,
   REMOTE_CONFIGURATION_FILE_NAME,
   REQUEST_TIMEOUT,
   RETRY_DELAYS,
   RemoteConfiguration,
 } from './RemoteConfiguration';
+import { createFormatHooks } from '../assembly';
+import { SessionManager, TrackingType, type Session } from './session';
 
 const mfs = mockFs();
 const FILE_PATH = `/mock/user/data/${REMOTE_CONFIGURATION_FILE_NAME}`;
@@ -91,6 +99,8 @@ describe('RemoteConfiguration', () => {
   afterEach(() => {
     remote?.stop();
     remote = undefined;
+    session = undefined as unknown as Partial<Session>;
+    appListeners.clear();
     vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.clearAllMocks();
@@ -98,9 +108,13 @@ describe('RemoteConfiguration', () => {
     mfs.reset();
   });
 
+  /** The session owner: a session drawn under the configuration in force, unless a test says otherwise. */
+  let session: Partial<Session>;
+
   async function start(): Promise<RemoteConfiguration> {
     remote = await RemoteConfiguration.init(config);
-    remote.start(eventManager, onImmediateChange);
+    session ??= { rcVersion: remote.getSampling().rcVersion };
+    remote.start(eventManager, { getSession: () => session as Session, applySamplingChange: onImmediateChange });
     await vi.advanceTimersByTimeAsync(0);
     return remote;
   }
@@ -136,7 +150,7 @@ describe('RemoteConfiguration', () => {
 
   describe('request', () => {
     it('asks the config endpoint through the proxy with the client identity', async () => {
-      fetchMock.mockResolvedValue(ok(configurationBody()));
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody())));
 
       await start();
 
@@ -155,7 +169,7 @@ describe('RemoteConfiguration', () => {
 
     it('asks the site directly without a proxy, and leaves out what is not configured', async () => {
       config = { ...config, proxy: undefined, site: 'intake.example.test', env: undefined, version: undefined };
-      fetchMock.mockResolvedValue(ok(configurationBody()));
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody())));
 
       await start();
 
@@ -166,7 +180,7 @@ describe('RemoteConfiguration', () => {
 
     it('reports the version it holds, and sends its ETag', async () => {
       mfs.readFile.mockResolvedValue(storedFile());
-      fetchMock.mockResolvedValue(new Response(null, { status: 304 }));
+      fetchMock.mockImplementation(() => Promise.resolve(new Response(null, { status: 304 })));
 
       await start();
 
@@ -178,14 +192,14 @@ describe('RemoteConfiguration', () => {
       fetchMock.mockReturnValue(new Promise(() => undefined));
       remote = await RemoteConfiguration.init(config);
 
-      remote.start(eventManager, onImmediateChange);
+      remote.start(eventManager, { getSession: () => ({}) as Session, applySamplingChange: onImmediateChange });
 
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect(remote.getSampling()).toEqual({ sessionSampleRate: 100, sessionOnError: false });
     });
 
     it('asks again whenever a new session starts', async () => {
-      fetchMock.mockResolvedValue(ok(configurationBody()));
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody())));
       await start();
 
       eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_RENEW });
@@ -207,7 +221,7 @@ describe('RemoteConfiguration', () => {
 
   describe('parsing and validation', () => {
     it('applies the delivered rate and switch over the init values, with their version', async () => {
-      fetchMock.mockResolvedValue(ok(configurationBody()));
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody())));
 
       const configuration = await start();
 
@@ -215,7 +229,7 @@ describe('RemoteConfiguration', () => {
     });
 
     it('keeps the init value of a knob the console did not set', async () => {
-      fetchMock.mockResolvedValue(ok(configurationBody({ rum: { sessionOnError: true } })));
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ rum: { sessionOnError: true } }))));
 
       const configuration = await start();
 
@@ -226,7 +240,7 @@ describe('RemoteConfiguration', () => {
       ['absent', undefined],
       ['null', null],
     ])('reads a %s rum bag as empty', async (_, rum) => {
-      fetchMock.mockResolvedValue(ok(configurationBody({ rum })));
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ rum }))));
 
       const configuration = await start();
 
@@ -234,7 +248,9 @@ describe('RemoteConfiguration', () => {
     });
 
     it('drops the values and custom while the kill switch is off, and keeps the version', async () => {
-      fetchMock.mockResolvedValue(ok(configurationBody({ enabled: false, custom: { flag: true } })));
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(ok(configurationBody({ enabled: false, custom: { flag: true } })))
+      );
 
       const configuration = await start();
 
@@ -249,7 +265,7 @@ describe('RemoteConfiguration', () => {
       ['a switch as a string', { sessionOnError: 'true' }],
       ['a switch as a number', { sessionOnError: 1 }],
     ])('drops %s and keeps the init value', async (_, rum) => {
-      fetchMock.mockResolvedValue(ok(configurationBody({ rum })));
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ rum }))));
 
       const configuration = await start();
 
@@ -257,7 +273,9 @@ describe('RemoteConfiguration', () => {
     });
 
     it('hands the custom bag over as a copy', async () => {
-      fetchMock.mockResolvedValue(ok(configurationBody({ custom: { allowList: ['a', 'b'], level: 2 } })));
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(ok(configurationBody({ custom: { allowList: ['a', 'b'], level: 2 } })))
+      );
       const configuration = await start();
 
       const custom = configuration.getCustom()!;
@@ -268,7 +286,7 @@ describe('RemoteConfiguration', () => {
     });
 
     it('drops a custom bag that is not an object', async () => {
-      fetchMock.mockResolvedValue(ok(configurationBody({ custom: ['a'] })));
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ custom: ['a'] }))));
 
       const configuration = await start();
 
@@ -287,7 +305,7 @@ describe('RemoteConfiguration', () => {
       ['a rum bag that is not an object', JSON.stringify(configurationBody({ rum: [] }))],
     ])('refuses %s, keeps what it holds, and retries', async (_, body) => {
       mfs.readFile.mockResolvedValue(storedFile());
-      fetchMock.mockResolvedValue(ok(body));
+      fetchMock.mockImplementation(() => Promise.resolve(ok(body)));
 
       const configuration = await start();
 
@@ -298,12 +316,13 @@ describe('RemoteConfiguration', () => {
     });
 
     it('refuses a schema it does not know without retrying, and says so', async () => {
-      fetchMock.mockResolvedValue(ok(configurationBody({ schema_version: 2 })));
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ schema_version: 2 }))));
 
       const configuration = await start();
 
       expect(configuration.getSampling()).toEqual({ sessionSampleRate: 100, sessionOnError: false });
       expect(displayWarn).toHaveBeenCalledTimes(1);
+      expect(displayWarn).toHaveBeenCalledWith(expect.stringContaining('schema_version 2, which this SDK (test)'));
       await vi.advanceTimersByTimeAsync(RETRY_DELAYS[1] * 2);
       expect(fetchMock).toHaveBeenCalledTimes(1);
 
@@ -316,7 +335,9 @@ describe('RemoteConfiguration', () => {
 
     it('ignores an older version arriving late', async () => {
       mfs.readFile.mockResolvedValue(storedFile({ version: 5 }));
-      fetchMock.mockResolvedValue(ok(configurationBody({ version: 4, rum: { sessionSampleRate: 100 } })));
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(ok(configurationBody({ version: 4, rum: { sessionSampleRate: 100 } })))
+      );
 
       const configuration = await start();
 
@@ -327,7 +348,7 @@ describe('RemoteConfiguration', () => {
 
   describe('cache on disk', () => {
     it('writes the configuration with its ETag, the SDK version and who it was for', async () => {
-      fetchMock.mockResolvedValue(ok(configurationBody({ custom: { flag: 1 } })));
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ custom: { flag: 1 } }))));
 
       await start();
 
@@ -339,6 +360,7 @@ describe('RemoteConfiguration', () => {
           version: 3,
           values: { sessionSampleRate: 25, sessionOnError: true },
           custom: { flag: 1 },
+          activation: 'next_session',
           etag: '"tag-3"',
         },
       ]);
@@ -387,7 +409,7 @@ describe('RemoteConfiguration', () => {
     describe('304', () => {
       it('keeps what it holds, and writes nothing', async () => {
         mfs.readFile.mockResolvedValue(storedFile());
-        fetchMock.mockResolvedValue(new Response(null, { status: 304 }));
+        fetchMock.mockImplementation(() => Promise.resolve(new Response(null, { status: 304 })));
 
         const configuration = await start();
 
@@ -398,7 +420,7 @@ describe('RemoteConfiguration', () => {
       });
 
       it('retries when it holds nothing a 304 could refer to', async () => {
-        fetchMock.mockResolvedValue(new Response(null, { status: 304 }));
+        fetchMock.mockImplementation(() => Promise.resolve(new Response(null, { status: 304 })));
 
         await start();
         await vi.advanceTimersByTimeAsync(RETRY_DELAYS[0] * 1.2);
@@ -422,8 +444,8 @@ describe('RemoteConfiguration', () => {
       it('replaces them with the full answer, read by this version, and rewrites the file as its own', async () => {
         // The older SDK did not read the switch, so its file has none.
         mfs.readFile.mockResolvedValue(storedFile({ sdkVersion: 'older', values: { sessionSampleRate: 0 } }));
-        fetchMock.mockResolvedValue(
-          ok(configurationBody({ version: 2, rum: { sessionSampleRate: 0, sessionOnError: true } }))
+        fetchMock.mockImplementation(() =>
+          Promise.resolve(ok(configurationBody({ version: 2, rum: { sessionSampleRate: 0, sessionOnError: true } })))
         );
 
         const configuration = await start();
@@ -452,7 +474,7 @@ describe('RemoteConfiguration', () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
       await vi.advanceTimersByTimeAsync(RETRY_DELAYS[1]);
       expect(fetchMock).toHaveBeenCalledTimes(3);
-      await vi.advanceTimersByTimeAsync(10 * RETRY_DELAYS[1]);
+      await vi.advanceTimersByTimeAsync(DEFAULT_TTL - 1000);
       expect(fetchMock).toHaveBeenCalledTimes(3);
 
       eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_RENEW });
@@ -502,7 +524,7 @@ describe('RemoteConfiguration', () => {
     });
 
     it.each([500, 503, 429])('retries on %s', async (status) => {
-      fetchMock.mockResolvedValue(new Response('', { status }));
+      fetchMock.mockImplementation(() => Promise.resolve(new Response('', { status })));
 
       await start();
       await vi.advanceTimersByTimeAsync(RETRY_DELAYS[0] * 1.2);
@@ -511,7 +533,7 @@ describe('RemoteConfiguration', () => {
     });
 
     it.each([401, 403, 404])('does not retry on %s', async (status) => {
-      fetchMock.mockResolvedValue(new Response('', { status }));
+      fetchMock.mockImplementation(() => Promise.resolve(new Response('', { status })));
 
       await start();
       await vi.advanceTimersByTimeAsync(RETRY_DELAYS[1] * 2);
@@ -536,7 +558,7 @@ describe('RemoteConfiguration', () => {
 
   describe('activation', () => {
     it('tells the session owner about a new version that applies at once, once it is in force', async () => {
-      fetchMock.mockResolvedValue(ok(configurationBody({ activation: 'immediate' })));
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ activation: 'immediate' }))));
       let samplingWhenTold: unknown;
       onImmediateChange.mockImplementation(() => (samplingWhenTold = remote!.getSampling()));
 
@@ -547,7 +569,7 @@ describe('RemoteConfiguration', () => {
     });
 
     it('does not tell it about a change for the next session', async () => {
-      fetchMock.mockResolvedValue(ok(configurationBody({ activation: 'next_session' })));
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ activation: 'next_session' }))));
 
       const configuration = await start();
 
@@ -556,16 +578,44 @@ describe('RemoteConfiguration', () => {
     });
 
     it('reads an absent or unknown activation as the next session', async () => {
-      fetchMock.mockResolvedValue(ok(configurationBody({ activation: undefined })));
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ activation: undefined }))));
 
       await start();
 
       expect(onImmediateChange).not.toHaveBeenCalled();
     });
 
-    it('does not tell it again about the version it already holds', async () => {
-      mfs.readFile.mockResolvedValue(storedFile({ version: 3, sdkVersion: 'older' }));
-      fetchMock.mockResolvedValue(ok(configurationBody({ activation: 'immediate' })));
+    it('does not tell it again about the version it already holds, unchanged', async () => {
+      mfs.readFile.mockResolvedValue(
+        storedFile({ version: 3, sdkVersion: 'older', values: { sessionSampleRate: 25, sessionOnError: true } })
+      );
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ activation: 'immediate' }))));
+
+      await start();
+
+      expect(onImmediateChange).not.toHaveBeenCalled();
+    });
+
+    it('tells it about the version it already holds when this SDK reads different values in it', async () => {
+      // An older SDK did not read the switch: same version, values this SDK reads differently.
+      mfs.readFile.mockResolvedValue(
+        storedFile({ version: 3, sdkVersion: 'older', values: { sessionSampleRate: 25 } })
+      );
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ activation: 'immediate' }))));
+      let samplingWhenTold: unknown;
+      onImmediateChange.mockImplementation(() => (samplingWhenTold = remote!.getSampling()));
+
+      await start();
+
+      expect(onImmediateChange).toHaveBeenCalledTimes(1);
+      expect(samplingWhenTold).toEqual({ sessionSampleRate: 25, sessionOnError: true, rcVersion: 3 });
+    });
+
+    it('does not tell it about the version it already holds with different values for the next session', async () => {
+      mfs.readFile.mockResolvedValue(
+        storedFile({ version: 3, sdkVersion: 'older', values: { sessionSampleRate: 25 } })
+      );
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ activation: 'next_session' }))));
 
       await start();
 
@@ -574,11 +624,268 @@ describe('RemoteConfiguration', () => {
 
     it('tells it about a higher version', async () => {
       mfs.readFile.mockResolvedValue(storedFile({ version: 2 }));
-      fetchMock.mockResolvedValue(ok(configurationBody({ activation: 'immediate' })));
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ activation: 'immediate' }))));
 
       await start();
 
       expect(onImmediateChange).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('version 0: an application with nothing published', () => {
+    it('reports no version for what it draws, and asks again without one', async () => {
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(ok(configurationBody({ version: 0, enabled: false, rum: {} })))
+      );
+
+      const configuration = await start();
+      expect(configuration.getSampling()).toEqual({ sessionSampleRate: 100, sessionOnError: false });
+
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_RENEW });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(requestedUrl(1).searchParams.has('applied_version')).toBe(false);
+      // The ETag still saves the body.
+      expect(requestHeaders(1)).toEqual({ 'If-None-Match': '"tag-3"' });
+    });
+  });
+
+  describe('revalidation while the application runs (ttl)', () => {
+    it('asks again, conditionally, once the ttl the server gave has passed', async () => {
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ ttl: 120 }))));
+      await start();
+
+      await vi.advanceTimersByTimeAsync(120_000 - 1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(requestHeaders(1)).toEqual({ 'If-None-Match': '"tag-3"' });
+
+      // And again, ttl after that.
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it.each([
+      ['below the floor', 5, MIN_TTL],
+      ['missing', undefined, DEFAULT_TTL],
+      ['not a number', '120', DEFAULT_TTL],
+      ['zero', 0, DEFAULT_TTL],
+    ])('uses a sane interval for a ttl %s', async (_, ttl, expected) => {
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ ttl }))));
+      await start();
+
+      await vi.advanceTimersByTimeAsync(expected - 1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('revalidates on the default interval when nothing was ever answered', async () => {
+      fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      await start();
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS[0] + RETRY_DELAYS[1]);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+
+      await vi.advanceTimersByTimeAsync(DEFAULT_TTL);
+
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    });
+
+    it('restarts the interval after a fetch a new session made', async () => {
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ ttl: 120 }))));
+      await start();
+      await vi.advanceTimersByTimeAsync(100_000);
+
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_RENEW });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(120_000 - 1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('never has two requests in flight', async () => {
+      fetchMock.mockResolvedValueOnce(ok(configurationBody({ ttl: 60 })));
+      fetchMock.mockReturnValue(new Promise(() => undefined));
+      await start();
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT - 1);
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_RENEW });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('delivers an immediate stop to the running session at revalidation', async () => {
+      fetchMock.mockResolvedValueOnce(ok(configurationBody({ ttl: 60, version: 3 })));
+      await start();
+      expect(onImmediateChange).not.toHaveBeenCalled();
+
+      fetchMock.mockResolvedValueOnce(
+        ok(configurationBody({ version: 4, activation: 'immediate', rum: { sessionSampleRate: 0 } }), '"tag-4"')
+      );
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(onImmediateChange).toHaveBeenCalledTimes(1);
+      expect(remote!.getSampling()).toEqual({ sessionSampleRate: 0, sessionOnError: false, rcVersion: 4 });
+    });
+
+    it('stops revalidating once stopped', async () => {
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ ttl: 60 }))));
+      const configuration = await start();
+
+      configuration.stop();
+      await vi.advanceTimersByTimeAsync(DEFAULT_TTL * 2);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('when the application exits', () => {
+    function mayExit() {
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.APP_MAY_EXIT });
+    }
+
+    function syncWrites(): Record<string, unknown>[] {
+      return writeFileSync.mock.calls
+        .filter(([filePath]) => (filePath as string).startsWith(`${FILE_PATH}.`))
+        .map(([, content]) => JSON.parse(content as string) as Record<string, unknown>);
+    }
+
+    it('writes an accepted configuration whose write has not landed before returning, and the next launch draws with it offline', async () => {
+      mfs.readFile.mockResolvedValue(storedFile({ version: 8, values: { sessionSampleRate: 100 } }));
+      mfs.writeFile.mockReturnValue(new Promise(() => undefined));
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(
+          ok(configurationBody({ version: 9, activation: 'immediate', rum: { sessionSampleRate: 0 } }), '"tag-9"')
+        )
+      );
+      await start();
+
+      mayExit();
+
+      expect(syncWrites()).toEqual([expect.objectContaining({ version: 9, activation: 'immediate', etag: '"tag-9"' })]);
+      expect(renameSync).toHaveBeenLastCalledWith(expect.stringMatching(/\.tmp$/), FILE_PATH);
+
+      // Next launch, offline: it reads what the exit wrote.
+      remote!.stop();
+      mfs.readFile.mockResolvedValue(writeFileSync.mock.calls[writeFileSync.mock.calls.length - 1][1] as string);
+      fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+      remote = await RemoteConfiguration.init(config);
+      expect(remote.getSampling()).toEqual({ sessionSampleRate: 0, sessionOnError: false, rcVersion: 9 });
+    });
+
+    it('writes nothing when what it holds has landed already', async () => {
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody())));
+      await start();
+
+      mayExit();
+
+      expect(syncWrites()).toEqual([]);
+    });
+
+    it('writes nothing when it holds nothing new since the launch', async () => {
+      mfs.readFile.mockResolvedValue(storedFile());
+      fetchMock.mockImplementation(() => Promise.resolve(new Response(null, { status: 304 })));
+      await start();
+
+      mayExit();
+
+      expect(syncWrites()).toEqual([]);
+    });
+
+    it('stops when the application quits: the request in flight is aborted and nothing is asked again', async () => {
+      fetchMock.mockReturnValue(new Promise(() => undefined));
+      await start();
+
+      appListeners.get('quit')!();
+      await vi.advanceTimersByTimeAsync(DEFAULT_TTL * 2);
+
+      expect((fetchMock.mock.calls[0][1]!.signal as AbortSignal).aborted).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('a session resumed from before an immediate configuration the previous launch kept', () => {
+    const SESSION_PATH = '/mock/user/data/_dd_s';
+    let manager: SessionManager | undefined;
+
+    afterEach(() => {
+      manager?.stop();
+      manager = undefined;
+    });
+
+    /** What a launch that ended before its session file was deleted leaves behind. */
+    async function restart(resumed: Record<string, unknown>, kept: Record<string, unknown>): Promise<SessionManager> {
+      const now = Date.now();
+      mfs.access.mockResolvedValue(undefined);
+      mfs.readFile.mockImplementation((filePath: string) => {
+        if (filePath === SESSION_PATH) {
+          return Promise.resolve(JSON.stringify({ id: 'resumed', created: now, lastActivity: now, ...resumed }));
+        }
+        if (filePath === FILE_PATH) {
+          return Promise.resolve(storedFile(kept));
+        }
+        return Promise.reject(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+      });
+      fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+
+      remote = await RemoteConfiguration.init(config);
+      const configuration = remote;
+      manager = await SessionManager.start(eventManager, createFormatHooks(), () => configuration.getSampling());
+      expect(manager.getSession()).toMatchObject({ id: 'resumed', status: 'active' });
+      remote.applyKept(manager);
+      return manager;
+    }
+
+    const STOP = { version: 9, values: { sessionSampleRate: 0 }, activation: 'immediate' };
+
+    it.each([
+      { title: 'drawn under an older version', resumed: { rcVersion: 8 } },
+      { title: 'drawn under no version at all', resumed: {} },
+    ])('ends a collected session $title, before anything is fetched', async ({ resumed }) => {
+      const sessions = await restart({ trackingType: TrackingType.TRACKED, sampleRate: 100, ...resumed }, STOP);
+
+      expect(sessions.getSession().status).toBe('expired');
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('leaves it when the kept configuration applies to the next session', async () => {
+      const sessions = await restart(
+        { trackingType: TrackingType.TRACKED, sampleRate: 100, rcVersion: 8 },
+        { ...STOP, activation: 'next_session' }
+      );
+
+      expect(sessions.getSession().status).toBe('active');
+    });
+
+    it('leaves it when it was drawn under that very version', async () => {
+      const sessions = await restart({ trackingType: TrackingType.TRACKED, sampleRate: 100, rcVersion: 9 }, STOP);
+
+      expect(sessions.getSession().status).toBe('active');
+    });
+
+    it('leaves an on-error session while the switch stays on', async () => {
+      const sessions = await restart(
+        { trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 0, rcVersion: 8 },
+        { ...STOP, values: { sessionSampleRate: 0, sessionOnError: true } }
+      );
+
+      expect(sessions.getSession().status).toBe('active');
+    });
+
+    it('ends an on-error session when the kept configuration turned the switch off', async () => {
+      const sessions = await restart(
+        { trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 0, rcVersion: 8 },
+        { ...STOP, values: { sessionSampleRate: 0, sessionOnError: false } }
+      );
+
+      expect(sessions.getSession().status).toBe('expired');
     });
   });
 });

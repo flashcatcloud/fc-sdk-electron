@@ -3,10 +3,10 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { deepClone, ONE_SECOND, type Subscription } from '@flashcatcloud/browser-core';
 import type { Configuration } from '../config';
-import { EventKind, type EventManager, LifecycleKind, type SessionRenewEvent } from '../event';
+import { type AppMayExitEvent, EventKind, type EventManager, LifecycleKind, type SessionRenewEvent } from '../event';
 import { displayWarn } from '../tools/display';
 import { StateFile } from '../tools/StateFile';
-import { isConfigurationVersion, type SamplingConfiguration } from './session';
+import { isConfigurationVersion, type SamplingConfiguration, type SessionManager } from './session';
 import { addError, setTimeout } from './telemetry';
 
 export const REMOTE_CONFIGURATION_FILE_NAME = '_fc_remote_config';
@@ -26,6 +26,14 @@ export const REQUEST_TIMEOUT = 10 * ONE_SECOND;
  * endpoint incident into a storm.
  */
 export const RETRY_DELAYS = [5 * ONE_SECOND, 60 * ONE_SECOND];
+/**
+ * How long a configuration may go unrevalidated while the application runs, when the server does
+ * not say: the backend's own default `ttl`. A desktop session can live four hours, and an emergency
+ * stop must not wait for it to turn over.
+ */
+export const DEFAULT_TTL = 600 * ONE_SECOND;
+/** The shortest revalidation interval honoured, whatever `ttl` the server sends. */
+export const MIN_TTL = 60 * ONE_SECOND;
 
 /** What the console asks a running client to do about the session it already has. */
 export const Activation = {
@@ -43,14 +51,27 @@ interface RemoteValues {
 
 /** The last configuration the server delivered and this SDK accepted. */
 interface Delivered {
-  /** A publish counter that only goes up — a rollback is republished under a new number. */
+  /**
+   * A publish counter that only goes up — a rollback is republished under a new number. 0 is what
+   * an application with nothing published answers: no version was delivered, and none is reported.
+   */
   version: number;
   values: RemoteValues;
   /** The application's own pass-through bag, handed to it verbatim by `getRemoteConfig()`. */
   custom?: Record<string, unknown>;
+  /**
+   * What it asked of a session already running, kept so that a launch resuming a session the
+   * previous launch should have ended still ends it — see {@link RemoteConfiguration.start}.
+   */
+  activation: string;
 }
 
-interface StoredConfiguration extends Delivered {
+/** What owns the sessions: the one that draws them, and is told when a change applies at once. */
+type SessionOwner = Pick<SessionManager, 'getSession' | 'applySamplingChange'>;
+
+/** A file written before activation was kept has none: it is read as the next session. */
+interface StoredConfiguration extends Omit<Delivered, 'activation'> {
+  activation?: string;
   format: typeof FILE_FORMAT;
   /**
    * The SDK that wrote the file. Another version may have read the same response differently — a
@@ -75,12 +96,13 @@ type RequestOutcome = 'done' | 'retry';
  * for a change to apply at once (`activation: immediate`), the owner of the sessions is told and
  * decides whether the running session has to end — see `SessionManager.applySamplingChange`.
  *
- * Fetching follows the sessions' rhythm, as in the other FlashCat SDKs: once at init and once
- * whenever a new session starts — a change can only matter at a draw, and every draw is a new
- * session. There is no timer between sessions; the server's `ttl` and `refresh_on_foreground` are
- * read by no one here. Nothing waits on the network: the last good answer is read from disk at init,
- * so the first session of a launch draws with it, and a request that fails, times out, or answers
- * something unreadable leaves the settings in force exactly as they were.
+ * It asks at init, whenever a new session starts, and again every `ttl` the server gives (at least
+ * {@link MIN_TTL}, {@link DEFAULT_TTL} when it gives none) while the application runs: a desktop
+ * session can live four hours, and an emergency stop must not wait for it to turn over. There is
+ * never more than one request in flight, and `refresh_on_foreground` is not read. Nothing waits on
+ * the network: the last good answer is read from disk at init, so a session drawn before the server
+ * answers draws with it, and a request that fails, times out, or answers something unreadable
+ * leaves the settings in force exactly as they were.
  *
  * The server pairs `Cache-Control: no-cache` with an `ETag`. Node's `fetch` has no HTTP cache to
  * revalidate with, so the ETag is kept here with the values it describes and sent back as
@@ -96,8 +118,12 @@ export class RemoteConfiguration {
   private inFlight: AbortController | undefined;
   private retryTimeoutId: ReturnType<typeof setTimeout> | undefined;
   private failedAttempts = 0;
-  private renewSubscription: Subscription | undefined;
-  private onImmediateChange: () => void = () => undefined;
+  private ttl = DEFAULT_TTL;
+  private ttlTimeoutId: ReturnType<typeof setTimeout> | undefined;
+  /** An accepted configuration whose asynchronous write has not landed yet. */
+  private unlanded: StoredConfiguration | undefined;
+  private subscriptions: Subscription[] = [];
+  private sessions: SessionOwner | undefined;
   /** Said once per launch: the server keeps answering the same way at every new session. */
   private warnedUnsupportedSchema = false;
   private stopped = false;
@@ -121,10 +147,11 @@ export class RemoteConfiguration {
    */
   getSampling(): SamplingConfiguration {
     const values = this.delivered?.values ?? {};
+    const version = this.deliveredVersion();
     return {
       sessionSampleRate: values.sessionSampleRate ?? this.config.sessionSampleRate,
       sessionOnError: values.sessionOnError ?? this.config.sessionOnError,
-      ...(this.delivered ? { rcVersion: this.delivered.version } : {}),
+      ...(version === undefined ? {} : { rcVersion: version }),
     };
   }
 
@@ -134,19 +161,41 @@ export class RemoteConfiguration {
   }
 
   /**
-   * Fetches now and at every new session. `onImmediateChange` is called when a newly published
-   * configuration asks to apply at once, after it is in force.
+   * Judges a session resumed from a previous launch by the configuration that launch kept, when it
+   * asked to apply at once and the session was drawn before it — under an older version, or none.
+   * That launch ended the session in memory, but may have ended itself before the session file was
+   * deleted. Called before anything is collected, so nothing of such a session is.
    */
-  start(eventManager: EventManager, onImmediateChange: () => void): void {
+  applyKept(sessions: SessionOwner): void {
+    const kept = this.delivered;
+    if (kept?.activation === Activation.IMMEDIATE && (sessions.getSession().rcVersion ?? -1) < kept.version) {
+      sessions.applySamplingChange();
+    }
+  }
+
+  /**
+   * Starts keeping the configuration fresh, and tells `sessions` when a configuration that applies
+   * at once has changed what a draw would read.
+   */
+  start(eventManager: EventManager, sessions: SessionOwner): void {
     if (!this.config.remoteConfigurationEnabled) {
       return;
     }
-    this.onImmediateChange = onImmediateChange;
-    this.renewSubscription = eventManager.registerHandler<SessionRenewEvent>({
-      canHandle: (event): event is SessionRenewEvent =>
-        event.kind === EventKind.LIFECYCLE && event.lifecycle === LifecycleKind.SESSION_RENEW,
-      handle: () => this.trigger(),
-    });
+    this.sessions = sessions;
+    this.subscriptions.push(
+      eventManager.registerHandler<SessionRenewEvent>({
+        canHandle: (event): event is SessionRenewEvent =>
+          event.kind === EventKind.LIFECYCLE && event.lifecycle === LifecycleKind.SESSION_RENEW,
+        handle: () => this.trigger(),
+      }),
+      eventManager.registerHandler<AppMayExitEvent>({
+        canHandle: (event): event is AppMayExitEvent =>
+          event.kind === EventKind.LIFECYCLE && event.lifecycle === LifecycleKind.APP_MAY_EXIT,
+        handle: () => this.writePendingSync(),
+      })
+    );
+    // `quit` rather than the quit events before it: those can be cancelled, and this cannot be undone.
+    app.on('quit', () => this.stop());
     this.trigger();
   }
 
@@ -155,7 +204,27 @@ export class RemoteConfiguration {
     this.inFlight?.abort();
     this.inFlight = undefined;
     clearTimeout(this.retryTimeoutId);
-    this.renewSubscription?.unsubscribe();
+    clearTimeout(this.ttlTimeoutId);
+    this.subscriptions.forEach((subscription) => subscription.unsubscribe());
+    this.subscriptions = [];
+  }
+
+  /**
+   * Writes an accepted configuration whose write has not landed before returning, for a process
+   * that may be about to exit: an emergency stop the session already obeyed must still be in force
+   * at the next launch, offline included. A write requested earlier and landing later is discarded
+   * by the file, so this one is not overwritten by an older state.
+   */
+  private writePendingSync(): void {
+    if (this.unlanded) {
+      this.stateFile.writeSync(JSON.stringify(this.unlanded));
+      this.unlanded = undefined;
+    }
+  }
+
+  /** The version delivered, or `undefined` when none was: version 0 means nothing is published. */
+  private deliveredVersion(): number | undefined {
+    return this.delivered && this.delivered.version > 0 ? this.delivered.version : undefined;
   }
 
   private async restore(): Promise<void> {
@@ -170,8 +239,13 @@ export class RemoteConfiguration {
     if (stored === undefined || stored.identity !== this.identity) {
       return;
     }
-    const { version, values, custom } = stored;
-    this.delivered = { version, values, ...(custom ? { custom } : {}) };
+    const { version, values, custom, activation } = stored;
+    this.delivered = {
+      version,
+      values,
+      ...(custom ? { custom } : {}),
+      activation: activation ?? Activation.NEXT_SESSION,
+    };
     this.etag = stored.sdkVersion === __SDK_VERSION__ ? stored.etag : undefined;
   }
 
@@ -205,7 +279,17 @@ export class RemoteConfiguration {
         if (outcome === 'retry') {
           this.scheduleRetry();
         }
+        this.scheduleRevalidation();
       });
+  }
+
+  /** One timer, restarted after every request, whatever started it and however it ended. */
+  private scheduleRevalidation(): void {
+    clearTimeout(this.ttlTimeoutId);
+    this.ttlTimeoutId = setTimeout(() => {
+      this.ttlTimeoutId = undefined;
+      this.fetchNow();
+    }, this.ttl);
   }
 
   private scheduleRetry(): void {
@@ -246,27 +330,31 @@ export class RemoteConfiguration {
       return response.status === 429 || response.status >= 500 ? 'retry' : 'done';
     }
     const parsed = parseResponse(body);
-    if (parsed === 'unsupported') {
-      if (!this.warnedUnsupportedSchema) {
-        this.warnedUnsupportedSchema = true;
-        displayWarn('Remote configuration ignored: the server answered with a schema this SDK cannot read.');
-      }
-      return 'done';
-    }
     if (parsed === undefined) {
       // A 200 is not proof the body came from the configuration endpoint: a captive portal or a
       // misrouted proxy answers 200 too. Storing that would blank the console's values.
       return 'retry';
     }
-    this.apply(parsed, response.headers.get('etag') ?? undefined);
+    if ('unsupportedSchema' in parsed) {
+      if (!this.warnedUnsupportedSchema) {
+        this.warnedUnsupportedSchema = true;
+        displayWarn(
+          `Remote configuration ignored: the server answered with schema_version ${parsed.unsupportedSchema}, which this SDK (${__SDK_VERSION__}) cannot read. The settings already in force (init values or the last good configuration) still apply; upgrading the SDK is the fix.`
+        );
+      }
+      return 'done';
+    }
+    const { ttl, ...delivered } = parsed;
+    this.ttl = ttl;
+    this.apply(delivered, response.headers.get('etag') ?? undefined);
     return 'done';
   }
 
-  private apply({ activation, ...delivered }: ParsedResponse, etag: string | undefined): void {
-    const heldVersion = this.delivered?.version;
+  private apply(delivered: Delivered, etag: string | undefined): void {
+    const held = this.delivered;
     // Settings only ever change under a higher number, so a lower one is an older answer arriving
     // late; applying it would put this client back on settings the console has already replaced.
-    if (heldVersion !== undefined && delivered.version < heldVersion) {
+    if (held !== undefined && delivered.version < held.version) {
       return;
     }
     this.delivered = delivered;
@@ -278,14 +366,22 @@ export class RemoteConfiguration {
       ...delivered,
       ...(etag === undefined ? {} : { etag }),
     };
-    void this.stateFile.write(() => JSON.stringify(stored));
+    this.unlanded = stored;
+    void this.stateFile
+      .write(() => JSON.stringify(stored))
+      .then(() => {
+        if (this.unlanded === stored) {
+          this.unlanded = undefined;
+        }
+      });
 
-    // A repeat of the version already held is the ordinary answer, and it brings nothing new: the
-    // running session must hear about published changes only, or it would be re-judged at every
-    // renewal for nothing.
-    const isNew = heldVersion === undefined || delivered.version > heldVersion;
-    if (isNew && activation === Activation.IMMEDIATE) {
-      this.onImmediateChange();
+    // The running session hears about a newly published version, and about the version it already
+    // holds when this SDK reads it differently from the one that kept it — after an upgrade, a knob
+    // the previous SDK did not read. A plain repeat, the ordinary answer, says nothing new; judging
+    // the session again on it would be harmless, but it is not news.
+    const isNew = held === undefined || delivered.version > held.version || !sameValues(held.values, delivered.values);
+    if (isNew && delivered.activation === Activation.IMMEDIATE) {
+      this.sessions?.applySamplingChange();
     }
   }
 
@@ -302,9 +398,11 @@ export class RemoteConfiguration {
     if (version) {
       parameters.push(`app_version=${encodeURIComponent(version)}`);
     }
-    // What lets the console tell how far a change has reached. 0 is a version like any other.
-    if (this.delivered) {
-      parameters.push(`applied_version=${this.delivered.version}`);
+    // What lets the console tell how far a change has reached. Not for version 0, which is no
+    // version: reporting it would count clients as running a configuration nobody published.
+    const appliedVersion = this.deliveredVersion();
+    if (appliedVersion !== undefined) {
+      parameters.push(`applied_version=${appliedVersion}`);
     }
     // Behind a proxy, everything the intake has to see travels inside `ddforward`.
     const pathAndQuery = `${CONFIG_PATH}?${parameters.join('&')}`;
@@ -313,11 +411,16 @@ export class RemoteConfiguration {
 }
 
 interface ParsedResponse extends Delivered {
-  activation: string;
+  /** How long until it is asked again, in milliseconds. */
+  ttl: number;
+}
+
+function sameValues(a: RemoteValues, b: RemoteValues): boolean {
+  return a.sessionSampleRate === b.sessionSampleRate && a.sessionOnError === b.sessionOnError;
 }
 
 /**
- * The configuration `text` holds, `'unsupported'` for a schema this SDK does not know, or
+ * The configuration `text` holds, the schema version when it is one this SDK does not know, or
  * `undefined` for anything that is not recognisably a configuration response.
  *
  * Only the envelope decides that. A knob holding something that is not a rate or a switch is
@@ -325,7 +428,7 @@ interface ParsedResponse extends Delivered {
  * response, so one bad value cannot switch every other knob back off. The values and `custom` are
  * withheld while the kill switch (`enabled`) is off; the version is kept either way.
  */
-function parseResponse(text: string): ParsedResponse | 'unsupported' | undefined {
+function parseResponse(text: string): ParsedResponse | { unsupportedSchema: number } | undefined {
   let body: unknown;
   try {
     body = JSON.parse(text);
@@ -336,9 +439,9 @@ function parseResponse(text: string): ParsedResponse | 'unsupported' | undefined
     return undefined;
   }
   if (body.schema_version !== SUPPORTED_SCHEMA_VERSION) {
-    return typeof body.schema_version === 'number' ? 'unsupported' : undefined;
+    return typeof body.schema_version === 'number' ? { unsupportedSchema: body.schema_version } : undefined;
   }
-  const { version, enabled, rum, custom, activation } = body;
+  const { version, enabled, rum, custom, activation, ttl } = body;
   if (!isConfigurationVersion(version) || typeof enabled !== 'boolean') {
     return undefined;
   }
@@ -361,6 +464,7 @@ function parseResponse(text: string): ParsedResponse | 'unsupported' | undefined
     values,
     ...(enabled && isBag(custom) ? { custom } : {}),
     activation: typeof activation === 'string' ? activation : Activation.NEXT_SESSION,
+    ttl: isConfigurationVersion(ttl) && ttl > 0 ? Math.max(ttl * ONE_SECOND, MIN_TTL) : DEFAULT_TTL,
   };
 }
 
@@ -373,8 +477,11 @@ function parseStoredConfiguration(value: unknown): StoredConfiguration | undefin
   if (!isBag(value) || value.format !== FILE_FORMAT) {
     return undefined;
   }
-  const { sdkVersion, identity, version, values, custom, etag } = value;
+  const { sdkVersion, identity, version, values, custom, etag, activation } = value;
   if (typeof sdkVersion !== 'string' || typeof identity !== 'string' || !isConfigurationVersion(version)) {
+    return undefined;
+  }
+  if (activation !== undefined && typeof activation !== 'string') {
     return undefined;
   }
   if (!isBag(values) || (custom !== undefined && !isBag(custom)) || (etag !== undefined && typeof etag !== 'string')) {

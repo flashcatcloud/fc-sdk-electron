@@ -60,6 +60,8 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
   remoteConfiguration = remote;
   const manager = await SessionManager.start(eventManager, hooks, () => remote.getSampling());
   sessionManager = manager;
+  // Before anything is collected: a resumed session may have to end under what the previous launch kept.
+  remote.applyKept(manager);
 
   const rendererRegistry = new RendererRegistry();
   const stackPathNormalizer = await StackPathNormalizer.create(config.normalizeStackPaths, config.normalizeStackPath);
@@ -96,8 +98,9 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
   const rum = await RumCollection.start(eventManager, hooks, rendererRegistry, stackPathNormalizer, manager);
   rumApi = rum.getApi();
 
-  // Last, and never awaited: nothing in init waits on the network.
-  remote.start(eventManager, () => manager.applySamplingChange());
+  // Last, once every collector listens for the session ending, and never awaited: nothing in init
+  // waits on the network.
+  remote.start(eventManager, manager);
 
   return true;
 }
