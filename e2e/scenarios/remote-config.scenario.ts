@@ -17,8 +17,11 @@ import type { MainPage } from '../lib/mainPage';
 
 /** Comfortably past the release jitter of an on-error session, which is at most 3 s. */
 const RELEASE_WAIT = 3_500;
-/** Long enough for a configuration answer to be applied and the bridge to hear of a session change. */
-const APPLY_WAIT = 1_000;
+/**
+ * How long a negative control watches for something that must not happen — a request, a session
+ * ending. Only an absence needs it: everything that does happen is waited for by what it shows.
+ */
+const ABSENCE_WAIT = 1_000;
 
 interface SessionEvent {
   type: string;
@@ -34,7 +37,9 @@ function configuration(
   activation: 'immediate' | 'next_session',
   rum: { sessionSampleRate?: number; sessionOnError?: boolean },
   ttl = 600,
-  refreshOnForeground = false
+  refreshOnForeground = false,
+  /** What tells this answer apart once applied: it rides in `custom`, which the app can read. */
+  marker = `v${version}`
 ) {
   return {
     body: {
@@ -45,7 +50,7 @@ function configuration(
       activation,
       refresh_on_foreground: refreshOnForeground,
       rum,
-      custom: { scenario: 'e2e' },
+      custom: { scenario: 'e2e', marker },
     },
   };
 }
@@ -64,23 +69,19 @@ async function settle(mainPage: MainPage, waitMs = RELEASE_WAIT) {
 }
 
 /**
- * Waits until the main process holds the answer — its `custom` values are the marker every test
- * configuration carries — so that what follows cannot race the request still in flight.
+ * Waits until the main process holds the answer carrying `marker`, so that what follows cannot race
+ * the request still in flight — and not an earlier answer kept on disk. The answer travels back over
+ * the same IPC channel as the session pushes, behind them, so by the time it is seen the renderer
+ * has also heard of any session the answer ended.
  */
-async function waitForApplied(mainPage: MainPage, timeout = 10_000) {
+async function waitForApplied(mainPage: MainPage, marker: string, timeout = 10_000) {
   const deadline = Date.now() + timeout;
-  while ((await mainPage.getRemoteConfig()) === undefined) {
+  while ((await mainPage.getRemoteConfig())?.marker !== marker) {
     if (Date.now() >= deadline) {
       throw new Error(`No configuration applied within ${timeout}ms`);
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-}
-
-/** Waits for the first answer to have been applied, and for the bridge to have heard of it. */
-async function waitForConfiguration(intake: Intake) {
-  await intake.waitForConfigRequests(1);
-  await new Promise((resolve) => setTimeout(resolve, APPLY_WAIT));
 }
 
 test.afterEach(async ({ intake }, testInfo) => {
@@ -121,8 +122,8 @@ test.describe('remote configuration', () => {
         app_version: '1.0.0',
       });
 
-      await waitForApplied(mainPage);
-      expect(await mainPage.getRemoteConfig()).toEqual({ scenario: 'e2e' });
+      await waitForApplied(mainPage, 'v1');
+      expect(await mainPage.getRemoteConfig()).toEqual({ scenario: 'e2e', marker: 'v1' });
       await mainPage.renewSession();
       const [, second] = await intake.waitForConfigRequests(2);
       expect(second.params.applied_version).toBe('1');
@@ -135,7 +136,7 @@ test.describe('remote configuration', () => {
     test.use({ remoteConfig: configuration(1, 'immediate', { sessionSampleRate: 0 }) });
 
     test('asks nothing, and a rate of 0 published for it changes nothing', async ({ intake, mainPage }) => {
-      await new Promise((resolve) => setTimeout(resolve, APPLY_WAIT));
+      await new Promise((resolve) => setTimeout(resolve, ABSENCE_WAIT));
 
       expect(intake.getConfigRequests()).toEqual([]);
       expect(await mainPage.getBridgeSessionId()).not.toBe('');
@@ -150,7 +151,7 @@ test.describe('remote configuration', () => {
     });
 
     test('leaves the on-error session running, and its error releases what it held', async ({ intake, mainPage }) => {
-      await waitForConfiguration(intake);
+      await waitForApplied(mainPage, 'v1');
       const sessionId = await mainPage.getBridgeSessionId();
       expect(sessionId).not.toBe('');
       await settle(mainPage, 0);
@@ -186,7 +187,7 @@ test.describe('remote configuration', () => {
     });
 
     test('ends the on-error session, and an error then releases nothing', async ({ intake, mainPage }) => {
-      await waitForConfiguration(intake);
+      await waitForApplied(mainPage, 'v1');
 
       expect(await mainPage.getBridgeSessionId()).toBe('');
       await mainPage.generateManualError();
@@ -202,7 +203,7 @@ test.describe('remote configuration', () => {
     });
 
     test('ends the drawn session, and the next one is not collected', async ({ intake, mainPage, testServer }) => {
-      await waitForConfiguration(intake);
+      await waitForApplied(mainPage, 'v2');
       expect(await mainPage.getBridgeSessionId()).toBe('');
       await settle(mainPage, 0);
       const ended = rumEvents(intake).filter((event) => event.type === 'view');
@@ -228,7 +229,7 @@ test.describe('remote configuration', () => {
     });
 
     test('leaves the drawn session collecting', async ({ intake, mainPage, testServer }) => {
-      await waitForConfiguration(intake);
+      await waitForApplied(mainPage, 'v2');
       const sessionId = await mainPage.getBridgeSessionId();
       expect(sessionId).not.toBe('');
 
@@ -262,7 +263,6 @@ test.describe('remote configuration', () => {
       intake.setRemoteConfig(configuration(2, 'immediate', { sessionSampleRate: 0 }, 1, true));
       await new Promise((resolve) => setTimeout(resolve, waitMs));
       await focusApp(electronApp);
-      await new Promise((resolve) => setTimeout(resolve, APPLY_WAIT));
     }
 
     for (const { title, allowed, waitMs, refreshed } of [
@@ -286,11 +286,16 @@ test.describe('remote configuration', () => {
 
         test('on focus', async ({ intake, mainPage, electronApp }) => {
           test.setTimeout(120_000);
-          await waitForApplied(mainPage);
+          await waitForApplied(mainPage, 'v1');
           const sessionId = await mainPage.getBridgeSessionId();
           expect(sessionId).not.toBe('');
 
           await stopThenFocus(intake, electronApp, waitMs);
+          if (refreshed) {
+            await waitForApplied(mainPage, 'v2');
+          } else {
+            await new Promise((resolve) => setTimeout(resolve, ABSENCE_WAIT));
+          }
 
           const requests = intake.getConfigRequests();
           if (refreshed) {
@@ -318,7 +323,7 @@ test.describe('remote configuration', () => {
       mainPage,
       testServer,
     }) => {
-      await waitForConfiguration(intake);
+      await waitForApplied(mainPage, 'v3');
       const current = await mainPage.getBridgeSessionId();
       await mainPage.mainFetch(testServer.urlFor(200));
       await settle(mainPage, 0);
@@ -362,7 +367,7 @@ test.describe('remote configuration', () => {
       mainPage,
       testServer,
     }) => {
-      await waitForConfiguration(intake);
+      await intake.waitForConfigRequests(1);
       await mainPage.renewSession();
       const [, second] = await intake.waitForConfigRequests(2);
       expect(second.params.applied_version).toBeUndefined();
@@ -386,7 +391,7 @@ test.describe('remote configuration', () => {
     });
 
     test('ends the session so the next activity draws again, as an on-error session', async ({ intake, mainPage }) => {
-      await waitForConfiguration(intake);
+      await waitForApplied(mainPage, 'v4');
       expect(await mainPage.getBridgeSessionId()).toBe('');
 
       await mainPage.generateActivity();
@@ -415,7 +420,7 @@ test.describe('remote configuration', () => {
     });
 
     test('keeps the session it has, which collects nothing', async ({ intake, mainPage }) => {
-      await waitForConfiguration(intake);
+      await waitForApplied(mainPage, 'v4');
 
       await mainPage.generateActivity();
       expect(await mainPage.getBridgeSessionId()).toBe('');
@@ -525,7 +530,7 @@ test.describe('remote configuration and a launch that ended before it was obeyed
     intake.setRemoteConfig(served);
     const first = await launchAppManually(intake, userDataDir, 'await', ENABLED);
     try {
-      await waitForApplied(first.mainPage);
+      await waitForApplied(first.mainPage, (served.body.custom as { marker: string }).marker);
       await waitForFile(join(userDataDir, KEPT));
       return await first.mainPage.getBridgeSessionId();
     } finally {
@@ -577,12 +582,12 @@ test.describe('remote configuration and a launch that ended before it was obeyed
   for (const { title, served, redrawn } of [
     {
       title: 'redraws a session when the same version, read by this SDK, turns the switch on immediately',
-      served: configuration(7, 'immediate', { sessionSampleRate: 0, sessionOnError: true }),
+      served: configuration(7, 'immediate', { sessionSampleRate: 0, sessionOnError: true }, 600, false, 'second'),
       redrawn: true,
     },
     {
       title: 'leaves it when the same version reads the same (control)',
-      served: configuration(7, 'immediate', { sessionSampleRate: 0 }),
+      served: configuration(7, 'immediate', { sessionSampleRate: 0 }, 600, false, 'second'),
       redrawn: false,
     },
   ]) {
@@ -597,8 +602,8 @@ test.describe('remote configuration and a launch that ended before it was obeyed
 
         const second = await launchAppManually(intake, userDataDir, 'await', ENABLED);
         try {
-          await waitForApplied(second.mainPage);
-          await new Promise((resolve) => setTimeout(resolve, APPLY_WAIT));
+          // The answer of this launch, not the one kept on disk.
+          await waitForApplied(second.mainPage, 'second');
           // Drawn at rate 0 from what was kept: nothing collected.
           expect(await second.mainPage.getBridgeSessionId()).toBe('');
           // Asked unconditionally: the ETag another SDK version kept is not sent.
