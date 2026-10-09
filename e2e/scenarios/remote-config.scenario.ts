@@ -312,6 +312,51 @@ test.describe('remote configuration', () => {
     }
   });
 
+  test.describe('the kill switch (enabled: false)', () => {
+    test.use({ sdkConfig: { remoteConfigurationEnabled: true } });
+
+    /** An emergency stop, published with the kill switch in the given position. */
+    function stop(enabled: boolean) {
+      const { body } = configuration(5, 'immediate', { sessionSampleRate: 0 }, 1, true);
+      return { body: { ...body, enabled } };
+    }
+
+    test.describe('off', () => {
+      test.use({ remoteConfig: stop(false) });
+
+      test('applies none of the values, yet honours when to ask again', async ({ intake, mainPage, electronApp }) => {
+        test.setTimeout(120_000);
+        await intake.waitForConfigRequests(1);
+        const sessionId = await mainPage.getBridgeSessionId();
+        expect(sessionId).not.toBe('');
+
+        // Past the ttl floor: the stop would long have ended the session if it applied.
+        await new Promise((resolve) => setTimeout(resolve, 61_000));
+        expect(await mainPage.getBridgeSessionId()).toBe(sessionId);
+        expect(await mainPage.getRemoteConfig()).toBeUndefined();
+
+        // The answer's ttl and refresh_on_foreground are kept all the same: focus asks again.
+        await electronApp.evaluate(({ app, BrowserWindow }) => {
+          app.emit('browser-window-focus', {}, BrowserWindow.getAllWindows()[0]);
+        });
+        const [, second] = await intake.waitForConfigRequests(2);
+        expect(second.params.applied_version).toBe('5');
+        expect(second.headers['if-none-match']).toMatch(/^".+"$/);
+        expect(await mainPage.getBridgeSessionId()).toBe(sessionId);
+      });
+    });
+
+    test.describe('on (control)', () => {
+      test.use({ remoteConfig: stop(true) });
+
+      test('applies the stop at once', async ({ mainPage }) => {
+        await waitForApplied(mainPage, 'v5');
+
+        expect(await mainPage.getBridgeSessionId()).toBe('');
+      });
+    });
+  });
+
   test.describe('next session (deferred)', () => {
     test.use({
       sdkConfig: { remoteConfigurationEnabled: true },
