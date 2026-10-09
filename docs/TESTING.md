@@ -70,7 +70,9 @@ event type, assert `intake.getProtocolViolations()` is empty.
 
 The fake intake also serves the remote configuration endpoint (`GET /api/v2/rum/config`): a test
 sets what it answers with the `remoteConfig` fixture option or `intake.setRemoteConfig()` — a body
-(with an `ETag`, and a 304 when it is sent back), a status, or a dropped connection — and reads what
+(with an `ETag`, and a 304 when it is sent back), a status, or a dropped connection; unset, it
+answers like the real endpoint for an application with nothing published (200, version 0, switched
+off) — and reads what
 the SDK asked with `intake.getConfigRequests()`. Remote configuration is never tested against a real
 backend: a fake configuration version reported there shows up in the console's version statistics.
 

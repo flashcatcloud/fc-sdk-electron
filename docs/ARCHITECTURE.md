@@ -107,8 +107,10 @@ not drawn, and of a withheld session that ended without an error (its late event
 `session.sampled_for_error` and `_dd.configuration.session_sample_rate`.
 
 With `remoteConfigurationEnabled`, the sampling a draw reads comes from `RemoteConfiguration`: the
-console's values over the init ones, fetched at init and at every new session, and kept on disk
-(`_fc_remote_config`, replaced through `StateFile`) for the next launch's first draw. The session
+console's values over the init ones, fetched at init, at every new session and every `ttl`, and kept
+on disk (`_fc_remote_config`, replaced through `StateFile`, written synchronously on `APP_MAY_EXIT`
+if its write has not landed) for later draws. At startup, a resumed session drawn before a kept
+`immediate` configuration is judged by it before anything is collected. The session
 records the configuration version it was drawn under next to its rate, and `SessionContext` reports it
 as `_dd.configuration.rc_version`. A configuration published with `activation: immediate` asks
 `SessionManager.applySamplingChange` to end the running session where the new sampling is decisive

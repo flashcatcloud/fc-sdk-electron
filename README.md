@@ -466,15 +466,26 @@ await init({
 - **Precedence.** A value the console sets takes precedence over the init value; a value it does not
   set leaves the init value in place. While the console's configuration is switched off, the init
   values apply.
-- **When it is asked for.** By the main process, at `init` and whenever a new session starts — a
-  change can only matter at a draw, and every draw is a new session. A failed request (offline,
-  timeout, an error status, a body that is not a configuration) changes nothing and is retried after
-  about 5 s and 60 s, then not until the next session. Nothing in `init` waits for it.
+- **When it is asked for.** By the main process: at `init`, whenever a new session starts, and again
+  every `ttl` the server gives while the application runs (10 minutes by default, never more often
+  than once a minute), revalidating with the ETag it holds. A desktop session can live four hours, so
+  this interval — not the session's end — is the longest a change, an emergency stop included, takes
+  to reach a running client. There is never more than one request in flight, and nothing in `init`
+  waits for one.
+- **Failures.** Network failures, timeouts, malformed responses, HTTP 429 and 5xx responses change
+  nothing and are retried after about 5 s and 60 s, then at the next session or revalidation. Other
+  HTTP errors are not retried. Either way the configuration in force stays as it was.
 - **Kept on disk.** The last configuration accepted is kept in the application's `userData`
-  directory, so the next launch draws its first session with it before the network answers — or
-  without the network at all. It applies only to the same intake, application, `env` and `version`.
-  An SDK upgrade keeps the values but asks for the full configuration again rather than revalidating
-  the one the previous version read.
+  directory — written before returning when the application quits, if its write has not landed yet.
+  New sessions use it before the network answers, or without the network at all. A valid session
+  resumed from the previous launch keeps its original draw, subject to immediate activation: when
+  what was kept asks to apply immediately and is newer than what the session was drawn under, the
+  session is judged by it at startup, as below. It applies only to the same intake, application,
+  `env` and `version`. An SDK upgrade keeps the values but asks for the full configuration again
+  rather than revalidating the one the previous version read, and judges the running session again
+  if this version reads it differently.
+- **Nothing published.** An application whose configuration was never published is answered with
+  version 0, switched off: the init values apply, and no version is reported.
 - **When a change applies.** A session's draw is locked for its whole life, so by default
   (`next_session`) a change applies from the next session on. When the console asks for a change to
   apply immediately, the running session is ended — and the next user activity draws a new one —
