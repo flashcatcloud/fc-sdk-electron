@@ -12,6 +12,11 @@ vi.mock('electron', () => ({
   app: {
     getPath: vi.fn(() => '/mock/user/data'),
     on: vi.fn((event: string, listener: () => void) => appListeners.set(event, listener)),
+    removeListener: vi.fn((event: string, listener: () => void) => {
+      if (appListeners.get(event) === listener) {
+        appListeners.delete(event);
+      }
+    }),
   },
 }));
 vi.mock('../tools/display', () => ({ displayError: vi.fn(), displayWarn: vi.fn() }));
@@ -361,6 +366,8 @@ describe('RemoteConfiguration', () => {
           values: { sessionSampleRate: 25, sessionOnError: true },
           custom: { flag: 1 },
           activation: 'next_session',
+          ttl: 600,
+          refreshOnForeground: false,
           etag: '"tag-3"',
         },
       ]);
@@ -649,19 +656,79 @@ describe('RemoteConfiguration', () => {
     });
   });
 
-  describe('revalidation while the application runs (ttl)', () => {
-    it('asks again, conditionally, once the ttl the server gave has passed', async () => {
-      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ ttl: 120 }))));
+  describe('refresh when the user comes back (refresh_on_foreground)', () => {
+    function focus() {
+      appListeners.get('browser-window-focus')?.();
+    }
+
+    it('asks nothing without a trigger, however long the application runs', async () => {
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(ok(configurationBody({ ttl: 60, refresh_on_foreground: true })))
+      );
       await start();
 
-      await vi.advanceTimersByTimeAsync(120_000 - 1);
+      await vi.advanceTimersByTimeAsync(DEFAULT_TTL * 10);
+
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    it('asks again, conditionally, on focus once what it holds is ttl old, when the operator allows it', async () => {
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(ok(configurationBody({ ttl: 120, refresh_on_foreground: true })))
+      );
+      await start();
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      focus();
+      await vi.advanceTimersByTimeAsync(0);
+
       expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(requestHeaders(1)).toEqual({ 'If-None-Match': '"tag-3"' });
+      expect(requestedUrl(1).searchParams.get('applied_version')).toBe('3');
+    });
 
-      // And again, ttl after that.
-      await vi.advanceTimersByTimeAsync(120_000);
+    it('asks nothing on focus when the operator does not allow it', async () => {
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(ok(configurationBody({ ttl: 120, refresh_on_foreground: false })))
+      );
+      await start();
+      await vi.advanceTimersByTimeAsync(DEFAULT_TTL * 2);
+
+      focus();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('asks nothing on focus before the ttl has passed', async () => {
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(ok(configurationBody({ ttl: 120, refresh_on_foreground: true })))
+      );
+      await start();
+      await vi.advanceTimersByTimeAsync(120_000 - 1);
+
+      focus();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('measures the ttl from the last request that ended, including a new session one', async () => {
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(ok(configurationBody({ ttl: 120, refresh_on_foreground: true })))
+      );
+      await start();
+      await vi.advanceTimersByTimeAsync(100_000);
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_RENEW });
+      await vi.advanceTimersByTimeAsync(100_000);
+
+      focus();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(20_000);
+      focus();
+      await vi.advanceTimersByTimeAsync(0);
       expect(fetchMock).toHaveBeenCalledTimes(3);
     });
 
@@ -670,79 +737,101 @@ describe('RemoteConfiguration', () => {
       ['missing', undefined, DEFAULT_TTL],
       ['not a number', '120', DEFAULT_TTL],
       ['zero', 0, DEFAULT_TTL],
-    ])('uses a sane interval for a ttl %s', async (_, ttl, expected) => {
-      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ ttl }))));
+    ])('uses a sane ttl when the one given is %s', async (_, ttl, expected) => {
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ ttl, refresh_on_foreground: true }))));
       await start();
 
       await vi.advanceTimersByTimeAsync(expected - 1);
+      focus();
+      await vi.advanceTimersByTimeAsync(0);
       expect(fetchMock).toHaveBeenCalledTimes(1);
+
       await vi.advanceTimersByTimeAsync(1);
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-    });
-
-    it('revalidates on the default interval when nothing was ever answered', async () => {
-      fetchMock.mockRejectedValue(new TypeError('fetch failed'));
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
-      await start();
-      await vi.advanceTimersByTimeAsync(RETRY_DELAYS[0] + RETRY_DELAYS[1]);
-      expect(fetchMock).toHaveBeenCalledTimes(3);
-
-      await vi.advanceTimersByTimeAsync(DEFAULT_TTL);
-
-      expect(fetchMock).toHaveBeenCalledTimes(4);
-    });
-
-    it('restarts the interval after a fetch a new session made', async () => {
-      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ ttl: 120 }))));
-      await start();
-      await vi.advanceTimersByTimeAsync(100_000);
-
-      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_RENEW });
+      focus();
       await vi.advanceTimersByTimeAsync(0);
       expect(fetchMock).toHaveBeenCalledTimes(2);
-
-      await vi.advanceTimersByTimeAsync(120_000 - 1);
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-      await vi.advanceTimersByTimeAsync(1);
-      expect(fetchMock).toHaveBeenCalledTimes(3);
     });
 
     it('never has two requests in flight', async () => {
-      fetchMock.mockResolvedValueOnce(ok(configurationBody({ ttl: 60 })));
+      fetchMock.mockResolvedValueOnce(ok(configurationBody({ ttl: 60, refresh_on_foreground: true })));
       fetchMock.mockReturnValue(new Promise(() => undefined));
       await start();
-
       await vi.advanceTimersByTimeAsync(60_000);
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-      await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT - 1);
+
+      focus();
+      focus();
       eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_RENEW });
       await vi.advanceTimersByTimeAsync(0);
 
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
-    it('delivers an immediate stop to the running session at revalidation', async () => {
-      fetchMock.mockResolvedValueOnce(ok(configurationBody({ ttl: 60, version: 3 })));
+    it('delivers an immediate stop to the running session', async () => {
+      fetchMock.mockResolvedValueOnce(ok(configurationBody({ ttl: 60, refresh_on_foreground: true })));
       await start();
-      expect(onImmediateChange).not.toHaveBeenCalled();
-
       fetchMock.mockResolvedValueOnce(
         ok(configurationBody({ version: 4, activation: 'immediate', rum: { sessionSampleRate: 0 } }), '"tag-4"')
       );
       await vi.advanceTimersByTimeAsync(60_000);
 
+      focus();
+      await vi.advanceTimersByTimeAsync(0);
+
       expect(onImmediateChange).toHaveBeenCalledTimes(1);
       expect(remote!.getSampling()).toEqual({ sessionSampleRate: 0, sessionOnError: false, rcVersion: 4 });
     });
 
-    it('stops revalidating once stopped', async () => {
-      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ ttl: 60 }))));
-      const configuration = await start();
+    it('keeps the permission and the ttl across a restart, where only a 304 answers', async () => {
+      mfs.readFile.mockResolvedValue(storedFile({ ttl: 120, refreshOnForeground: true }));
+      fetchMock.mockImplementation(() => Promise.resolve(new Response(null, { status: 304 })));
+      await start();
 
-      configuration.stop();
+      await vi.advanceTimersByTimeAsync(120_000 - 1);
+      focus();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      focus();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('reads a file kept without them as no permission', async () => {
+      mfs.readFile.mockResolvedValue(storedFile());
+      fetchMock.mockImplementation(() => Promise.resolve(new Response(null, { status: 304 })));
+      await start();
       await vi.advanceTimersByTimeAsync(DEFAULT_TTL * 2);
 
+      focus();
+      await vi.advanceTimersByTimeAsync(0);
+
       expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['a ttl that is not a positive whole number', { ttl: -5 }],
+      ['a permission that is not a boolean', { refreshOnForeground: 'yes' }],
+    ])('ignores a file with %s', async (_, overrides) => {
+      mfs.readFile.mockResolvedValue(storedFile(overrides));
+      fetchMock.mockReturnValue(new Promise(() => undefined));
+
+      const configuration = await start();
+
+      expect(configuration.getSampling()).toEqual({ sessionSampleRate: 100, sessionOnError: false });
+    });
+
+    it('stops listening once stopped', async () => {
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(ok(configurationBody({ ttl: 60, refresh_on_foreground: true })))
+      );
+      const configuration = await start();
+      expect(appListeners.has('browser-window-focus')).toBe(true);
+
+      configuration.stop();
+
+      expect(appListeners.has('browser-window-focus')).toBe(false);
+      expect(appListeners.has('quit')).toBe(false);
     });
   });
 

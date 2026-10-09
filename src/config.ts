@@ -63,9 +63,9 @@ export interface InitConfiguration {
    * application, and deliver the application's own `custom` values (see `getRemoteConfig()`).
    * Defaults to `false`: nothing is requested and the init values apply.
    *
-   * The main process asks for the configuration at init, whenever a new session starts, and every
-   * `ttl` the server gives while the application runs, and keeps the last good answer on disk, so new
-   * sessions draw with it before the network answers. A delivered value takes precedence over the init value; a value the
+   * The main process asks for the configuration at init and whenever a new session starts — and,
+   * when the console allows it, when the user comes back to the application — and keeps the last
+   * good answer on disk, so new sessions draw with it before the network answers. A delivered value takes precedence over the init value; a value the
    * console did not set leaves the init value in place. A change applies to the next session,
    * unless the console asks for it to apply at once — see the README, Remote configuration.
    *

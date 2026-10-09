@@ -27,12 +27,11 @@ export const REQUEST_TIMEOUT = 10 * ONE_SECOND;
  */
 export const RETRY_DELAYS = [5 * ONE_SECOND, 60 * ONE_SECOND];
 /**
- * How long a configuration may go unrevalidated while the application runs, when the server does
- * not say: the backend's own default `ttl`. A desktop session can live four hours, and an emergency
- * stop must not wait for it to turn over.
+ * How old the configuration must be before a return to the foreground asks again, when the server
+ * gives no `ttl`: the backend's own default.
  */
 export const DEFAULT_TTL = 600 * ONE_SECOND;
-/** The shortest revalidation interval honoured, whatever `ttl` the server sends. */
+/** The shortest `ttl` honoured, whatever the server sends: focus can come back many times a minute. */
 export const MIN_TTL = 60 * ONE_SECOND;
 
 /** What the console asks a running client to do about the session it already has. */
@@ -64,14 +63,26 @@ interface Delivered {
    * previous launch should have ended still ends it — see {@link RemoteConfiguration.start}.
    */
   activation: string;
+  /**
+   * When to ask again, as the server described it — stored with the values because a 304 or a
+   * failure carries neither, and a client that settled on 304s must not forget its permission.
+   * `ttl` is in seconds, absent when the server gave none.
+   */
+  ttl?: number;
+  /**
+   * Whether the operator allows asking again when the user comes back to the application. Off by
+   * default: every client of a fleet comes back at about the same time, a burst on the endpoint.
+   */
+  refreshOnForeground: boolean;
 }
 
 /** What owns the sessions: the one that draws them, and is told when a change applies at once. */
 type SessionOwner = Pick<SessionManager, 'getSession' | 'applySamplingChange'>;
 
-/** A file written before activation was kept has none: it is read as the next session. */
-interface StoredConfiguration extends Omit<Delivered, 'activation'> {
+/** A file written before these were kept has none: the next session, and no foreground refresh. */
+interface StoredConfiguration extends Omit<Delivered, 'activation' | 'refreshOnForeground'> {
   activation?: string;
+  refreshOnForeground?: boolean;
   format: typeof FILE_FORMAT;
   /**
    * The SDK that wrote the file. Another version may have read the same response differently — a
@@ -96,11 +107,11 @@ type RequestOutcome = 'done' | 'retry';
  * for a change to apply at once (`activation: immediate`), the owner of the sessions is told and
  * decides whether the running session has to end — see `SessionManager.applySamplingChange`.
  *
- * It asks at init, whenever a new session starts, and again every `ttl` the server gives (at least
- * {@link MIN_TTL}, {@link DEFAULT_TTL} when it gives none) while the application runs: a desktop
- * session can live four hours, and an emergency stop must not wait for it to turn over. There is
- * never more than one request in flight, and `refresh_on_foreground` is not read. Nothing waits on
- * the network: the last good answer is read from disk at init, so a session drawn before the server
+ * It asks at init and whenever a new session starts, as the other FlashCat SDKs do; there is no
+ * timer between sessions. When the operator allows it (`refresh_on_foreground`), it also asks when
+ * the user comes back to the application — a window of it gains focus — if what it holds is at least
+ * `ttl` old (at least {@link MIN_TTL}, {@link DEFAULT_TTL} when the server gives none). There is
+ * never more than one request in flight. Nothing waits on the network: the last good answer is read from disk at init, so a session drawn before the server
  * answers draws with it, and a request that fails, times out, or answers something unreadable
  * leaves the settings in force exactly as they were.
  *
@@ -118,8 +129,8 @@ export class RemoteConfiguration {
   private inFlight: AbortController | undefined;
   private retryTimeoutId: ReturnType<typeof setTimeout> | undefined;
   private failedAttempts = 0;
-  private ttl = DEFAULT_TTL;
-  private ttlTimeoutId: ReturnType<typeof setTimeout> | undefined;
+  /** When the last request ended, however it ended: what a return to the foreground is gated on. */
+  private lastFetchAt: number | undefined;
   /** An accepted configuration whose asynchronous write has not landed yet. */
   private unlanded: StoredConfiguration | undefined;
   private subscriptions: Subscription[] = [];
@@ -194,8 +205,13 @@ export class RemoteConfiguration {
         handle: () => this.writePendingSync(),
       })
     );
+    // Focus is how "the user came back" shows on a desktop: on every platform, unlike macOS's
+    // `did-become-active`, and unlike `powerMonitor`'s `resume`, which is the machine waking rather
+    // than anyone using the application — and which a focus follows when they do. Moving focus
+    // between the application's own windows also counts, and is absorbed by the ttl.
+    app.on('browser-window-focus', this.onForeground);
     // `quit` rather than the quit events before it: those can be cancelled, and this cannot be undone.
-    app.on('quit', () => this.stop());
+    app.on('quit', this.onQuit);
     this.trigger();
   }
 
@@ -204,10 +220,25 @@ export class RemoteConfiguration {
     this.inFlight?.abort();
     this.inFlight = undefined;
     clearTimeout(this.retryTimeoutId);
-    clearTimeout(this.ttlTimeoutId);
     this.subscriptions.forEach((subscription) => subscription.unsubscribe());
     this.subscriptions = [];
+    app.removeListener('browser-window-focus', this.onForeground);
+    app.removeListener('quit', this.onQuit);
   }
+
+  private readonly onQuit = () => this.stop();
+
+  /** Asks again on a return to the foreground, if the operator allows it and what is held is stale. */
+  private readonly onForeground = () => {
+    const held = this.delivered;
+    if (!held?.refreshOnForeground) {
+      return;
+    }
+    if (this.lastFetchAt !== undefined && Date.now() - this.lastFetchAt < ttlOf(held)) {
+      return;
+    }
+    this.trigger();
+  };
 
   /**
    * Writes an accepted configuration whose write has not landed before returning, for a process
@@ -239,12 +270,14 @@ export class RemoteConfiguration {
     if (stored === undefined || stored.identity !== this.identity) {
       return;
     }
-    const { version, values, custom, activation } = stored;
+    const { version, values, custom, activation, ttl, refreshOnForeground } = stored;
     this.delivered = {
       version,
       values,
       ...(custom ? { custom } : {}),
       activation: activation ?? Activation.NEXT_SESSION,
+      ...(ttl === undefined ? {} : { ttl }),
+      refreshOnForeground: refreshOnForeground ?? false,
     };
     this.etag = stored.sdkVersion === __SDK_VERSION__ ? stored.etag : undefined;
   }
@@ -276,20 +309,11 @@ export class RemoteConfiguration {
           return;
         }
         this.inFlight = undefined;
+        this.lastFetchAt = Date.now();
         if (outcome === 'retry') {
           this.scheduleRetry();
         }
-        this.scheduleRevalidation();
       });
-  }
-
-  /** One timer, restarted after every request, whatever started it and however it ended. */
-  private scheduleRevalidation(): void {
-    clearTimeout(this.ttlTimeoutId);
-    this.ttlTimeoutId = setTimeout(() => {
-      this.ttlTimeoutId = undefined;
-      this.fetchNow();
-    }, this.ttl);
   }
 
   private scheduleRetry(): void {
@@ -344,9 +368,7 @@ export class RemoteConfiguration {
       }
       return 'done';
     }
-    const { ttl, ...delivered } = parsed;
-    this.ttl = ttl;
-    this.apply(delivered, response.headers.get('etag') ?? undefined);
+    this.apply(parsed, response.headers.get('etag') ?? undefined);
     return 'done';
   }
 
@@ -410,9 +432,9 @@ export class RemoteConfiguration {
   }
 }
 
-interface ParsedResponse extends Delivered {
-  /** How long until it is asked again, in milliseconds. */
-  ttl: number;
+/** How old what is held must be before a return to the foreground asks again, in milliseconds. */
+function ttlOf({ ttl }: Delivered): number {
+  return ttl === undefined ? DEFAULT_TTL : Math.max(ttl * ONE_SECOND, MIN_TTL);
 }
 
 function sameValues(a: RemoteValues, b: RemoteValues): boolean {
@@ -428,7 +450,7 @@ function sameValues(a: RemoteValues, b: RemoteValues): boolean {
  * response, so one bad value cannot switch every other knob back off. The values and `custom` are
  * withheld while the kill switch (`enabled`) is off; the version is kept either way.
  */
-function parseResponse(text: string): ParsedResponse | { unsupportedSchema: number } | undefined {
+function parseResponse(text: string): Delivered | { unsupportedSchema: number } | undefined {
   let body: unknown;
   try {
     body = JSON.parse(text);
@@ -464,7 +486,8 @@ function parseResponse(text: string): ParsedResponse | { unsupportedSchema: numb
     values,
     ...(enabled && isBag(custom) ? { custom } : {}),
     activation: typeof activation === 'string' ? activation : Activation.NEXT_SESSION,
-    ttl: isConfigurationVersion(ttl) && ttl > 0 ? Math.max(ttl * ONE_SECOND, MIN_TTL) : DEFAULT_TTL,
+    ...(isPositiveInteger(ttl) ? { ttl } : {}),
+    refreshOnForeground: body.refresh_on_foreground === true,
   };
 }
 
@@ -484,6 +507,12 @@ function parseStoredConfiguration(value: unknown): StoredConfiguration | undefin
   if (activation !== undefined && typeof activation !== 'string') {
     return undefined;
   }
+  if (value.ttl !== undefined && !isPositiveInteger(value.ttl)) {
+    return undefined;
+  }
+  if (value.refreshOnForeground !== undefined && typeof value.refreshOnForeground !== 'boolean') {
+    return undefined;
+  }
   if (!isBag(values) || (custom !== undefined && !isBag(custom)) || (etag !== undefined && typeof etag !== 'string')) {
     return undefined;
   }
@@ -495,6 +524,10 @@ function parseStoredConfiguration(value: unknown): StoredConfiguration | undefin
     return undefined;
   }
   return value as unknown as StoredConfiguration;
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return isConfigurationVersion(value) && value > 0;
 }
 
 function isRate(value: unknown): value is number {
