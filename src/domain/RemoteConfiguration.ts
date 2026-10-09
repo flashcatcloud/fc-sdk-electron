@@ -21,6 +21,12 @@ const SUPPORTED_SCHEMA_VERSION = 1;
 const FILE_FORMAT = 1;
 export const REQUEST_TIMEOUT = 10 * ONE_SECOND;
 /**
+ * The most this SDK reads of an answer, or of the file it keeps one in. Generous: the backend caps
+ * the application's `custom` values at 16 KiB and the rest of an answer is a few hundred bytes. A
+ * misbehaving proxy must not make the main process buffer, keep and copy whatever it sends.
+ */
+export const MAX_CONFIGURATION_BYTES = 256 * 1024;
+/**
  * A failed request is retried quickly, then patiently, then not until the next natural trigger (a
  * new session, or the next launch). Two extra requests per outage, so a fleet can never turn an
  * endpoint incident into a storm.
@@ -190,9 +196,8 @@ export class RemoteConfiguration {
    * anything is collected, so nothing of an ended session is.
    */
   applyKept(sessions: SessionOwner): void {
-    const kept = this.delivered;
-    if (kept?.activation === Activation.IMMEDIATE && (sessions.getSession().rcVersion ?? 0) <= kept.version) {
-      sessions.applySamplingChange();
+    if (this.delivered) {
+      judge(sessions, this.delivered);
     }
   }
 
@@ -279,6 +284,10 @@ export class RemoteConfiguration {
     this.stateFile.sweep();
     let stored: StoredConfiguration | undefined;
     try {
+      if ((await fs.stat(getFilePath())).size > MAX_CONFIGURATION_BYTES) {
+        // Larger than anything this SDK keeps: not a file to read whole into memory.
+        return;
+      }
       stored = parseStoredConfiguration(JSON.parse(await fs.readFile(getFilePath(), 'utf-8')));
     } catch {
       // No file yet, or one that is not ours to read: the init values apply until the server answers.
@@ -351,13 +360,11 @@ export class RemoteConfiguration {
 
   private async request(signal: AbortSignal): Promise<RequestOutcome> {
     let response: Response;
-    let body: string;
     try {
       response = await fetch(this.buildUrl(), {
         headers: this.etag ? { 'If-None-Match': this.etag } : {},
         signal,
       });
-      body = await response.text();
     } catch {
       // Offline, refused, timed out, or stopped.
       return 'retry';
@@ -365,14 +372,26 @@ export class RemoteConfiguration {
     if (signal.aborted) {
       return 'done';
     }
-    if (response.status === 304) {
-      // Only ever asked with an ETag, which only ever sits next to the values it describes.
-      return this.delivered ? 'done' : 'retry';
-    }
     if (response.status !== 200) {
+      // Nothing in it is read.
+      void response.body?.cancel().catch(() => undefined);
+      if (response.status === 304) {
+        // Only ever asked with an ETag, which only ever sits next to the values it describes.
+        return this.delivered ? 'done' : 'retry';
+      }
       return response.status === 429 || response.status >= 500 ? 'retry' : 'done';
     }
-    const parsed = parseResponse(body);
+    let body: string | undefined;
+    try {
+      body = await readBounded(response);
+    } catch {
+      return 'retry';
+    }
+    if (signal.aborted) {
+      return 'done';
+    }
+    // Too large to be a configuration: as unrecognisable as a body that does not parse.
+    const parsed = body === undefined ? undefined : parseResponse(body);
     if (parsed === undefined) {
       // A 200 is not proof the body came from the configuration endpoint: a captive portal or a
       // misrouted proxy answers 200 too. Storing that would blank the console's values.
@@ -382,7 +401,7 @@ export class RemoteConfiguration {
       if (!this.warnedUnsupportedSchema) {
         this.warnedUnsupportedSchema = true;
         displayWarn(
-          `Remote configuration ignored: unsupported schema_version ${parsed.unsupportedSchema} (SDK ${__SDK_VERSION__}). Existing settings remain active. Check SDK/server compatibility.`
+          `Remote configuration ignored: unsupported schema_version ${parsed.unsupportedSchema} (SDK ${__SDK_VERSION__}). The last accepted configuration, or the init values if none, remains in force; upgrade the SDK if the server uses a newer schema.`
         );
       }
       return 'done';
@@ -425,8 +444,8 @@ export class RemoteConfiguration {
     // the previous SDK did not read. A plain repeat, the ordinary answer, says nothing new; judging
     // the session again on it would be harmless, but it is not news.
     const isNew = held === undefined || delivered.version > held.version || !sameValues(held.values, delivered.values);
-    if (isNew && delivered.activation === Activation.IMMEDIATE) {
-      this.sessions?.applySamplingChange();
+    if (isNew && this.sessions) {
+      judge(this.sessions, delivered);
     }
   }
 
@@ -458,6 +477,48 @@ export class RemoteConfiguration {
 /** How old what is held must be before a return to the foreground asks again, in milliseconds. */
 function ttlOf({ ttl }: Delivered): number {
   return ttl === undefined ? DEFAULT_TTL : Math.max(ttl * ONE_SECOND, MIN_TTL);
+}
+
+/**
+ * Ends the running session where `configuration` decides it, when it asks to apply at once — unless
+ * the session was drawn under a newer version. Versions are published in order, but answers do not
+ * arrive in order: a backend node can serve an older snapshot for a while after a newer one is
+ * live, and a newer configuration's write to disk can be the one a launch lost. An older
+ * configuration must never override a newer draw; the same version is judged again, which ends
+ * nothing a draw under it would keep, and covers a draw an older SDK read differently.
+ */
+function judge(sessions: SessionOwner, configuration: Delivered): void {
+  if (
+    configuration.activation === Activation.IMMEDIATE &&
+    (sessions.getSession().rcVersion ?? 0) <= configuration.version
+  ) {
+    sessions.applySamplingChange();
+  }
+}
+
+/**
+ * The body as text, or `undefined` once it grows past {@link MAX_CONFIGURATION_BYTES}, in which case
+ * the rest is not read. Read as a stream: a `Content-Length` may be absent, or wrong.
+ */
+async function readBounded(response: Response): Promise<string | undefined> {
+  const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = response.body?.getReader();
+  if (!reader) {
+    return '';
+  }
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      return Buffer.concat(chunks).toString('utf-8');
+    }
+    size += value.byteLength;
+    if (size > MAX_CONFIGURATION_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      return undefined;
+    }
+    chunks.push(value);
+  }
 }
 
 function sameValues(a: RemoteValues, b: RemoteValues): boolean {

@@ -87,6 +87,7 @@ describe('RemoteConfiguration', () => {
     vi.stubGlobal('fetch', fetchMock);
     mfs.readFile.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
     mfs.writeFile.mockResolvedValue(undefined);
+    mfs.stat.mockResolvedValue({ size: 1024 });
     eventManager = new EventManager();
     onImmediateChange = vi.fn();
     config = createTestConfiguration({
@@ -354,6 +355,59 @@ describe('RemoteConfiguration', () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
+    function streamed(chunks: string[], headers: Record<string, string> = {}) {
+      const encoder = new TextEncoder();
+      let cancelled = false;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          const chunk = chunks.shift();
+          if (chunk === undefined) {
+            controller.close();
+          } else {
+            controller.enqueue(encoder.encode(chunk));
+          }
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      return { response: new Response(body, { status: 200, headers }), wasCancelled: () => cancelled };
+    }
+
+    it.each([
+      ['with a Content-Length', true],
+      ['streamed without a Content-Length', false],
+    ])(
+      'refuses an answer larger than %s allows: stops reading it, keeps what it holds, and retries',
+      async (_, withLength) => {
+        mfs.readFile.mockResolvedValue(storedFile());
+        const chunk = 'x'.repeat(64 * 1024);
+        const prefix = JSON.stringify(configurationBody({ custom: { big: '' } })).slice(0, -3);
+        const chunks = [prefix, ...Array.from({ length: 16 }, () => chunk), '"}}'];
+        const length = chunks.reduce((total, part) => total + part.length, 0);
+        const { response, wasCancelled } = streamed(chunks, withLength ? { 'Content-Length': String(length) } : {});
+        fetchMock.mockResolvedValueOnce(response);
+
+        const configuration = await start();
+
+        expect(wasCancelled()).toBe(true);
+        expect(configuration.getSampling()).toEqual({ sessionSampleRate: 0, sessionOnError: true, rcVersion: 2 });
+        expect(writtenFiles()).toEqual([]);
+        await vi.advanceTimersByTimeAsync(RETRY_DELAYS[0] * 1.2);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+      }
+    );
+
+    it('reads an answer streamed in pieces under the ceiling', async () => {
+      const text = JSON.stringify(configurationBody({ custom: { flag: 'x'.repeat(10_000) } }));
+      const { response } = streamed([text.slice(0, 100), text.slice(100, 5000), text.slice(5000)]);
+      fetchMock.mockResolvedValueOnce(response);
+
+      const configuration = await start();
+
+      expect(configuration.getSampling()).toEqual({ sessionSampleRate: 25, sessionOnError: true, rcVersion: 3 });
+    });
+
     it('refuses a schema it does not know without retrying, and says so', async () => {
       fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ schema_version: 2 }))));
 
@@ -446,6 +500,17 @@ describe('RemoteConfiguration', () => {
 
       expect(configuration.getSampling()).toEqual({ sessionSampleRate: 100, sessionOnError: false });
       expect(configuration.getCustom()).toBeUndefined();
+    });
+
+    it('does not read a kept file larger than any answer it could have kept', async () => {
+      mfs.stat.mockResolvedValue({ size: 1024 * 1024 });
+      mfs.readFile.mockResolvedValue(storedFile());
+      fetchMock.mockReturnValue(new Promise(() => undefined));
+
+      const configuration = await start();
+
+      expect(mfs.readFile).not.toHaveBeenCalled();
+      expect(configuration.getSampling()).toEqual({ sessionSampleRate: 100, sessionOnError: false });
     });
 
     it('ignores a file that is not JSON', async () => {
@@ -823,6 +888,26 @@ describe('RemoteConfiguration', () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
+    it('leaves a pending retry to ask, even once what it holds is past the ttl', async () => {
+      // Spread pinned high: the second retry waits 72 s, longer than the 60 s ttl floor.
+      vi.spyOn(Math, 'random').mockReturnValue(0.999);
+      fetchMock.mockResolvedValueOnce(ok(configurationBody({ ttl: 60, refresh_on_foreground: true })));
+      fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+      await start();
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_RENEW });
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS[0] * 1.2);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+
+      // Past the ttl since the last request ended, before the second retry is due.
+      await vi.advanceTimersByTimeAsync(65_000);
+      focus();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS[1] * 1.2 - 65_000);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    });
+
     it('neither cancels a pending retry nor re-arms the backoff, so focus cannot outpace it', async () => {
       vi.spyOn(Math, 'random').mockReturnValue(0.5);
       fetchMock.mockResolvedValueOnce(ok(configurationBody({ ttl: 60, refresh_on_foreground: true })));
@@ -1062,6 +1147,36 @@ describe('RemoteConfiguration', () => {
     }
 
     const STOP = { version: 9, values: { sessionSampleRate: 0 }, activation: 'immediate' };
+
+    describe('then a network answer, which may come from a backend node holding an older snapshot', () => {
+      it.each([
+        { version: 8, activation: 'immediate', ends: false, why: 'older than what is kept: refused as late' },
+        { version: 10, activation: 'immediate', ends: false, why: 'older than the session draw' },
+        { version: 10, activation: 'next_session', ends: false, why: 'for the next session' },
+        { version: 11, activation: 'immediate', ends: true, why: 'the very version the session was drawn under' },
+        { version: 12, activation: 'immediate', ends: true, why: 'newer than the session draw' },
+      ])(
+        'a stop at v$version ($activation) $why: ends the v11 session = $ends',
+        async ({ version, activation, ends }) => {
+          // Kept: v9 at rate 100; the session was drawn under v11, whose write was lost.
+          const sessions = await restart(
+            { trackingType: TrackingType.TRACKED, sampleRate: 100, rcVersion: 11 },
+            { ...STOP, values: { sessionSampleRate: 100 } }
+          );
+          expect(sessions.getSession().status).toBe('active');
+          fetchMock.mockReset();
+          fetchMock.mockResolvedValueOnce(
+            ok(configurationBody({ version, activation, rum: { sessionSampleRate: 0 } }))
+          );
+
+          remote!.start(eventManager, sessions);
+          await vi.advanceTimersByTimeAsync(0);
+
+          expect(fetchMock).toHaveBeenCalledTimes(1);
+          expect(sessions.getSession().status).toBe(ends ? 'expired' : 'active');
+        }
+      );
+    });
 
     it.each([
       { title: 'drawn under an older version', resumed: { rcVersion: 8 } },
