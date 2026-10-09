@@ -265,7 +265,7 @@ export function buildConfiguration(initConfig: InitConfiguration): Configuration
   const remoteOption: unknown = initConfig.remoteConfigurationEnabled;
   if (remoteOption !== undefined && remoteOption !== null && typeof remoteOption !== 'boolean') {
     displayError(
-      "Configuration error: 'remoteConfigurationEnabled' must be a boolean; remote configuration remains disabled"
+      "Configuration error: 'remoteConfigurationEnabled' must be true or false; remote configuration is disabled"
     );
   }
   const remoteConfigurationEnabled = remoteOption === true;
