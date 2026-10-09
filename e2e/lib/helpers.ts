@@ -51,7 +51,7 @@ export interface TestFixtures {
   rumBrowserSdk: Record<string, unknown> | null;
   /** Merged over the SDK configuration every scenario starts from. */
   sdkConfig: Partial<InitConfiguration>;
-  /** What the fake config endpoint answers from the first request on. Unset: 404. */
+  /** What the fake config endpoint answers from the first request on. Unset: nothing published. */
   remoteConfig: RemoteConfigBehaviour | undefined;
 }
 

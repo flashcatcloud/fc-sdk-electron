@@ -21,8 +21,8 @@ import * as http from 'node:http';
  * It also stands in for the remote configuration endpoint, `GET /api/v2/rum/config`, so remote
  * configuration is exercised without ever pointing the SDK at a real backend — a fake configuration
  * version reported to a real one would show up in the console's version statistics. What it answers
- * is set per test with {@link Intake.setRemoteConfig}; with nothing set it answers 404, as for an
- * application that has none.
+ * is set per test with {@link Intake.setRemoteConfig}; with nothing set it answers what the real
+ * endpoint answers for an application with nothing published: 200, version 0, switched off.
  */
 export interface ReceivedEvent {
   timestamp: number;
@@ -51,6 +51,19 @@ export type RemoteConfigBehaviour =
   | { status: number }
   /** The connection is dropped without an answer: what an offline client sees. */
   | { reset: true };
+
+/** What the real endpoint answers for an application whose configuration was never published. */
+const NOTHING_PUBLISHED: RemoteConfigBehaviour = {
+  body: {
+    schema_version: 1,
+    version: 0,
+    ttl: 600,
+    enabled: false,
+    activation: 'next_session',
+    refresh_on_foreground: false,
+    rum: {},
+  },
+};
 
 /** A request the SDK made to the config endpoint, as the real endpoint would have read it. */
 export interface ConfigRequest {
@@ -277,7 +290,7 @@ export class Intake {
     }
   }
 
-  /** Sets what the config endpoint answers from now on; `undefined` for a 404. */
+  /** Sets what the config endpoint answers from now on; `undefined` for an application with nothing published. */
   setRemoteConfig(behaviour: RemoteConfigBehaviour | undefined): void {
     this.remoteConfig = behaviour;
   }
@@ -310,11 +323,8 @@ export class Intake {
       headers,
     });
 
-    const behaviour = this.remoteConfig;
-    if (behaviour === undefined) {
-      res.writeHead(404);
-      res.end();
-    } else if ('reset' in behaviour) {
+    const behaviour = this.remoteConfig ?? NOTHING_PUBLISHED;
+    if ('reset' in behaviour) {
       req.socket.destroy();
     } else if ('status' in behaviour) {
       res.writeHead(behaviour.status);

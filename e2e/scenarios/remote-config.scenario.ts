@@ -1,4 +1,4 @@
-import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { InitConfiguration } from '@flashcatcloud/electron-sdk';
 import { test, expect, launchAppManually, createUserDataDir, cleanupUserDataDir } from '../lib/helpers';
@@ -31,13 +31,14 @@ interface SessionEvent {
 function configuration(
   version: number,
   activation: 'immediate' | 'next_session',
-  rum: { sessionSampleRate?: number; sessionOnError?: boolean }
+  rum: { sessionSampleRate?: number; sessionOnError?: boolean },
+  ttl = 600
 ) {
   return {
     body: {
       schema_version: 1,
       version,
-      ttl: 600,
+      ttl,
       enabled: true,
       activation,
       refresh_on_foreground: false,
@@ -58,6 +59,20 @@ function rumEvents(intake: Intake, sessionId?: string): SessionEvent[] {
 async function settle(mainPage: MainPage, waitMs = RELEASE_WAIT) {
   await new Promise((resolve) => setTimeout(resolve, waitMs));
   await mainPage.flushTransport();
+}
+
+/**
+ * Waits until the main process holds the answer — its `custom` values are the marker every test
+ * configuration carries — so that what follows cannot race the request still in flight.
+ */
+async function waitForApplied(mainPage: MainPage, timeout = 10_000) {
+  const deadline = Date.now() + timeout;
+  while ((await mainPage.getRemoteConfig()) === undefined) {
+    if (Date.now() >= deadline) {
+      throw new Error(`No configuration applied within ${timeout}ms`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 /** Waits for the first answer to have been applied, and for the bridge to have heard of it. */
@@ -104,6 +119,8 @@ test.describe('remote configuration', () => {
         app_version: '1.0.0',
       });
 
+      await waitForApplied(mainPage);
+      expect(await mainPage.getRemoteConfig()).toEqual({ scenario: 'e2e' });
       await mainPage.renewSession();
       const [, second] = await intake.waitForConfigRequests(2);
       expect(second.params.applied_version).toBe('1');
@@ -132,7 +149,6 @@ test.describe('remote configuration', () => {
 
     test('leaves the on-error session running, and its error releases what it held', async ({ intake, mainPage }) => {
       await waitForConfiguration(intake);
-      const configuredAt = intake.getConfigRequests()[0].timestamp;
       const sessionId = await mainPage.getBridgeSessionId();
       expect(sessionId).not.toBe('');
       await settle(mainPage, 0);
@@ -144,9 +160,11 @@ test.describe('remote configuration', () => {
       const events = rumEvents(intake);
       expect(events.some((event) => event.type === 'error')).toBe(true);
       expect(new Set(events.map((event) => event.session.id))).toEqual(new Set([sessionId]));
-      // The view the session opened with, at init — before the configuration was even asked for.
+      // The session the launch opened with: its view predates the request, and no other session was
+      // ever drawn, or it would have asked again.
+      expect(intake.getConfigRequests()).toHaveLength(1);
       const views = events.filter((event) => event.type === 'view');
-      expect(Math.min(...views.map((view) => view.date))).toBeLessThan(configuredAt);
+      expect(Math.min(...views.map((view) => view.date))).toBeLessThan(intake.getConfigRequests()[0].timestamp);
       for (const view of views) {
         expect(view.session.sampled_for_error).toBe(true);
       }
@@ -224,6 +242,33 @@ test.describe('remote configuration', () => {
     });
   });
 
+  test.describe('an emergency stop published while a session runs (ttl revalidation)', () => {
+    test.use({
+      sdkConfig: { remoteConfigurationEnabled: true },
+      // 1 s asks for more than the SDK allows: it revalidates after its 60 s floor.
+      remoteConfig: configuration(1, 'next_session', {}, 1),
+    });
+
+    test('reaches the running session at the next revalidation, with no new session to carry it', async ({
+      intake,
+      mainPage,
+    }) => {
+      test.setTimeout(120_000);
+      await waitForApplied(mainPage);
+      expect(await mainPage.getBridgeSessionId()).not.toBe('');
+
+      intake.setRemoteConfig(configuration(2, 'immediate', { sessionSampleRate: 0 }));
+      const [first, second] = await intake.waitForConfigRequests(2, 90_000);
+      await new Promise((resolve) => setTimeout(resolve, APPLY_WAIT));
+
+      expect(await mainPage.getBridgeSessionId()).toBe('');
+      // The timer asked, not a session: nothing renewed in between, and no sooner than the floor.
+      expect(second.timestamp - first.timestamp).toBeGreaterThanOrEqual(59_000);
+      expect(second.params.applied_version).toBe('1');
+      expect(second.headers['if-none-match']).toMatch(/^".+"$/);
+    });
+  });
+
   test.describe('next session (deferred)', () => {
     test.use({
       sdkConfig: { remoteConfigurationEnabled: true },
@@ -271,11 +316,19 @@ test.describe('remote configuration', () => {
   });
 
   test.describe('next session without a configuration (control for deferred)', () => {
+    // Nothing published: the endpoint answers version 0, switched off.
     test.use({ sdkConfig: { remoteConfigurationEnabled: true } });
 
-    test('draws the next session under the init values', async ({ intake, mainPage, testServer }) => {
+    test('draws the next session under the init values, and reports no version 0', async ({
+      intake,
+      mainPage,
+      testServer,
+    }) => {
       await waitForConfiguration(intake);
       await mainPage.renewSession();
+      const [, second] = await intake.waitForConfigRequests(2);
+      expect(second.params.applied_version).toBeUndefined();
+      expect(second.headers['if-none-match']).toMatch(/^".+"$/);
       await mainPage.mainFetch(testServer.urlFor(200));
       await settle(mainPage, 0);
 
@@ -420,6 +473,114 @@ test.describe('remote configuration kept for the next launch', () => {
       await cleanupUserDataDir(userDataDir);
     }
   });
+});
+
+test.describe('remote configuration and a launch that ended before it was obeyed', () => {
+  test.use({ sdkConfig: { sessionSampleRate: 0 } });
+  test.describe.configure({ timeout: 90_000 });
+
+  const ENABLED: Partial<InitConfiguration> = { remoteConfigurationEnabled: true };
+  const KEPT = '_fc_remote_config';
+
+  /** Launch one: receives `served`, keeps it on disk, and leaves its session to be resumed. */
+  async function firstLaunch(intake: Intake, userDataDir: string, served: ReturnType<typeof configuration>) {
+    intake.setRemoteConfig(served);
+    const first = await launchAppManually(intake, userDataDir, 'await', ENABLED);
+    try {
+      await waitForApplied(first.mainPage);
+      await waitForFile(join(userDataDir, KEPT));
+      return await first.mainPage.getBridgeSessionId();
+    } finally {
+      await first.electronApp.close();
+      intake.clear();
+    }
+  }
+
+  /** Rewrites the kept configuration as a launch that ended mid-way could have left it. */
+  async function editKept(userDataDir: string, edit: Record<string, unknown>) {
+    const filePath = join(userDataDir, KEPT);
+    const kept = JSON.parse(await readFile(filePath, 'utf8')) as Record<string, unknown>;
+    await writeFile(filePath, JSON.stringify({ ...kept, ...edit }));
+  }
+
+  for (const { title, activation, ends } of [
+    {
+      title: 'ends a resumed session drawn before an immediate stop it kept, offline',
+      activation: 'immediate',
+      ends: true,
+    },
+    {
+      title: 'leaves it when what it kept applies to the next session (control)',
+      activation: 'next_session',
+      ends: false,
+    },
+  ]) {
+    test(title, async ({ intake }) => {
+      const userDataDir = await createUserDataDir();
+      try {
+        const resumed = await firstLaunch(intake, userDataDir, configuration(1, 'next_session', {}));
+        expect(resumed).not.toBe('');
+        // The stop arrived and was kept, but the session file outlived it.
+        await editKept(userDataDir, { version: 2, values: { sessionSampleRate: 0 }, activation });
+        intake.setRemoteConfig({ reset: true });
+
+        const second = await launchAppManually(intake, userDataDir, 'await', ENABLED);
+        try {
+          expect(await second.mainPage.getBridgeSessionId()).toBe(ends ? '' : resumed);
+        } finally {
+          await second.electronApp.close();
+        }
+      } finally {
+        await cleanupUserDataDir(userDataDir);
+      }
+    });
+  }
+
+  for (const { title, served, redrawn } of [
+    {
+      title: 'redraws a session when the same version, read by this SDK, turns the switch on immediately',
+      served: configuration(7, 'immediate', { sessionSampleRate: 0, sessionOnError: true }),
+      redrawn: true,
+    },
+    {
+      title: 'leaves it when the same version reads the same (control)',
+      served: configuration(7, 'immediate', { sessionSampleRate: 0 }),
+      redrawn: false,
+    },
+  ]) {
+    test(title, async ({ intake }) => {
+      const userDataDir = await createUserDataDir();
+      try {
+        await firstLaunch(intake, userDataDir, configuration(7, 'next_session', { sessionSampleRate: 0 }));
+        // As an SDK that did not read the switch would have kept version 7; and a fresh session to draw.
+        await editKept(userDataDir, { sdkVersion: 'older' });
+        await rm(join(userDataDir, '_dd_s'), { force: true });
+        intake.setRemoteConfig(served);
+
+        const second = await launchAppManually(intake, userDataDir, 'await', ENABLED);
+        try {
+          await waitForApplied(second.mainPage);
+          await new Promise((resolve) => setTimeout(resolve, APPLY_WAIT));
+          // Drawn at rate 0 from what was kept: nothing collected.
+          expect(await second.mainPage.getBridgeSessionId()).toBe('');
+          // Asked unconditionally: the ETag another SDK version kept is not sent.
+          expect(intake.getConfigRequests()[0].headers['if-none-match']).toBeUndefined();
+
+          await second.mainPage.generateActivity();
+          const sessionId = await second.mainPage.getBridgeSessionId();
+          if (redrawn) {
+            expect(sessionId).not.toBe('');
+          } else {
+            expect(sessionId).toBe('');
+          }
+        } finally {
+          await second.electronApp.close();
+        }
+      } finally {
+        await cleanupUserDataDir(userDataDir);
+      }
+    });
+  }
 });
 
 async function waitForFile(filePath: string, timeout = 10_000) {

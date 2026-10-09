@@ -10,6 +10,7 @@ interface ElectronAppWindow {
     setUser: (user: User) => Promise<void>;
     getUser: () => Promise<User | undefined>;
     clearUser: () => Promise<void>;
+    getRemoteConfig: () => Promise<Record<string, unknown> | undefined>;
     startOperation: (name: string, options?: FeatureOperationOptions) => Promise<void>;
     succeedOperation: (name: string, options?: FeatureOperationOptions) => Promise<void>;
     failOperation: (name: string, failureReason: FailureReason, options?: FeatureOperationOptions) => Promise<void>;
@@ -115,6 +116,11 @@ export class MainPage {
 
   async getUser(): Promise<User | undefined> {
     return this.page.evaluate(() => (globalThis as unknown as ElectronAppWindow).electronAPI.getUser());
+  }
+
+  /** The `custom` values the main process holds: undefined until a configuration carrying them is applied. */
+  async getRemoteConfig(): Promise<Record<string, unknown> | undefined> {
+    return this.page.evaluate(() => (globalThis as unknown as ElectronAppWindow).electronAPI.getRemoteConfig());
   }
 
   async clearUser() {
