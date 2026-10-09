@@ -102,8 +102,9 @@ export class SessionManager {
    * Only two cases are decisive:
    * - A session that was not collected and was drawn at rate 0 lost no lottery: nothing was ever
    *   drawn for it. A rate leaving 0, or the on-error switch turning on, would now keep some such
-   *   sessions, so it draws again. One that lost a draw at a real rate keeps its outcome, or the
-   *   fleet would be re-rolled and a rate `p` would turn into `p²`.
+   *   sessions, so it draws again. One that lost a draw at a real rate keeps its outcome: drawing
+   *   it again would give it a second chance, and `n` independent draws at rate `p` keep a session
+   *   with probability `1 − (1 − p)ⁿ`, more than the rate promises.
    * - A collected session meets the emergency stop, rate 0 — unless it is an on-error session and
    *   the switch stays on: rate 0 next to the switch is that switch's ordinary setting, and ending
    *   the session would throw away exactly the history the switch exists to keep.
@@ -186,8 +187,10 @@ export class SessionManager {
       existingState.lastActivity = now;
       this.setCurrent(existingState);
       await this.saveCurrentState();
-      this.scheduleInactivityTimeout();
-      this.scheduleSessionTimeout(existingState.created);
+      if (this.isCurrent(existingState)) {
+        this.scheduleInactivityTimeout();
+        this.scheduleSessionTimeout(existingState.created);
+      }
     } else {
       await this.createNewSession();
     }
@@ -201,7 +204,12 @@ export class SessionManager {
     });
   }
 
-  private async createNewSession(): Promise<void> {
+  /**
+   * Creates and saves a session, and answers whether it is still the active one once saved: a
+   * configuration that applies at once can end it while it is being written, and nothing may then
+   * be scheduled for it or announced about it.
+   */
+  private async createNewSession(): Promise<boolean> {
     const now = Date.now();
     const sampling = this.getSampling();
     const state: SessionState = {
@@ -215,9 +223,18 @@ export class SessionManager {
 
     this.setCurrent(state);
     await this.saveCurrentState();
+    if (!this.isCurrent(state)) {
+      return false;
+    }
 
     this.scheduleInactivityTimeout();
     this.scheduleSessionTimeout(state.created);
+    return true;
+  }
+
+  /** Whether `state` is still the session in force, and still active, after an `await`. */
+  private isCurrent(state: SessionState): boolean {
+    return this.status === 'active' && this.currentState === state;
   }
 
   private setCurrent(state: SessionState): void {
@@ -230,7 +247,7 @@ export class SessionManager {
    * Queue a write of the current state. Each write serializes the state as of when it runs, and they
    * run one after another, so the last one on disk is always the latest state.
    */
-  private saveCurrentState(): Promise<void> {
+  private saveCurrentState(): Promise<boolean> {
     return this.stateFile.write(() => JSON.stringify(this.currentState));
   }
 
@@ -246,8 +263,9 @@ export class SessionManager {
 
   private async updateActivity(): Promise<void> {
     if (this.isExpired()) {
-      await this.createNewSession();
-      this.eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_RENEW });
+      if (await this.createNewSession()) {
+        this.eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_RENEW });
+      }
       return;
     }
 
@@ -263,8 +281,12 @@ export class SessionManager {
 
     // Written from memory rather than from what was just read: the error mark reaches memory first
     // and disk afterwards, and writing the read state back could undo it.
-    this.currentState.lastActivity = Date.now();
+    const current = this.currentState;
+    current.lastActivity = Date.now();
     await this.saveCurrentState();
+    if (!this.isCurrent(current)) {
+      return;
+    }
 
     this.scheduleInactivityTimeout();
   }
@@ -282,6 +304,8 @@ export class SessionManager {
   }
 
   private scheduleSessionTimeout(createdAt: number): void {
+    // One four-hour timer at a time: one left behind would end a later session early.
+    clearTimeout(this.sessionTimeoutId);
     const now = Date.now();
     const remainingTime = SESSION_TIME_OUT_DELAY - (now - createdAt);
     if (remainingTime > 0) {

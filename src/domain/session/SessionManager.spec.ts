@@ -678,6 +678,20 @@ describe('sessionManager', () => {
         lifecycleEvents.length = 0;
       }
 
+      /** Holds the next write of the session state file until the returned function is called. */
+      function holdNextSessionStateWrite(): () => void {
+        let finish: () => void = () => undefined;
+        let held = false;
+        mfs.writeFile.mockImplementation((filePath: string) => {
+          if (!held && filePath.includes(`/${SESSION_FILE_NAME}.`)) {
+            held = true;
+            return new Promise<void>((resolve) => (finish = resolve));
+          }
+          return Promise.resolve();
+        });
+        return () => finish();
+      }
+
       function applyChange(next: SamplingConfiguration) {
         sampling = next;
         sessionManager.applySamplingChange();
@@ -784,6 +798,45 @@ describe('sessionManager', () => {
         sessionManager.applySamplingChange();
         expect(sessionManager.getSession().status).toBe('active');
         expect(lifecycleEvents).toEqual(renewed);
+      });
+
+      it('neither schedules timers for nor announces a renewal of a session that ended while it was being saved', async () => {
+        await startSession({ sessionSampleRate: 100, sessionOnError: false });
+        sessionManager.expire();
+        lifecycleEvents.length = 0;
+        const finishWrite = holdNextSessionStateWrite();
+
+        eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.END_USER_ACTIVITY });
+        await vi.advanceTimersByTimeAsync(0);
+        // An immediate stop lands while the new session's state is being written.
+        applyChange({ sessionSampleRate: 0, sessionOnError: false });
+        finishWrite();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(lifecycleEvents).toEqual([LifecycleKind.END_USER_ACTIVITY, LifecycleKind.SESSION_EXPIRED]);
+        expect(sessionManager.getSession().status).toBe('expired');
+        expect(vi.getTimerCount()).toBe(0);
+      });
+
+      it('leaves no timer behind that could end a later session early', async () => {
+        await startSession({ sessionSampleRate: 100, sessionOnError: false });
+        sessionManager.expire();
+        const finishWrite = holdNextSessionStateWrite();
+        eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.END_USER_ACTIVITY });
+        await vi.advanceTimersByTimeAsync(0);
+        applyChange({ sessionSampleRate: 0, sessionOnError: false });
+        finishWrite();
+        await vi.advanceTimersByTimeAsync(0);
+
+        // A minute later, before any stale inactivity timer could fire, a kept session is renewed.
+        sampling = { sessionSampleRate: 100, sessionOnError: false };
+        await vi.advanceTimersByTimeAsync(60_000);
+        eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.END_USER_ACTIVITY });
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(sessionManager.getSession().status).toBe('active');
+        // Its own inactivity and four-hour timers, and nothing left over from the ended session.
+        expect(vi.getTimerCount()).toBe(2);
       });
 
       it('does nothing to a session that has already ended', async () => {
