@@ -261,11 +261,13 @@ export function buildConfiguration(initConfig: InitConfiguration): Configuration
   const proxy = validateOptionalString(initConfig.proxy);
   const sessionSampleRate = initConfig.sessionSampleRate ?? 100;
   const sessionOnError = validateOptionalBoolean(initConfig.sessionOnError, 'sessionOnError', false);
-  const remoteConfigurationEnabled = validateOptionalBoolean(
-    initConfig.remoteConfigurationEnabled,
-    'remoteConfigurationEnabled',
-    false
-  );
+  const remoteOption: unknown = initConfig.remoteConfigurationEnabled;
+  if (remoteOption !== undefined && remoteOption !== null && typeof remoteOption !== 'boolean') {
+    displayError(
+      "Configuration error: 'remoteConfigurationEnabled' must be a boolean; remote configuration remains disabled"
+    );
+  }
+  const remoteConfigurationEnabled = remoteOption === true;
   // Not with remote configuration: the console may lower the rate the switch then applies to.
   if (sessionOnError && sessionSampleRate === 100 && !remoteConfigurationEnabled) {
     displayWarn(

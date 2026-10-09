@@ -1,7 +1,7 @@
 import { app } from 'electron';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { deepClone, ONE_SECOND, type Subscription } from '@flashcatcloud/browser-core';
+import { ONE_SECOND, type Subscription } from '@flashcatcloud/browser-core';
 import type { Configuration } from '../config';
 import { type AppMayExitEvent, EventKind, type EventManager, LifecycleKind, type SessionRenewEvent } from '../event';
 import { displayWarn } from '../tools/display';
@@ -166,20 +166,27 @@ export class RemoteConfiguration {
     };
   }
 
-  /** A copy of the application's `custom` values, or `undefined` when none were delivered. */
+  /**
+   * A copy of the application's `custom` values, or `undefined` when none were delivered.
+   *
+   * `structuredClone` rather than a merging deep copy: these keys come from the network, and a key
+   * like `__proto__` must stay a plain key of the copy, not reach the prototype of every object in
+   * the main process.
+   */
   getCustom(): Record<string, unknown> | undefined {
-    return this.delivered?.custom && deepClone(this.delivered.custom);
+    return this.delivered?.custom && structuredClone(this.delivered.custom);
   }
 
   /**
-   * Judges a session resumed from a previous launch by the configuration that launch kept, when it
-   * asked to apply at once and the session was drawn before it — under an older version, or none.
-   * That launch ended the session in memory, but may have ended itself before the session file was
-   * deleted. Called before anything is collected, so nothing of such a session is.
+   * Judges the session the launch starts with by the configuration the previous launch kept, when
+   * it asked to apply at once. That launch may have ended a session in memory and ended itself
+   * before the session file was deleted; a session drawn under that very version, read differently
+   * by an SDK from before an upgrade, is the same case. The judgement ends nothing a draw under the
+   * configuration in force would keep, so it needs no version to compare. Called before anything is
+   * collected, so nothing of such a session is.
    */
   applyKept(sessions: SessionOwner): void {
-    const kept = this.delivered;
-    if (kept?.activation === Activation.IMMEDIATE && (sessions.getSession().rcVersion ?? -1) < kept.version) {
+    if (this.delivered?.activation === Activation.IMMEDIATE) {
       sessions.applySamplingChange();
     }
   }
@@ -215,7 +222,9 @@ export class RemoteConfiguration {
     this.trigger();
   }
 
+  /** Stops for good, writing first what has not landed: nothing after this point will. */
   stop(): void {
+    this.writePendingSync();
     this.stopped = true;
     this.inFlight?.abort();
     this.inFlight = undefined;
@@ -228,16 +237,20 @@ export class RemoteConfiguration {
 
   private readonly onQuit = () => this.stop();
 
-  /** Asks again on a return to the foreground, if the operator allows it and what is held is stale. */
+  /**
+   * Asks again on a return to the foreground, if the operator allows it and what is held is stale.
+   * It is not a natural trigger like a new session: a retry already pending is left to ask, and the
+   * backoff is not re-armed, so focus coming back again and again cannot outpace it.
+   */
   private readonly onForeground = () => {
     const held = this.delivered;
-    if (!held?.refreshOnForeground) {
+    if (!held?.refreshOnForeground || this.retryTimeoutId !== undefined) {
       return;
     }
     if (this.lastFetchAt !== undefined && Date.now() - this.lastFetchAt < ttlOf(held)) {
       return;
     }
-    this.trigger();
+    this.fetchNow();
   };
 
   /**
@@ -247,8 +260,7 @@ export class RemoteConfiguration {
    * by the file, so this one is not overwritten by an older state.
    */
   private writePendingSync(): void {
-    if (this.unlanded) {
-      this.stateFile.writeSync(JSON.stringify(this.unlanded));
+    if (this.unlanded && this.stateFile.writeSync(JSON.stringify(this.unlanded))) {
       this.unlanded = undefined;
     }
   }
@@ -363,7 +375,7 @@ export class RemoteConfiguration {
       if (!this.warnedUnsupportedSchema) {
         this.warnedUnsupportedSchema = true;
         displayWarn(
-          `Remote configuration ignored: the server answered with schema_version ${parsed.unsupportedSchema}, which this SDK (${__SDK_VERSION__}) cannot read. The settings already in force (init values or the last good configuration) still apply; upgrading the SDK is the fix.`
+          `Remote configuration ignored: the server answered with schema_version ${parsed.unsupportedSchema}, which this SDK (${__SDK_VERSION__}) cannot read. Check that the SDK and the server agree on the schema; the settings already in force (init values or the last good configuration) remain in effect.`
         );
       }
       return 'done';
@@ -391,8 +403,9 @@ export class RemoteConfiguration {
     this.unlanded = stored;
     void this.stateFile
       .write(() => JSON.stringify(stored))
-      .then(() => {
-        if (this.unlanded === stored) {
+      .then((landed) => {
+        // Only a write that landed takes it off the list: a failed one is tried again at exit.
+        if (landed && this.unlanded === stored) {
           this.unlanded = undefined;
         }
       });
@@ -471,8 +484,11 @@ function parseResponse(text: string): Delivered | { unsupportedSchema: number } 
   if (rum !== undefined && rum !== null && !isBag(rum)) {
     return undefined;
   }
+  // Version 0 is what an application with nothing published answers: no configuration, whatever
+  // else the body carries.
+  const published = enabled && version > 0;
   const values: RemoteValues = {};
-  if (enabled && isBag(rum)) {
+  if (published && isBag(rum)) {
     if (isRate(rum.sessionSampleRate)) {
       values.sessionSampleRate = rum.sessionSampleRate;
     }
@@ -484,7 +500,7 @@ function parseResponse(text: string): Delivered | { unsupportedSchema: number } 
   return {
     version,
     values,
-    ...(enabled && isBag(custom) ? { custom } : {}),
+    ...(published && isBag(custom) ? { custom } : {}),
     activation: typeof activation === 'string' ? activation : Activation.NEXT_SESSION,
     ...(isPositiveInteger(ttl) ? { ttl } : {}),
     refreshOnForeground: body.refresh_on_foreground === true,

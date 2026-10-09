@@ -529,7 +529,7 @@ describe('buildConfiguration', () => {
 
       expect(buildConfiguration(config)?.remoteConfigurationEnabled).toBe(false);
       expect(display.displayError).toHaveBeenCalledWith(
-        "Configuration error: 'remoteConfigurationEnabled' must be a boolean"
+        "Configuration error: 'remoteConfigurationEnabled' must be a boolean; remote configuration remains disabled"
       );
     });
   });

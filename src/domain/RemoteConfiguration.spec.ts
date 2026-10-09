@@ -290,6 +290,40 @@ describe('RemoteConfiguration', () => {
       expect(configuration.getCustom()).toEqual({ allowList: ['a', 'b'], level: 2 });
     });
 
+    it('hands over keys like __proto__ as plain keys, without touching any prototype, from the network', async () => {
+      const raw =
+        '{"schema_version":1,"version":3,"enabled":true,"activation":"next_session","rum":{},' +
+        '"custom":{"__proto__":{"polluted":true},"nested":{"list":[{"__proto__":{"polluted":true}}],"constructor":{"prototype":{"polluted":true}}}}}';
+      fetchMock.mockResolvedValueOnce(ok(raw));
+      const configuration = await start();
+
+      const custom = configuration.getCustom()!;
+
+      expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+      expect(Object.getPrototypeOf(custom)).toBe(Object.prototype);
+      expect(Object.keys(custom)).toEqual(['__proto__', 'nested']);
+      expect(Object.getOwnPropertyDescriptor(custom, '__proto__')?.value).toEqual({ polluted: true });
+      const nested = custom.nested as { list: object[] };
+      expect(Object.keys(nested.list[0])).toEqual(['__proto__']);
+    });
+
+    it('hands over keys like __proto__ as plain keys, without touching any prototype, from disk', async () => {
+      mfs.readFile.mockResolvedValue(
+        storedFile().replace(
+          '"custom":{"flag":"cached"}',
+          '"custom":{"__proto__":{"polluted":true},"a":{"__proto__":{"polluted":true}}}'
+        )
+      );
+      fetchMock.mockReturnValue(new Promise(() => undefined));
+      const configuration = await start();
+
+      const custom = configuration.getCustom()!;
+
+      expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+      expect(Object.keys(custom)).toEqual(['__proto__', 'a']);
+      expect(Object.keys(custom.a as object)).toEqual(['__proto__']);
+    });
+
     it('drops a custom bag that is not an object', async () => {
       fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ custom: ['a'] }))));
 
@@ -640,6 +674,19 @@ describe('RemoteConfiguration', () => {
   });
 
   describe('version 0: an application with nothing published', () => {
+    it('applies nothing a version 0 answer carries: it is no configuration', async () => {
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(
+          ok(configurationBody({ version: 0, enabled: true, rum: { sessionSampleRate: 0 }, custom: { a: 1 } }))
+        )
+      );
+
+      const configuration = await start();
+
+      expect(configuration.getSampling()).toEqual({ sessionSampleRate: 100, sessionOnError: false });
+      expect(configuration.getCustom()).toBeUndefined();
+    });
+
     it('reports no version for what it draws, and asks again without one', async () => {
       fetchMock.mockImplementation(() =>
         Promise.resolve(ok(configurationBody({ version: 0, enabled: false, rum: {} })))
@@ -766,6 +813,38 @@ describe('RemoteConfiguration', () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
+    it('neither cancels a pending retry nor re-arms the backoff, so focus cannot outpace it', async () => {
+      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      fetchMock.mockResolvedValueOnce(ok(configurationBody({ ttl: 60, refresh_on_foreground: true })));
+      fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+      await start();
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      // A refresh that fails: a retry is now pending 5 s out.
+      focus();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      focus();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      // The two retries, then silence however often focus comes back within the ttl.
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS[0] + RETRY_DELAYS[1]);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+      for (let i = 0; i < 5; i += 1) {
+        await vi.advanceTimersByTimeAsync(10_000);
+        focus();
+      }
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+
+      // Once the ttl has passed, one more ask, and no fresh round of retries behind it.
+      await vi.advanceTimersByTimeAsync(10_000);
+      focus();
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS[0] + RETRY_DELAYS[1]);
+      expect(fetchMock).toHaveBeenCalledTimes(5);
+    });
+
     it('delivers an immediate stop to the running session', async () => {
       fetchMock.mockResolvedValueOnce(ok(configurationBody({ ttl: 60, refresh_on_foreground: true })));
       await start();
@@ -869,6 +948,46 @@ describe('RemoteConfiguration', () => {
       expect(remote.getSampling()).toEqual({ sessionSampleRate: 0, sessionOnError: false, rcVersion: 9 });
     });
 
+    it('writes an accepted configuration whose write has not landed when the application quits, even past every exit notice', async () => {
+      // `app.exit()` skips the quit events but reaches `quit`; a fetch can also land after `will-quit`.
+      mfs.writeFile.mockReturnValue(new Promise(() => undefined));
+      fetchMock.mockResolvedValueOnce(
+        ok(configurationBody({ version: 9, activation: 'immediate', rum: { sessionSampleRate: 0 } }), '"tag-9"')
+      );
+      await start();
+
+      appListeners.get('quit')!();
+
+      expect(syncWrites()).toEqual([expect.objectContaining({ version: 9 })]);
+      // Nothing left to write: the notice the process exit sends finds nothing more.
+      mayExit();
+      expect(syncWrites()).toHaveLength(1);
+    });
+
+    it('still writes at exit a configuration whose asynchronous write failed', async () => {
+      mfs.writeFile.mockRejectedValue(Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }));
+      fetchMock.mockResolvedValueOnce(ok(configurationBody({ version: 9 }), '"tag-9"'));
+      await start();
+
+      mayExit();
+
+      expect(syncWrites()).toEqual([expect.objectContaining({ version: 9 })]);
+    });
+
+    it('keeps it pending when the write at exit fails too, and tries again at the next notice', async () => {
+      mfs.writeFile.mockReturnValue(new Promise(() => undefined));
+      fetchMock.mockResolvedValueOnce(ok(configurationBody({ version: 9 }), '"tag-9"'));
+      await start();
+      writeFileSync.mockImplementationOnce(() => {
+        throw new Error('EACCES');
+      });
+
+      mayExit();
+      mayExit();
+
+      expect(writeFileSync).toHaveBeenCalledTimes(2);
+    });
+
     it('writes nothing when what it holds has landed already', async () => {
       fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody())));
       await start();
@@ -953,8 +1072,27 @@ describe('RemoteConfiguration', () => {
       expect(sessions.getSession().status).toBe('active');
     });
 
-    it('leaves it when it was drawn under that very version', async () => {
-      const sessions = await restart({ trackingType: TrackingType.TRACKED, sampleRate: 100, rcVersion: 9 }, STOP);
+    it('leaves it when it was drawn under that very version, as this SDK reads it', async () => {
+      const sessions = await restart({ trackingType: TrackingType.NOT_TRACKED, sampleRate: 0, rcVersion: 9 }, STOP);
+
+      expect(sessions.getSession().status).toBe('active');
+    });
+
+    it('ends it when it was drawn under the same version read differently, before an upgrade', async () => {
+      // Drawn at rate 0 by an SDK that did not read the switch; this one reads it on.
+      const sessions = await restart(
+        { trackingType: TrackingType.NOT_TRACKED, sampleRate: 0, rcVersion: 9 },
+        { ...STOP, values: { sessionSampleRate: 0, sessionOnError: true } }
+      );
+
+      expect(sessions.getSession().status).toBe('expired');
+    });
+
+    it('leaves a same-version session alone when what was kept applies to the next session', async () => {
+      const sessions = await restart(
+        { trackingType: TrackingType.NOT_TRACKED, sampleRate: 0, rcVersion: 9 },
+        { ...STOP, values: { sessionSampleRate: 0, sessionOnError: true }, activation: 'next_session' }
+      );
 
       expect(sessions.getSession().status).toBe('active');
     });
