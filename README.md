@@ -373,24 +373,24 @@ before the logout still resolve to the user who was logged in then.
 
 ### Configuration Options
 
-| Option                        | Type                                     | Required | Default                  | Description                                                                                                                            |
-| ----------------------------- | ---------------------------------------- | -------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `clientToken`                 | `string`                                 | Yes      | —                        | FlashCat client token                                                                                                                  |
-| `applicationId`               | `string`                                 | Yes      | —                        | RUM application ID                                                                                                                     |
-| `site`                        | `string`                                 | No       | `browser.flashcat.cloud` | Intake host, used verbatim — e.g. `browser.flashcat.cloud` (production), `jira.flashcat.cloud` (staging), or your own host             |
-| `service`                     | `string`                                 | Yes      | —                        | Service name                                                                                                                           |
-| `env`                         | `string`                                 | No       | —                        | Application environment                                                                                                                |
-| `version`                     | `string`                                 | No       | —                        | Application version                                                                                                                    |
-| `sessionSampleRate`           | `number`                                 | No       | `100`                    | Percentage of sessions collected (0–100). An out-of-range value fails `init`. See [Sampling](#sampling)                                |
-| `sessionOnError`              | `boolean`                                | No       | `false`                  | Keeps the sessions `sessionSampleRate` did not draw in memory, uploading them only if they report an error. See [Sampling](#sampling)  |
-| `telemetrySampleRate`         | `number`                                 | No       | `20`                     | Telemetry sample rate (0–100)                                                                                                          |
-| `batchSize`                   | `'SMALL' \| 'MEDIUM' \| 'LARGE'`         | No       | —                        | Batch size for event uploads                                                                                                           |
-| `uploadFrequency`             | `'RARE' \| 'NORMAL' \| 'FREQUENT'`       | No       | —                        | Upload frequency for event batches                                                                                                     |
-| `defaultPrivacyLevel`         | `'mask' \| 'allow' \| 'mask-user-input'` | No       | `'mask'`                 | Default privacy level for renderer session replay                                                                                      |
-| `allowedWebViewHosts`         | `string[]`                               | No       | `[]`                     | Extra hostnames allowed for the renderer bridge (the window's own host is always allowed)                                              |
-| `proxy`                       | `string`                                 | No       | —                        | Proxy URL to upload through instead of `site`. See [Self-hosted deployments](#self-hosted-deployments)                                 |
-| `normalizeStackPaths`         | `boolean`                                | No       | `true`                   | Rewrite stack frame paths to `app:///<path relative to the app root>`. See [Error stacks and sourcemaps](#error-stacks-and-sourcemaps) |
-| `correctPrewarmedViewTimings` | `boolean`                                | No       | `true`                   | Rebase FCP/LCP of pre-warmed windows onto the moment they became visible. See [Pre-warmed windows](#pre-warmed-windows)                |
+| Option                        | Type                                     | Required | Default                  | Description                                                                                                                                                                                    |
+| ----------------------------- | ---------------------------------------- | -------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `clientToken`                 | `string`                                 | Yes      | —                        | FlashCat client token                                                                                                                                                                          |
+| `applicationId`               | `string`                                 | Yes      | —                        | RUM application ID                                                                                                                                                                             |
+| `site`                        | `string`                                 | No       | `browser.flashcat.cloud` | Intake host, used verbatim — e.g. `browser.flashcat.cloud` (production), `jira.flashcat.cloud` (staging), or your own host                                                                     |
+| `service`                     | `string`                                 | Yes      | —                        | Service name                                                                                                                                                                                   |
+| `env`                         | `string`                                 | No       | —                        | Application environment                                                                                                                                                                        |
+| `version`                     | `string`                                 | No       | —                        | Application version                                                                                                                                                                            |
+| `sessionSampleRate`           | `number`                                 | No       | `100`                    | Percentage of sessions collected (0–100). An out-of-range value fails `init`. See [Sampling](#sampling)                                                                                        |
+| `sessionOnError`              | `boolean`                                | No       | `false`                  | Keeps the sessions `sessionSampleRate` did not draw in memory, uploading them only if they report an error; one that never errors uploads nothing, not even at quit. See [Sampling](#sampling) |
+| `telemetrySampleRate`         | `number`                                 | No       | `20`                     | Telemetry sample rate (0–100)                                                                                                                                                                  |
+| `batchSize`                   | `'SMALL' \| 'MEDIUM' \| 'LARGE'`         | No       | —                        | Batch size for event uploads                                                                                                                                                                   |
+| `uploadFrequency`             | `'RARE' \| 'NORMAL' \| 'FREQUENT'`       | No       | —                        | Upload frequency for event batches                                                                                                                                                             |
+| `defaultPrivacyLevel`         | `'mask' \| 'allow' \| 'mask-user-input'` | No       | `'mask'`                 | Default privacy level for renderer session replay                                                                                                                                              |
+| `allowedWebViewHosts`         | `string[]`                               | No       | `[]`                     | Extra hostnames allowed for the renderer bridge (the window's own host is always allowed)                                                                                                      |
+| `proxy`                       | `string`                                 | No       | —                        | Proxy URL to upload through instead of `site`. See [Self-hosted deployments](#self-hosted-deployments)                                                                                         |
+| `normalizeStackPaths`         | `boolean`                                | No       | `true`                   | Rewrite stack frame paths to `app:///<path relative to the app root>`. See [Error stacks and sourcemaps](#error-stacks-and-sourcemaps)                                                         |
+| `correctPrewarmedViewTimings` | `boolean`                                | No       | `true`                   | Rebase FCP/LCP of pre-warmed windows onto the moment they became visible. See [Pre-warmed windows](#pre-warmed-windows)                                                                        |
 
 ### Sampling
 
@@ -402,9 +402,12 @@ the bridge: the main process decides, and its rate is what every event reports.
 
 `sessionOnError` keeps the sessions the rate did not draw on standby instead of dropping them:
 
-- The session's events — main process and renderers alike — are held in memory, never on disk:
-  up to 60 seconds of what preceded the error, subject to the limits (64 KiB of detail, 200 events,
-  plus up to 50 views). No RUM event of the session is uploaded while it is withheld.
+- The session's events — main process and renderers alike — are held in memory: up to 60 seconds
+  of what preceded the error, subject to the limits (64 KiB of detail, 200 events, plus up to 50
+  views). The buffer itself never touches the disk; what is persisted locally is the session's
+  state and the main-process view identifiers, which a native crash needs to be attributed on the
+  next launch. No RUM event of the session is uploaded while it is withheld, and a session that
+  never errors uploads nothing — not even at quit.
 - At the session's first error, what is held is handed to the upload batch together with the error,
   0–3 s later (spread per session, so that one outage does not make every client upload at once),
   and the session then reports as it happens, like any drawn session. When the application may be
@@ -412,8 +415,10 @@ the bridge: the main process decides, and its rate is what every event reports.
   uncaught exception in the main process (provided the application's own `uncaughtException`
   listener is registered after `await init(...)` has completed, so that the SDK's runs first), on
   `before-quit` and `will-quit`, and on the process `exit` event, which `process.exit()` and
-  `app.exit()` still run — so an error reported while quitting, or in the same turn as the exit
-  call, reaches disk too.
+  `app.exit()` still run. Queued events are written synchronously at each of these points, and
+  once the exit event has started every later event is written as it arrives; an asynchronous
+  append already in progress is not completed by the drain. A listener registered _before_
+  `init()` that ends the process synchronously pre-empts the SDK's: nothing of that error is seen.
 - A session that ends without an error is thrown away whole, late events included.
 
 Only errors the application reports count: an error a renderer's `beforeSend` dropped, or one the
