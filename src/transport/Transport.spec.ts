@@ -139,7 +139,7 @@ describe('Transport', () => {
       // eslint-disable-next-line @typescript-eslint/unbound-method -- a mock's call list, not a method to call
       vi.mocked(sessionManager.writePendingSync).mockImplementationOnce(record('session'));
 
-      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.APP_MAY_EXIT });
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.APP_MAY_EXIT, terminal: false });
 
       // The release first, so that the write takes it along; the session's mark with it.
       expect(calls).toEqual(['post:view', 'post:error', 'batch', 'session']);
@@ -209,6 +209,54 @@ describe('Transport', () => {
 
       expect(mockBatchPost.mock.calls.map(([data]) => (data as { type: string }).type)).toEqual(['view', 'error']);
       expect(mockBatchWritePendingSync).toHaveBeenCalled();
+    });
+
+    it('should write an error reported from a later exit listener synchronously, with no timer to wait for', async () => {
+      session.trackingType = TrackingType.TRACKED_ON_ERROR;
+      await Transport.create(config, eventManager, sessionManager);
+      const view = { type: 'view', date: 1, session: { id: 'session-id' }, view: { id: 'view-id', is_active: true } };
+      eventManager.notify({
+        kind: EventKind.SERVER,
+        track: EventTrack.RUM,
+        source: 'main-process',
+        data: view,
+      } as unknown as ServerEvent);
+      processListeners.exit.call(undefined);
+      expect(mockBatchPost).not.toHaveBeenCalled();
+
+      // A host exit listener registered after the SDK's reports an error: nothing runs after it.
+      const error = {
+        type: 'error',
+        error: { source: 'source' },
+        session: { id: 'session-id' },
+        view: { id: 'view-id' },
+      };
+      mockBatchWritePendingSync.mockClear();
+      eventManager.notify({
+        kind: EventKind.SERVER,
+        track: EventTrack.RUM,
+        source: 'main-process',
+        data: error,
+      } as unknown as ServerEvent);
+
+      expect(mockBatchPost.mock.calls.map(([data]) => (data as { type: string }).type)).toEqual(['view', 'error']);
+      expect(mockBatchWritePendingSync).toHaveBeenCalled();
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- a mock's call list, not a method to call
+      expect(sessionManager.writePendingSync).toHaveBeenCalled();
+    });
+
+    it('should write the session state even when a batch write throws on exit', async () => {
+      await Transport.create(config, eventManager, sessionManager);
+      mockBatchWritePendingSync.mockImplementationOnce(() => {
+        throw new Error('EROFS');
+      });
+
+      expect(() =>
+        eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.APP_MAY_EXIT, terminal: false })
+      ).not.toThrow();
+
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- a mock's call list, not a method to call
+      expect(sessionManager.writePendingSync).toHaveBeenCalled();
     });
 
     it('should treat a quit as an exit', async () => {

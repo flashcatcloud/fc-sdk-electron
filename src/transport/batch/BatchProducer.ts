@@ -2,6 +2,7 @@ import { dateNow } from '@flashcatcloud/browser-core';
 import { appendFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { addError } from '../../domain/telemetry';
 
 export interface ProducerConfig {
   trackPath: string;
@@ -48,7 +49,9 @@ export class BatchProducer {
   /** Enqueues data to be appended to the current batch file. Writes are serialized, in call order. */
   post(data: unknown) {
     this.pending.push(data);
-    this.draining = this.draining.then(() => this.drain());
+    // Reported and settled: a throw the drain did not expect must not leave the chain rejected,
+    // with every later post queued behind it for good.
+    this.draining = this.draining.then(() => this.drain()).catch((error) => addError(error));
   }
 
   /**

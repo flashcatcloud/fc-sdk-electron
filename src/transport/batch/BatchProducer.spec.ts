@@ -18,6 +18,8 @@ vi.mock('node:fs', () => ({ appendFileSync, existsSync, mkdirSync, renameSync })
 vi.mock('@flashcatcloud/browser-core', () => ({
   dateNow: vi.fn(() => 1234567890),
 }));
+const { addError } = vi.hoisted(() => ({ addError: vi.fn() }));
+vi.mock('../../domain/telemetry', () => ({ addError }));
 
 function makeConfig(overrides: Partial<ProducerConfig> = {}): ProducerConfig {
   return {
@@ -152,6 +154,22 @@ describe('BatchProducer', () => {
       expect(fsMocks.appendFile.mock.calls[0][1]).toBe(`{"order":1}\n`);
       expect(fsMocks.appendFile.mock.calls[1][1]).toBe(`{"order":2}\n`);
       expect(fsMocks.appendFile.mock.calls[2][1]).toBe(`{"order":3}\n`);
+    });
+
+    it('keeps draining after an unexpected throw, reporting it', async () => {
+      const producer = await BatchProducer.create(config);
+      const { dateNow } = await import('@flashcatcloud/browser-core');
+      vi.mocked(dateNow).mockImplementationOnce(() => {
+        throw new Error('clock broken');
+      });
+
+      producer.post({ a: 1 });
+      await producer.flush().catch(() => undefined);
+      producer.post({ b: 2 });
+      await producer.flush();
+
+      expect(fsMocks.appendFile.mock.calls.map(([, content]) => String(content))).toContain(`{"b":2}\n`);
+      expect(addError).toHaveBeenCalledWith(expect.any(Error));
     });
 
     it('drops an item it cannot serialize and keeps writing the ones after it', async () => {
