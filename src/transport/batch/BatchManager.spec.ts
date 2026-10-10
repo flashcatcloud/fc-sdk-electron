@@ -117,20 +117,32 @@ describe('BatchManager', () => {
       expect(mockConsumerUpload).toHaveBeenCalled();
     });
 
-    it('should skip concurrent flush when one is already in progress', async () => {
+    it('runs the next cycle after one that failed, and reports the failure to the flush that ran it', async () => {
+      mockConsumerUpload.mockRejectedValueOnce(new Error('intake down'));
+      const manager = await BatchManager.create(config, batchConfig);
+
+      await expect(manager.flush()).rejects.toThrow('intake down');
+      await expect(manager.flush()).resolves.toBeUndefined();
+
+      expect(mockConsumerUpload).toHaveBeenCalledTimes(2);
+    });
+
+    it('runs a flush requested during another one after it, so that it covers what arrived since', async () => {
       let resolveFlush!: () => void;
       mockProducerFlush.mockReturnValueOnce(new Promise<void>((resolve) => (resolveFlush = resolve)));
 
       const manager = await BatchManager.create(config, batchConfig);
       const firstFlush = manager.flush();
       const secondFlush = manager.flush();
+      await Promise.resolve();
+      expect(mockProducerFlush).toHaveBeenCalledTimes(1);
 
       resolveFlush();
       await firstFlush;
       await secondFlush;
 
-      expect(mockProducerFlush).toHaveBeenCalledTimes(1);
-      expect(mockConsumerUpload).toHaveBeenCalledTimes(1);
+      expect(mockProducerFlush).toHaveBeenCalledTimes(2);
+      expect(mockConsumerUpload).toHaveBeenCalledTimes(2);
     });
   });
 

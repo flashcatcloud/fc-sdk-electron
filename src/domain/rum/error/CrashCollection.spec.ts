@@ -36,12 +36,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { crashReporter } from 'electron';
 import { type TimeStamp } from '@flashcatcloud/browser-core';
 import { CrashCollection } from './CrashCollection';
+import type { MainView } from '../view';
 import { EventManager, EventKind, EventFormat, type RawRumEvent } from '../../../event';
 import { processMinidump } from '../../../wasm';
 import type { CrashReport } from '../../../wasm';
 import type { RawRumError } from '../rawRumData.types';
 import { displayError } from '../../../tools/display';
 import { addError } from '../../telemetry';
+import { type SessionManager, type SessionRecord, TrackingType } from '../../session';
 
 vi.mock('node:fs/promises');
 const mfs = mockFs();
@@ -91,8 +93,35 @@ function mockDmpFile(name = 'crash.dmp', birthtimeMs = 0) {
   mfs.unlink.mockResolvedValue(undefined);
 }
 
-async function startAndFlush(eventManager: EventManager) {
-  CrashCollection.start(eventManager);
+/** A session that is always collected, and a main-process view that always exists. */
+const TRACKED_SESSION_MANAGER = {
+  findSession: () => ({ id: 'session-id', trackingType: TrackingType.TRACKED, sampleRate: 0 }),
+  getSession: () => ({
+    id: 'session-id',
+    trackingType: TrackingType.TRACKED,
+    sampleRate: 0,
+    status: 'active' as const,
+  }),
+  setSessionHasError: vi.fn(),
+};
+
+function startCollection(
+  eventManager: EventManager,
+  sessionManager: Pick<SessionManager, 'findSession' | 'getSession' | 'setSessionHasError'> = TRACKED_SESSION_MANAGER
+) {
+  return CrashCollection.start(
+    eventManager,
+    sessionManager,
+    () => ({ id: 'main-view-id', startTime: 0 as TimeStamp }),
+    () => Promise.resolve()
+  );
+}
+
+async function startAndFlush(
+  eventManager: EventManager,
+  sessionManager?: Pick<SessionManager, 'findSession' | 'getSession' | 'setSessionHasError'>
+) {
+  startCollection(eventManager, sessionManager);
   resolveWhenReady();
   await vi.advanceTimersToNextTimerAsync();
 }
@@ -121,7 +150,7 @@ describe('CrashCollection', () => {
   });
 
   it('starts the native crash reporter', () => {
-    CrashCollection.start(eventManager);
+    startCollection(eventManager);
 
     // eslint-disable-next-line @typescript-eslint/unbound-method
     expect(crashReporter.start).toHaveBeenCalledWith({ uploadToServer: false, ignoreSystemCrashHandler: true });
@@ -781,5 +810,128 @@ describe('CrashCollection', () => {
     const second = rawRumEvents[1].data as RawRumError;
     expect(first.error.fingerprint).toBe('SIGSEGV|MyApp|0x12ab3c');
     expect(second.error.fingerprint).toBe(first.error.fingerprint);
+  });
+
+  describe('a crash of a session kept by sessionOnError', () => {
+    const VIEW_START = 400 as TimeStamp;
+    const CRASH_TIME = 1000 as TimeStamp;
+    let calls: string[];
+
+    const WITHHELD: SessionRecord = { id: 'withheld', trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 0 };
+    const NEXT_SESSION: SessionRecord = { id: 'next', trackingType: TrackingType.TRACKED, sampleRate: 100 };
+
+    /** `session` is the one the crash happened in; `current` the one in force now. */
+    function sessionManagerFor(session: SessionRecord | undefined, current: SessionRecord = NEXT_SESSION) {
+      return {
+        findSession: () => session,
+        getSession: () => ({ ...current, status: 'active' as const }),
+        setSessionHasError: vi.fn(() => calls.push('setSessionHasError')),
+      };
+    }
+
+    async function processCrash(
+      sessionManager: Pick<SessionManager, 'findSession' | 'getSession' | 'setSessionHasError'>,
+      findView: () => MainView | undefined = () => ({ id: 'crashed-view', startTime: VIEW_START }),
+      writtenToDisk: () => Promise<void> = () => Promise.resolve()
+    ) {
+      mockDmpFile('crash.dmp', CRASH_TIME);
+      vi.mocked(processMinidump).mockResolvedValue(createMinidumpResult());
+      eventManager.registerHandler<RawRumEvent>({
+        canHandle: (event): event is RawRumEvent => event.kind === EventKind.RAW,
+        handle: (event) => calls.push(event.data.type),
+      });
+      CrashCollection.start(eventManager, sessionManager, findView, writtenToDisk);
+      resolveWhenReady();
+      await vi.advanceTimersToNextTimerAsync();
+    }
+
+    beforeEach(() => {
+      calls = [];
+    });
+
+    it('releases a session that is over and had not reported an error, and rebuilds its view ahead of the crash', async () => {
+      const sessionManager = sessionManagerFor(WITHHELD);
+
+      await processCrash(sessionManager);
+
+      // Nothing of a session that is over is held, so the mark comes first: it is what lets the
+      // view and the crash pass assembly.
+      expect(sessionManager.setSessionHasError).toHaveBeenCalledWith('withheld', CRASH_TIME);
+      expect(calls).toEqual(['setSessionHasError', 'view', 'error']);
+      expect(rawRumEvents[0]).toMatchObject({
+        startTime: VIEW_START,
+        data: {
+          type: 'view',
+          date: VIEW_START,
+          view: { id: 'crashed-view', is_active: false, error: { count: 1 }, time_spent: 600_000_000 },
+          _dd: { document_version: 1 },
+        },
+      });
+      expect((rawRumEvents[1].data as RawRumError).error.is_crash).toBe(true);
+    });
+
+    it('still releases the session and reports the crash, under a view of its own, when its view is gone from the history', async () => {
+      const sessionManager = sessionManagerFor(WITHHELD);
+
+      await processCrash(sessionManager, () => undefined);
+
+      expect(sessionManager.setSessionHasError).toHaveBeenCalledWith('withheld', CRASH_TIME);
+      expect(calls).toEqual(['setSessionHasError', 'error']);
+      const crash = rawRumEvents[0].data as RawRumError;
+      expect(crash.error.is_crash).toBe(true);
+      expect(typeof crash.view?.id).toBe('string');
+    });
+
+    it('keeps the dump until its report is written to disk, and deletes it then', async () => {
+      let written!: () => void;
+      const writtenToDisk = () => new Promise<void>((resolve) => (written = resolve));
+      mfs.unlink.mockResolvedValue(undefined);
+      const processing = processCrash(sessionManagerFor(WITHHELD), undefined, writtenToDisk);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(calls).toContain('error');
+      expect(mfs.unlink).not.toHaveBeenCalled();
+
+      written();
+      await processing;
+      expect(mfs.unlink).toHaveBeenCalledWith('/mock/crash/dumps/crash.dmp');
+    });
+
+    it('keeps the dump when its report could not be written, to report it on the next launch', async () => {
+      mfs.unlink.mockResolvedValue(undefined);
+
+      await processCrash(sessionManagerFor(WITHHELD), undefined, () => Promise.reject(new Error('ENOSPC')));
+
+      expect(calls).toContain('error');
+      expect(mfs.unlink).not.toHaveBeenCalled();
+    });
+
+    it('leaves the mark to the release when the crashed session was resumed and is the current one', async () => {
+      const sessionManager = sessionManagerFor(WITHHELD, WITHHELD);
+
+      await processCrash(sessionManager);
+
+      // The rebuilt view and the crash join what this launch holds, and the mark lands when that
+      // is released — a mark now would say the view had reached the batch before it had.
+      expect(sessionManager.setSessionHasError).not.toHaveBeenCalled();
+      expect(calls).toEqual(['view', 'error']);
+    });
+
+    it.each([
+      ['a drawn session', { id: 'drawn', trackingType: TrackingType.TRACKED, sampleRate: 0 }],
+      [
+        'a session already released',
+        { id: 'released', trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 0, hasError: true },
+      ],
+      ['a session the draw did not keep', { id: 'not-kept', trackingType: TrackingType.NOT_TRACKED, sampleRate: 0 }],
+      ['no session at all', undefined],
+    ])('reports the crash alone for %s', async (_, session) => {
+      const sessionManager = sessionManagerFor(session as SessionRecord | undefined);
+
+      await processCrash(sessionManager);
+
+      expect(sessionManager.setSessionHasError).not.toHaveBeenCalled();
+      expect(calls).toEqual(['error']);
+    });
   });
 });

@@ -23,6 +23,11 @@ interface ElectronAppWindow {
     openBridgeFileWindowNoIsolation: () => Promise<void>;
     openBridgeHttpWindow: () => Promise<void>;
     killBridgeWindowRenderer: () => Promise<void>;
+    generateUncaughtExceptionAndExit: () => Promise<void>;
+    generateManualErrorAndExit: () => Promise<void>;
+    generateManualErrorOnWillQuit: () => Promise<void>;
+    generateManualErrorAndAppExit: () => Promise<void>;
+    generateManualErrorOnProcessExit: () => Promise<void>;
   };
 }
 
@@ -64,6 +69,41 @@ export class MainPage {
 
   async generateUncaughtException() {
     await this.page.locator('#generate-uncaught-exception').click();
+  }
+
+  /** Fire and forget: the process ends before the call could answer. */
+  generateUncaughtExceptionAndExit() {
+    void this.page
+      .evaluate(() => (globalThis as unknown as ElectronAppWindow).electronAPI.generateUncaughtExceptionAndExit())
+      .catch(() => undefined);
+  }
+
+  /** Fire and forget, as above. */
+  generateManualErrorAndExit() {
+    void this.page
+      .evaluate(() => (globalThis as unknown as ElectronAppWindow).electronAPI.generateManualErrorAndExit())
+      .catch(() => undefined);
+  }
+
+  /** Fire and forget, as above. */
+  generateManualErrorOnWillQuit() {
+    void this.page
+      .evaluate(() => (globalThis as unknown as ElectronAppWindow).electronAPI.generateManualErrorOnWillQuit())
+      .catch(() => undefined);
+  }
+
+  /** Fire and forget, as above. */
+  generateManualErrorOnProcessExit() {
+    void this.page
+      .evaluate(() => (globalThis as unknown as ElectronAppWindow).electronAPI.generateManualErrorOnProcessExit())
+      .catch(() => undefined);
+  }
+
+  /** Fire and forget, as above. */
+  generateManualErrorAndAppExit() {
+    void this.page
+      .evaluate(() => (globalThis as unknown as ElectronAppWindow).electronAPI.generateManualErrorAndAppExit())
+      .catch(() => undefined);
   }
 
   async generateUnhandledRejection() {
@@ -140,6 +180,15 @@ export class MainPage {
 
   async mainPing(): Promise<string> {
     return await this.page.evaluate(() => (globalThis as unknown as ElectronAppWindow).electronAPI.ping());
+  }
+
+  /** The session id the SDK's bridge answers renderers with: `''` when there is none to collect. */
+  async getBridgeSessionId(): Promise<string> {
+    return await this.page.evaluate(() =>
+      (
+        globalThis as unknown as { DatadogEventBridge: { getSessionId: () => string } }
+      ).DatadogEventBridge.getSessionId()
+    );
   }
 
   async flushTransport() {

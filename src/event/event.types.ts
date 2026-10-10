@@ -70,7 +70,24 @@ export interface UserChangedEvent {
   lifecycle: typeof LifecycleKind.USER_CHANGED;
 }
 
-export type LifecycleEvent = EndUserActivityEvent | SessionExpiredEvent | SessionRenewEvent | UserChangedEvent;
+/**
+ * The main process hit an uncaught exception, after which applications commonly exit, or the
+ * application is quitting. Whatever is waiting to be written has to be written now rather than
+ * later.
+ */
+export interface AppMayExitEvent {
+  kind: typeof EventKind.LIFECYCLE;
+  lifecycle: typeof LifecycleKind.APP_MAY_EXIT;
+  /** The process is exiting: nothing runs after the current listeners, so nothing may be deferred. */
+  terminal: boolean;
+}
+
+export type LifecycleEvent =
+  | EndUserActivityEvent
+  | SessionExpiredEvent
+  | SessionRenewEvent
+  | UserChangedEvent
+  | AppMayExitEvent;
 export type Event = RawEvent | ServerEvent | LifecycleEvent;
 
 export interface EventHandler<T extends Event> {

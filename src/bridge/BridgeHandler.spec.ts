@@ -307,6 +307,42 @@ describe('BridgeHandler', () => {
       });
     });
 
+    it('should drop a rum envelope whose event is not a RUM event type, telemetry included', () => {
+      const notified: unknown[] = [];
+      eventManager.registerHandler({
+        canHandle: (event) => event.kind === EventKind.RAW,
+        handle: (event) => notified.push(event),
+      });
+
+      simulateIpcMessage(
+        JSON.stringify({ eventType: 'rum', event: { type: 'telemetry', telemetry: { message: 'x' } } })
+      );
+      simulateIpcMessage(JSON.stringify({ eventType: 'rum', event: { type: 'logs', message: 'x' } }));
+
+      expect(notified).toEqual([]);
+    });
+
+    it('should drop a renderer event carrying a fraction where the intake decodes an integer, and keep one where it decodes a float', () => {
+      const notified: unknown[] = [];
+      eventManager.registerHandler({
+        canHandle: (event) => event.kind === EventKind.RAW,
+        handle: (event) => notified.push(event),
+      });
+
+      simulateIpcMessage(
+        JSON.stringify({ eventType: 'rum', event: { type: 'error', date: 1.5, error: { message: 'x' } } })
+      );
+      simulateIpcMessage(
+        JSON.stringify({
+          eventType: 'rum',
+          event: { type: 'view', date: 1, view: { id: 'v', cumulative_layout_shift: 0.1 } },
+        })
+      );
+
+      expect(notified).toHaveLength(1);
+      expect((notified[0] as { data: { type: string } }).data.type).toBe('view');
+    });
+
     it('should apply the pre-warm timing correction before notifying', () => {
       const collected: RawRumEvent[] = [];
       eventManager.registerHandler<RawRumEvent>({
@@ -372,8 +408,8 @@ describe('BridgeHandler', () => {
     });
 
     it('should track each webContents separately', () => {
-      simulateIpcMessage(JSON.stringify({ eventType: 'rum', event: { view: { id: 'abc' } } }), 1);
-      simulateIpcMessage(JSON.stringify({ eventType: 'rum', event: { view: { id: 'def' } } }), 2);
+      simulateIpcMessage(JSON.stringify({ eventType: 'rum', event: { type: 'view', view: { id: 'abc' } } }), 1);
+      simulateIpcMessage(JSON.stringify({ eventType: 'rum', event: { type: 'view', view: { id: 'def' } } }), 2);
 
       expect(rendererRegistry.get(1)?.viewId).toBe('abc');
       expect(rendererRegistry.get(2)?.viewId).toBe('def');

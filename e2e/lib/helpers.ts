@@ -49,6 +49,8 @@ export interface TestFixtures {
   intake: Intake;
   testServer: TestServer;
   rumBrowserSdk: Record<string, unknown> | null;
+  /** Merged over the SDK configuration every scenario starts from. */
+  sdkConfig: Partial<InitConfiguration>;
 }
 
 /**
@@ -78,9 +80,9 @@ export const test = base.extend<TestFixtures>({
     { option: true },
   ],
 
-  electronApp: async ({ intake, rumBrowserSdk }, use) => {
+  electronApp: async ({ intake, rumBrowserSdk, sdkConfig }, use) => {
     const userDataDir = await createUserDataDir();
-    const electronApp = await launchApp(intake, userDataDir, rumBrowserSdk);
+    const electronApp = await launchApp(intake, userDataDir, rumBrowserSdk, 'await', sdkConfig);
     await use(electronApp);
     await electronApp.close();
     await cleanupUserDataDir(userDataDir);
@@ -99,6 +101,7 @@ export const test = base.extend<TestFixtures>({
   },
 
   rumBrowserSdk: [null, { option: true }],
+  sdkConfig: [{}, { option: true }],
 });
 
 /** How the test app sequences `init()` against window creation. See `getInitMode` in its main.ts. */
@@ -108,7 +111,8 @@ async function launchApp(
   intake: Intake,
   userDataDir: string,
   rumBrowserSdk: Record<string, unknown> | null = null,
-  initMode: InitMode = 'await'
+  initMode: InitMode = 'await',
+  sdkConfig: Partial<InitConfiguration> = {}
 ): Promise<ElectronApplication> {
   const env: Record<string, string> = { FC_ELECTRON_SDK_INIT_MODE: initMode };
   for (const key of HOST_ENV_ALLOWLIST) {
@@ -136,6 +140,7 @@ async function launchApp(
     telemetrySampleRate: 100,
     defaultPrivacyLevel: 'mask',
     allowedWebViewHosts: [],
+    ...sdkConfig,
   };
   env.FC_ELECTRON_SDK_CONFIG = JSON.stringify(electronSdkConfig);
 
@@ -169,9 +174,10 @@ async function waitForWindowLoaded(electronApp: ElectronApplication): Promise<{ 
 export async function launchAppManually(
   intake: Intake,
   userDataDir: string,
-  initMode: InitMode = 'await'
+  initMode: InitMode = 'await',
+  sdkConfig: Partial<InitConfiguration> = {}
 ): Promise<{ electronApp: ElectronApplication; window: Page; mainPage: MainPage }> {
-  const electronApp = await launchApp(intake, userDataDir, null, initMode);
+  const electronApp = await launchApp(intake, userDataDir, null, initMode, sdkConfig);
   const { window } = await waitForWindowLoaded(electronApp);
   return { electronApp, window, mainPage: new MainPage(window) };
 }

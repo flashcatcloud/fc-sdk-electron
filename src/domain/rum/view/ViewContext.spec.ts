@@ -43,6 +43,15 @@ describe('ViewContext', () => {
       expect(hooks.triggerRum({ eventType: 'view', startTime: T0 })).toBe(DISCARDED);
     });
 
+    it('RUM hook takes the view the event names itself, as a crash does when its view is gone from the history', async () => {
+      const hooks = createFormatHooks();
+      await ViewContext.init(hooks, EXPIRE_DELAY);
+
+      expect(hooks.triggerRum({ eventType: 'error', startTime: T0, viewId: 'crash-own-view' })).toMatchObject({
+        view: { id: 'crash-own-view' },
+      });
+    });
+
     it('span hook returns DISCARDED', async () => {
       const hooks = createFormatHooks();
       await ViewContext.init(hooks, EXPIRE_DELAY);
@@ -67,6 +76,16 @@ describe('ViewContext', () => {
 
       expect(hooks.triggerRum({ eventType: 'view', startTime: T0 })).toMatchObject({
         view: { id: VIEW_ID, name: 'main process', url: 'electron://main-process' },
+      });
+    });
+
+    it('RUM hook prefers the view in force over the one the event names', async () => {
+      const hooks = createFormatHooks();
+      const context = await ViewContext.init(hooks, EXPIRE_DELAY);
+      context.add('view-in-force', T0);
+
+      expect(hooks.triggerRum({ eventType: 'error', startTime: T0, viewId: 'named' })).toMatchObject({
+        view: { id: 'view-in-force' },
       });
     });
 

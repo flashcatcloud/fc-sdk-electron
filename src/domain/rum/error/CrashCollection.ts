@@ -1,10 +1,12 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
-import { generateUUID, type TimeStamp } from '@flashcatcloud/browser-core';
+import { elapsed, generateUUID, toServerDuration, type TimeStamp } from '@flashcatcloud/browser-core';
 import { app, crashReporter } from 'electron';
 import { EventFormat, EventKind, EventManager, EventSource } from '../../../event';
 import type { CrashReport } from '../../../wasm';
-import type { RawRumError } from '../rawRumData.types';
+import type { RawRumError, RawRumView } from '../rawRumData.types';
+import { type SessionManager, type SessionRecord, withholdsEvents } from '../../session';
+import type { MainView } from '../view';
 import type { RumErrorEvent } from '../rumEvent.types';
 import { displayError, displayInfo } from '../../../tools/display';
 import { addError, monitor } from '../../telemetry';
@@ -19,11 +21,22 @@ import { toIntakeTimeStamp } from '../../../tools/intakeTimeStamp';
  *   - emits RUM error events
  */
 export class CrashCollection {
-  private constructor(private readonly eventManager: EventManager) {}
+  private constructor(
+    private readonly eventManager: EventManager,
+    private readonly sessionManager: Pick<SessionManager, 'findSession' | 'getSession' | 'setSessionHasError'>,
+    private readonly findView: (startTime: TimeStamp) => MainView | undefined,
+    /** Resolves once everything handed to the transport so far is in a batch file. */
+    private readonly writtenToDisk: () => Promise<void>
+  ) {}
 
-  static start(eventManager: EventManager): CrashCollection {
+  static start(
+    eventManager: EventManager,
+    sessionManager: Pick<SessionManager, 'findSession' | 'getSession' | 'setSessionHasError'>,
+    findView: (startTime: TimeStamp) => MainView | undefined,
+    writtenToDisk: () => Promise<void>
+  ): CrashCollection {
     crashReporter.start({ uploadToServer: false, ignoreSystemCrashHandler: true });
-    const collection = new CrashCollection(eventManager);
+    const collection = new CrashCollection(eventManager, sessionManager, findView, writtenToDisk);
     // TODO(RUM-15046): wait for app to be stable (electron + browser windows)
     void app.whenReady().then(monitor(() => collection.processCrashFiles()));
     return collection;
@@ -42,6 +55,9 @@ export class CrashCollection {
     displayInfo(`${dmpFiles.length} crash dumps to process`);
 
     for (const filePath of dmpFiles) {
+      // The dump is the only durable copy of the crash until its report is in a batch file: a
+      // dump whose report could not be written is kept for the next launch to report.
+      let reportWritten = true;
       try {
         const fileStat = await fs.stat(filePath);
         // birthtimeMs can be 0 on Linux (ext4), fall back to mtimeMs.
@@ -51,22 +67,96 @@ export class CrashCollection {
         const bytes = new Uint8Array(await fs.readFile(filePath));
         const crashReport = await processMinidump(bytes);
 
+        const session = this.sessionManager.findSession(crashTime);
+        const view = this.findView(crashTime);
+        this.releaseWithheldSession(session, view, crashTime);
         this.eventManager.notify({
           kind: EventKind.RAW,
           source: EventSource.MAIN,
           format: EventFormat.RUM,
-          data: buildCrashErrorEvent(crashReport, crashTime),
+          // Under the view it happened in — or, when that view is gone from the history, under a
+          // view of its own: a session must not lose its crash for want of a container.
+          data: buildCrashErrorEvent(crashReport, crashTime, view?.id ?? generateUUID()),
           startTime: crashTime,
         });
+        try {
+          await this.writtenToDisk();
+        } catch (error) {
+          reportWritten = false;
+          throw error;
+        }
       } catch (error) {
         addError(error);
         displayError('Failed to process crash dump:', filePath, error);
       } finally {
-        await discardCrashFile(filePath);
+        if (reportWritten) {
+          await discardCrashFile(filePath);
+        }
       }
     }
     displayInfo(`Crash dump processing done.`);
   }
+
+  /**
+   * A crash is reported a launch after it happened, by which time a session kept by `sessionOnError`
+   * has lost everything it held in memory — including the view the crash hangs from, which the
+   * backend needs to build the session at all. So when the crashed session had not reported an error
+   * by the time it crashed, the crash releases it, and its view is rebuilt from the view history to
+   * go with it. Judged as of the crash: an error the same session reported since, after a restart
+   * resumed it, released this launch's views, not the one the crash happened in.
+   *
+   * This is all the history such a crash gets: keeping the withheld buffer on disk instead would
+   * cost a session that never errors constant writes. When the view itself is gone from the
+   * history, the session is still released and the crash goes alone.
+   */
+  private releaseWithheldSession(
+    session: SessionRecord | undefined,
+    view: MainView | undefined,
+    crashTime: TimeStamp
+  ): void {
+    if (!session || !withholdsEvents(session)) {
+      return;
+    }
+    const current = this.sessionManager.getSession();
+    if (!(current.status === 'active' && current.id === session.id)) {
+      // A session that is over has nothing held for it, so the view and the crash go straight to
+      // the batch: marking it first is what lets them pass assembly, and it is as good as released.
+      // A session resumed since is another matter: what it holds, these two included, leaves at
+      // the release the crash earns it, and the mark belongs there — a mark written now would tell
+      // a crash of this launch that the view had reached the batch when it had not.
+      this.sessionManager.setSessionHasError(session.id, crashTime);
+    }
+    if (!view) {
+      return;
+    }
+    this.eventManager.notify({
+      kind: EventKind.RAW,
+      source: EventSource.MAIN,
+      format: EventFormat.RUM,
+      data: buildMainViewEvent(view, crashTime),
+      startTime: view.startTime,
+    });
+  }
+}
+
+/**
+ * The crashed view as of the crash. Its earlier updates were never uploaded, so this is the first
+ * version the backend sees.
+ */
+function buildMainViewEvent(view: MainView, crashTime: TimeStamp): RawRumView {
+  return {
+    type: 'view',
+    date: view.startTime,
+    view: {
+      id: view.id,
+      time_spent: toServerDuration(elapsed(view.startTime, crashTime)),
+      is_active: false,
+      action: { count: 0 },
+      error: { count: 1 },
+      resource: { count: 0 },
+    },
+    _dd: { document_version: 1 },
+  };
 }
 
 /**
@@ -118,7 +208,7 @@ function calculateMaxAddress(baseAddress: string | undefined, size: number | und
  * binary images and system info are all available, only the exception type, the
  * faulting address and the crashed thread are unknown.
  */
-function buildCrashErrorEvent(crashReport: CrashReport, crashTime: TimeStamp): RawRumError {
+function buildCrashErrorEvent(crashReport: CrashReport, crashTime: TimeStamp, viewId: string): RawRumError {
   const threads = formatThreads(crashReport);
   const crashedThread = threads.find((t) => t.crashed);
   const exceptionType = crashReport.crash_info?.type;
@@ -134,6 +224,7 @@ function buildCrashErrorEvent(crashReport: CrashReport, crashTime: TimeStamp): R
   return {
     date: crashTime,
     type: 'error',
+    view: { id: viewId },
     error: {
       id: generateUUID(),
       message: 'Application crashed',

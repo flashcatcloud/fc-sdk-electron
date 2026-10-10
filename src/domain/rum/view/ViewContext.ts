@@ -7,6 +7,11 @@ import { SESSION_TIME_OUT_DELAY } from '../../session';
 
 export const VIEW_HISTORY_FILE_NAME = '_dd_view_history';
 
+export interface MainView {
+  id: string;
+  startTime: TimeStamp;
+}
+
 export class ViewContext {
   private readonly history: DiskValueHistory<string>;
 
@@ -14,7 +19,9 @@ export class ViewContext {
     this.history = history;
 
     hooks.registerRum((params) => {
-      const id = this.history.find(params.startTime);
+      // The view in force at the time, or the one the event names itself when none was: a crash
+      // reported on the next launch is not lost for want of its view.
+      const id = this.history.find(params.startTime) ?? params.viewId;
       if (id === undefined) return DISCARDED;
       return { view: { id, name: 'main process', url: 'electron://main-process' } }; // TODO(RUM-14657) improve name / url
     });
@@ -36,6 +43,12 @@ export class ViewContext {
     const filePath = path.join(app.getPath('userData'), VIEW_HISTORY_FILE_NAME);
     const history = await DiskValueHistory.init<string>({ filePath, expireDelay });
     return new ViewContext(history, hooks);
+  }
+
+  /** The main-process view in force at `startTime`, or `undefined` when there was none. */
+  findView(startTime: TimeStamp): MainView | undefined {
+    const entry = this.history.findEntry(startTime);
+    return entry && { id: entry.value, startTime: entry.startTime };
   }
 
   add(id: string, startTime: TimeStamp = timeStampNow()): void {

@@ -151,6 +151,63 @@ describe('Assembly — renderer events', () => {
     expect(data.ddtags).toBe('sdk_version:1.0.0');
   });
 
+  it("should report the main process's sampling on renderer events, keeping the renderer's other configuration", () => {
+    const { eventManager, hooks } = setup();
+    hooks.registerRum(() => ({
+      session: { sampled_for_error: true },
+      _dd: { configuration: { session_sample_rate: 0 } },
+    }));
+    const collected: ServerEvent[] = [];
+    eventManager.registerHandler<ServerEvent>({
+      canHandle: (event): event is ServerEvent => event.kind === EventKind.SERVER,
+      handle: (event) => collected.push(event),
+    });
+
+    eventManager.notify({
+      kind: EventKind.RAW,
+      source: EventSource.RENDERER,
+      format: EventFormat.RUM,
+      data: {
+        type: 'view',
+        source: 'browser',
+        view: { id: 'renderer-view-id' },
+        session: { id: 'renderer-session-id', type: 'user' },
+        application: { id: 'renderer-app-id' },
+        _dd: { configuration: { session_sample_rate: 100, session_replay_sample_rate: 20 } },
+      },
+    } as unknown as RawRumEvent);
+
+    const data = collected[0].data as RumEvent;
+    expect(data.session).toMatchObject({ id: 'main-session-id', sampled_for_error: true });
+    expect(data._dd.configuration).toEqual({ session_sample_rate: 0, session_replay_sample_rate: 20 });
+  });
+
+  it("should replace a renderer's own sampling marker with the main process's, absent included", () => {
+    const { eventManager } = setup();
+    const collected: ServerEvent[] = [];
+    eventManager.registerHandler<ServerEvent>({
+      canHandle: (event): event is ServerEvent => event.kind === EventKind.SERVER,
+      handle: (event) => collected.push(event),
+    });
+
+    eventManager.notify({
+      kind: EventKind.RAW,
+      source: EventSource.RENDERER,
+      format: EventFormat.RUM,
+      data: {
+        type: 'view',
+        source: 'browser',
+        view: { id: 'renderer-view-id' },
+        session: { id: 'renderer-session-id', type: 'user', sampled_for_error: true },
+        application: { id: 'renderer-app-id' },
+      },
+    } as unknown as RawRumEvent);
+
+    const data = collected[0].data as RumEvent;
+    expect(data.session.id).toBe('main-session-id');
+    expect(data.session).not.toHaveProperty('sampled_for_error', true);
+  });
+
   it('should preserve renderer view attributes', () => {
     const { eventManager } = setup();
     const collected: ServerEvent[] = [];

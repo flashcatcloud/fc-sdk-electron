@@ -6,7 +6,7 @@ import {
   timeStampNow,
   toStackTraceString,
 } from '@flashcatcloud/browser-core';
-import { EventFormat, EventKind, EventManager, EventSource } from '../../../event';
+import { EventFormat, EventKind, EventManager, EventSource, LifecycleKind } from '../../../event';
 import type { RawRumError } from '../rawRumData.types';
 import { monitor } from '../../telemetry';
 import type { StackPathNormalizer } from '../../StackPathNormalizer';
@@ -32,6 +32,7 @@ export interface ErrorOptions {
  */
 export class ErrorCollection {
   private readonly errorListener: (error: unknown) => void;
+  private readonly uncaughtExceptionListener: (error: unknown) => void;
 
   constructor(
     private readonly eventManager: EventManager,
@@ -44,7 +45,12 @@ export class ErrorCollection {
         nonErrorPrefix: 'Uncaught',
       })
     );
-    process.on('uncaughtException', this.errorListener);
+    this.uncaughtExceptionListener = monitor((error: unknown) => {
+      this.errorListener(error);
+      // After the error itself, so that whatever it released is handed over with it.
+      this.eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.APP_MAY_EXIT, terminal: false });
+    });
+    process.on('uncaughtException', this.uncaughtExceptionListener);
     process.on('unhandledRejection', this.errorListener);
   }
 
@@ -61,7 +67,7 @@ export class ErrorCollection {
   }
 
   stop(): void {
-    process.off('uncaughtException', this.errorListener);
+    process.off('uncaughtException', this.uncaughtExceptionListener);
     process.off('unhandledRejection', this.errorListener);
   }
 

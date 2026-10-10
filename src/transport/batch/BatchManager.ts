@@ -24,7 +24,8 @@ export class BatchManager {
   private consumer: BatchConsumer;
   private uploadFrequency: number;
   private timeoutId: ReturnType<typeof setTimeout> | null = null;
-  private isUploading = false;
+  /** Upload cycles run one after another: a `flush()` during a cycle waits for it, then runs its own. */
+  private cycles: Promise<void> = Promise.resolve();
 
   private constructor(producer: BatchProducer, consumer: BatchConsumer, uploadFrequency: number) {
     this.producer = producer;
@@ -52,6 +53,16 @@ export class BatchManager {
   /** Enqueues data to be written to the current batch file. */
   post(data: unknown) {
     this.producer.post(data);
+  }
+
+  /** Writes what is posted but not written yet before returning. See {@link BatchProducer.writePendingSync}. */
+  writePendingSync() {
+    this.producer.writePendingSync();
+  }
+
+  /** Drains the write queue and rotates the current batch, without uploading. */
+  flushToDisk(): Promise<void> {
+    return this.producer.flush();
   }
 
   /** Drains the write queue, rotates the current batch, and uploads all pending files. */
@@ -82,20 +93,15 @@ export class BatchManager {
   }
 
   /** Flushes the producer to rotate pending files, then uploads all ready batches. */
-  private async triggerUploadCycle() {
-    if (this.isUploading) {
-      return;
-    }
-
-    this.isUploading = true;
-
-    try {
+  private triggerUploadCycle(): Promise<void> {
+    const cycle = this.cycles.then(async () => {
       // Flush producer first to rotate any pending .tmp files to .log
       await this.producer.flush();
       // Then upload all .log files
       await this.consumer.upload();
-    } finally {
-      this.isUploading = false;
-    }
+    });
+    // A failed cycle is its caller's to report; the next cycle runs regardless.
+    this.cycles = cycle.catch(() => undefined);
+    return cycle;
   }
 }

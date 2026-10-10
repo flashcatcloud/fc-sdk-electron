@@ -15,9 +15,9 @@ import { TelemetryEvent } from '../domain/telemetry';
  * - **Main-process events**: fully assembled by combining raw data with all
  *   registered hook results (commonContext, session, view).
  * - **Renderer events**: arrive pre-assembled by `@flashcatcloud/browser-rum` in
- *   the renderer process. Only `session.id` and `application.id` are
- *   overridden from the main process; the renderer's own view, source,
- *   service, and other attributes are preserved.
+ *   the renderer process. Only `session.id`, `application.id` and the session's
+ *   sampling attributes are overridden from the main process; the renderer's own
+ *   view, source, service, and other attributes are preserved.
  */
 export class Assembly {
   constructor(
@@ -51,9 +51,10 @@ export class Assembly {
 
   /**
    * Renderer RUM events arrive already assembled by `@flashcatcloud/browser-rum`.
-   * Only `session.id` and `application.id` are overridden from the main
-   * process hooks, preserving the renderer's own view, source, and other
-   * attributes.
+   * Only `session.id`, `application.id` and the session's sampling attributes
+   * (`session.sampled_for_error`, `_dd.configuration.session_sample_rate`) are
+   * overridden from the main process hooks, preserving the renderer's own view,
+   * source, and other attributes.
    */
   private assembleRendererRumEvent(event: RawRumEvent): ServerEvent | DISCARDED {
     const hookResult = this.hooks.triggerRum({
@@ -65,17 +66,22 @@ export class Assembly {
       return DISCARDED;
     }
 
-    const { session, application, view } = hookResult ?? {};
+    const { session, application, view, _dd } = hookResult ?? {};
     const mainProcessAttributes = {
-      session: { id: session?.id },
+      // The main process draws the session, so the sampling it reports is the main process's too.
+      session: { id: session?.id, sampled_for_error: session?.sampled_for_error },
       application: { id: application?.id },
       container: { view: { id: view?.id }, source: 'electron' },
+      _dd: { configuration: { session_sample_rate: _dd?.configuration?.session_sample_rate } },
     };
 
     // Note `usr` is not in `mainProcessAttributes`: the anonymous id must not be stamped here (the
     // renderer reads the same id off the bridge itself), and the identity needs replacing rather
     // than merging — see below.
     const data = combine(event.data, mainProcessAttributes) as RumEvent;
+    // Assigned rather than merged: `combine` keeps the renderer's value where the main process has
+    // none, and the marker is the main process's to set or clear.
+    data.session.sampled_for_error = session?.sampled_for_error;
 
     return {
       kind: EventKind.SERVER,
@@ -130,6 +136,7 @@ export class Assembly {
       const hookResult = this.hooks.triggerRum({
         eventType: event.data.type,
         startTime,
+        viewId: (event.data as { view?: { id?: string } }).view?.id,
       });
       if (hookResult !== DISCARDED) {
         return {

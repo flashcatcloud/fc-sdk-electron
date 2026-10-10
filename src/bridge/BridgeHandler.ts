@@ -2,8 +2,10 @@ import { ipcMain, webContents } from 'electron';
 import type { IpcMainEvent } from 'electron';
 import { EventKind, EventSource, EventFormat, LifecycleKind } from '../event';
 import type { EventManager, LifecycleEvent, RawRumEvent } from '../event';
+import type { RumEvent } from '../domain/rum';
 import { monitor, addError as addTelemetryError } from '../domain/telemetry';
 import { BRIDGE_CHANNEL, CONFIG_CHANNEL, CONFIG_PUSH_CHANNEL } from '../common';
+import { hasFractionWhereIntakeDecodesInteger } from '../tools/intakeNumbers';
 import type { BridgeConfig } from '../common';
 import type { RendererRegistry } from '../domain/RendererRegistry';
 import type { User } from '../domain/UserContext';
@@ -11,6 +13,15 @@ import type { ViewTimingCorrector } from '../domain/ViewTimingCorrector';
 import type { StackPathNormalizer } from '../domain/StackPathNormalizer';
 
 type BridgeEventType = 'rum' | 'log' | 'internal_telemetry';
+
+const RUM_EVENT_TYPES = new Set<unknown>([
+  'view',
+  'action',
+  'error',
+  'resource',
+  'long_task',
+  'vital',
+] satisfies RumEvent['type'][]);
 
 interface BridgeEvent {
   eventType: BridgeEventType;
@@ -99,12 +110,28 @@ export class BridgeHandler {
     try {
       bridgeEvent = JSON.parse(msg) as BridgeEvent;
     } catch {
-      addTelemetryError(new Error(`Failed to parse bridge message: ${msg}`));
+      addTelemetryError(new Error(`Failed to parse bridge message: ${msg.slice(0, 200)}`));
       return;
     }
 
     switch (bridgeEvent.eventType) {
-      case 'rum':
+      case 'rum': {
+        // Only the RUM event types the intake accepts: an envelope claiming to be telemetry, say,
+        // is neither a RUM event nor the SDK's own telemetry, and would bypass what applies to
+        // either.
+        const type = (bridgeEvent.event as { type?: unknown } | undefined)?.type;
+        if (!RUM_EVENT_TYPES.has(type)) {
+          addTelemetryError(new Error('Dropped a renderer RUM event: unsupported type'));
+          break;
+        }
+        // A fraction where the intake decodes an integer fails the whole event there, silently —
+        // and an error that would never land must not earn a session its release.
+        if (hasFractionWhereIntakeDecodesInteger(bridgeEvent.event)) {
+          addTelemetryError(
+            new Error('Dropped a renderer RUM event: a number the intake decodes as an integer is fractional')
+          );
+          break;
+        }
         this.trackRenderer(bridgeEvent.event, webContentsId);
         // Both rewrite the event in place, before it is handed over: everything downstream
         // treats the bridged event as final. They are independent of one another and the order
@@ -121,6 +148,7 @@ export class BridgeHandler {
           data: bridgeEvent.event,
         } as RawRumEvent);
         break;
+      }
       case 'log':
         // TODO(RUM-15047)
         break;

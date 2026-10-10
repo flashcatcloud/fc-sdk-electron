@@ -1,0 +1,488 @@
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import type { RumErrorEvent, RumViewEvent } from '@flashcatcloud/electron-sdk';
+import {
+  test,
+  expect,
+  launchAppManually,
+  createUserDataDir,
+  cleanupUserDataDir,
+  waitForCrashDump,
+  ensureProcessGone,
+} from '../lib/helpers';
+import type { Intake } from '../lib/intake';
+import type { MainPage } from '../lib/mainPage';
+
+/** "Only error sessions": nothing is drawn by the plain rate, every session is kept on error. */
+const ON_ERROR_ONLY = { sessionSampleRate: 0, sessionOnError: true };
+/** Comfortably past the release jitter, which is at most 3 s. */
+const RELEASE_WAIT = 3_500;
+
+interface SessionEvent {
+  type: string;
+  date: number;
+  session: { id: string; sampled_for_error?: boolean };
+  view: { id: string; is_active?: boolean };
+  _dd?: { configuration?: { session_sample_rate?: number } };
+}
+
+/** Every RUM event received, telemetry aside: telemetry is not session data and is never withheld. */
+function rumEvents(intake: Intake): SessionEvent[] {
+  return intake
+    .getAllEvents()
+    .map((event) => event.body as SessionEvent)
+    .filter((body) => body.type !== 'telemetry');
+}
+
+/** Waits past the jitter, then flushes: the flush resolves once every pending batch is uploaded. */
+async function settle(mainPage: MainPage, waitMs = RELEASE_WAIT) {
+  await new Promise((resolve) => setTimeout(resolve, waitMs));
+  await mainPage.flushTransport();
+}
+
+/**
+ * Optional evidence dump: with `FC_E2E_CAPTURE_DIR` set, every event the fake intake received is
+ * written there per scenario, so a run can be inspected after the fact.
+ */
+test.afterEach(async ({ intake }, testInfo) => {
+  const captureDir = process.env.FC_E2E_CAPTURE_DIR;
+  if (!captureDir) {
+    return;
+  }
+  await mkdir(captureDir, { recursive: true });
+  const fileName = `${testInfo.titlePath
+    .slice(1)
+    .join(' - ')
+    .replace(/[^\w.-]+/g, '_')}.json`;
+  await writeFile(join(captureDir, fileName), JSON.stringify(intake.getAllEvents(), null, 2));
+});
+
+test.describe('sessionOnError', () => {
+  test.use({ sdkConfig: ON_ERROR_ONLY, rumBrowserSdk: {} });
+  // Each scenario sleeps past the release jitter more than once, which leaves little of the default
+  // budget for a loaded machine.
+  test.describe.configure({ timeout: 60_000 });
+
+  test('uploads nothing for a session that never reports an error', async ({ intake, mainPage, testServer }) => {
+    await mainPage.generateActivity();
+    await mainPage.mainFetch(testServer.urlFor(200));
+    await settle(mainPage);
+
+    expect(rumEvents(intake)).toEqual([]);
+  });
+
+  test('releases the history of the main process and the renderer once an error is reported', async ({
+    intake,
+    mainPage,
+    testServer,
+  }) => {
+    // Before the error: a renderer click (action) and a main-process request (resource).
+    await mainPage.generateActivity();
+    await mainPage.mainFetch(testServer.urlFor(200));
+    await settle(mainPage);
+    expect(rumEvents(intake)).toEqual([]);
+
+    await mainPage.generateManualError();
+    await settle(mainPage);
+
+    const events = rumEvents(intake);
+    const types = new Set(events.map((event) => event.type));
+    // A loaded machine can add a renderer long task, which is released along with the rest.
+    for (const type of ['view', 'action', 'resource', 'error']) {
+      expect(types).toContain(type);
+    }
+
+    const sessionIds = new Set(events.map((event) => event.session.id));
+    expect(sessionIds.size).toBe(1);
+
+    // Both the main-process view and the renderer view, each marked as kept on error.
+    const views = events.filter((event) => event.type === 'view');
+    expect(new Set(views.map((view) => view.view.id)).size).toBeGreaterThanOrEqual(2);
+    for (const view of views) {
+      expect(view.session.sampled_for_error).toBe(true);
+    }
+    // One session standing for itself, on every event of both processes.
+    for (const event of events) {
+      expect(event._dd?.configuration?.session_sample_rate).toBe(0);
+    }
+    // The first view to arrive is the earliest one: the backend builds the session from it.
+    const firstView = views[0];
+    expect(Math.min(...views.map((view) => view.date))).toBe(firstView.date);
+
+    const telemetry = intake
+      .getAllEvents()
+      .map((event) => event.body as { type: string; telemetry?: { message?: string } })
+      .filter((body) => body.type === 'telemetry' && body.telemetry?.message === 'Error session event buffer released');
+    expect(telemetry).toHaveLength(1);
+    expect(intake.getProtocolViolations()).toEqual([]);
+
+    // After the release, events flow as they happen.
+    intake.clear();
+    await mainPage.mainFetch(testServer.urlFor(200));
+    await settle(mainPage, 0);
+    expect(rumEvents(intake).some((event) => event.type === 'resource')).toBe(true);
+  });
+
+  test('is released by a renderer error, and not by one the renderer beforeSend dropped', async ({
+    intake,
+    mainPage,
+    electronApp,
+  }) => {
+    const bridgeWindow = await mainPage.openBridgeFileWindow(electronApp);
+    await bridgeWindow.generateError('dropped-by-beforeSend');
+    await settle(mainPage);
+    expect(rumEvents(intake)).toEqual([]);
+
+    await bridgeWindow.generateError('kept renderer error');
+    await settle(mainPage);
+
+    const errors = rumEvents(intake).filter((event) => event.type === 'error') as unknown as RumErrorEvent[];
+    expect(errors.map((error) => error.error.message)).toEqual([expect.stringContaining('kept renderer error')]);
+    expect(rumEvents(intake).some((event) => event.type === 'view' && event.session.sampled_for_error)).toBe(true);
+  });
+
+  test('throws away a session that ends without an error, stragglers included', async ({
+    intake,
+    mainPage,
+    testServer,
+  }) => {
+    await mainPage.generateActivity();
+    await mainPage.mainFetch(testServer.urlFor(200));
+    const bridgeSessionBefore = await mainPage.getBridgeSessionId();
+    await mainPage.stopSession();
+    await settle(mainPage);
+    expect(rumEvents(intake)).toEqual([]);
+
+    // The next session is kept on error too; its error releases it, and only it.
+    await mainPage.generateActivity();
+    await mainPage.generateManualError();
+    await settle(mainPage);
+
+    const sessionIds = new Set(rumEvents(intake).map((event) => event.session.id));
+    expect(sessionIds.size).toBe(1);
+    expect(sessionIds.has(bridgeSessionBefore)).toBe(false);
+  });
+
+  test('reports the end of a session that was released', async ({ intake, mainPage }) => {
+    await mainPage.generateManualError();
+    await settle(mainPage);
+    intake.clear();
+
+    await mainPage.stopSession();
+    await settle(mainPage, 500);
+
+    const views = rumEvents(intake).filter((event) => event.type === 'view');
+    expect(views.some((view) => view.view.is_active === false && view.session.sampled_for_error)).toBe(true);
+  });
+
+  test('releases at once on an uncaught exception in the main process', async ({ intake, mainPage }) => {
+    await mainPage.generateActivity();
+    await mainPage.generateUncaughtException();
+    // No wait for the jitter: whatever the session's delay, it does not apply here.
+    await settle(mainPage, 200);
+
+    const events = rumEvents(intake);
+    expect(events.some((event) => event.type === 'error')).toBe(true);
+    expect(events.some((event) => event.type === 'action')).toBe(true);
+    test.info().annotations.push({
+      type: 'release-delay',
+      description: `jitter this session would otherwise wait: ${computeReleaseDelay(events[0].session.id)} ms`,
+    });
+  });
+});
+
+test.describe('sessionOnError, negative controls', () => {
+  test.use({ rumBrowserSdk: {} });
+
+  test('a session drawn by the plain rate reports as it happens, unmarked, with its rate', async ({
+    intake,
+    mainPage,
+  }) => {
+    await mainPage.generateActivity();
+    await settle(mainPage, 0);
+
+    const views = rumEvents(intake).filter((event) => event.type === 'view');
+    expect(views.length).toBeGreaterThan(0);
+    for (const view of views) {
+      expect(view.session.sampled_for_error).toBeUndefined();
+      expect(view._dd?.configuration?.session_sample_rate).toBe(100);
+    }
+    expect(await mainPage.getBridgeSessionId()).not.toBe('');
+  });
+
+  test.describe('without sessionOnError', () => {
+    test.use({ sdkConfig: { sessionSampleRate: 0 } });
+
+    test('a session the draw did not keep uploads nothing, errors included, and renderers see no session', async ({
+      intake,
+      mainPage,
+    }) => {
+      await mainPage.generateActivity();
+      await mainPage.generateManualError();
+      await settle(mainPage);
+
+      expect(rumEvents(intake)).toEqual([]);
+      // What keeps the renderer's own Session Replay from recording it.
+      expect(await mainPage.getBridgeSessionId()).toBe('');
+    });
+  });
+});
+
+test.describe('sessionOnError, host exit on an uncaught exception', () => {
+  test.use({ sdkConfig: ON_ERROR_ONLY });
+
+  test('writes the released history and the fatal error to disk before the host ends the process', async ({
+    intake,
+    sdkConfig,
+  }) => {
+    test.setTimeout(60_000);
+    const userDataDir = await createUserDataDir();
+    const { electronApp, mainPage } = await launchAppManually(intake, userDataDir, 'await', sdkConfig);
+    try {
+      // A main-process operation: its vital is held the moment it is reported.
+      await mainPage.startOperation('checkout');
+      // Taken now: the accessor is gone with the process.
+      const child = electronApp.process();
+
+      mainPage.generateUncaughtExceptionAndExit();
+      await ensureProcessGone(child.pid);
+      // Ended by the host's listener, not by the harness giving up on it.
+      expect(child.exitCode).toBe(1);
+
+      // The process ended from its own uncaughtException listener, with no later turn of the event
+      // loop: what is on disk is what the SDK wrote before returning from its listener.
+      const events = await readBatchEvents(join(userDataDir, 'rum'));
+      const types = events.map((event) => event.type);
+      expect(types).toContain('view');
+      expect(types).toContain('vital');
+      const errors = events.filter((event) => event.type === 'error') as unknown as RumErrorEvent[];
+      expect(errors.map((error) => error.error.message)).toEqual([expect.stringContaining('before exit')]);
+      // Nothing had been uploaded: the upload cycle never got to run.
+      expect(rumEvents(intake)).toEqual([]);
+    } finally {
+      await electronApp.close().catch(() => undefined);
+      await cleanupUserDataDir(userDataDir);
+    }
+  });
+});
+
+test.describe('sessionOnError, errors reported as the application leaves', () => {
+  test.use({ sdkConfig: ON_ERROR_ONLY });
+
+  for (const { title, leave, message, exitCode } of [
+    {
+      title: 'reported in the same turn as process.exit()',
+      leave: (mainPage: MainPage) => mainPage.generateManualErrorAndExit(),
+      message: 'before process.exit',
+      exitCode: 1,
+    },
+    {
+      title: 'reported from a will-quit listener registered after the SDK',
+      leave: (mainPage: MainPage) => mainPage.generateManualErrorOnWillQuit(),
+      message: 'on will-quit',
+      exitCode: 0,
+    },
+    {
+      title: 'reported in the same turn as app.exit()',
+      leave: (mainPage: MainPage) => mainPage.generateManualErrorAndAppExit(),
+      message: 'before app.exit',
+      exitCode: 1,
+    },
+    {
+      title: "reported from the host's own exit listener, registered after the SDK's",
+      leave: (mainPage: MainPage) => mainPage.generateManualErrorOnProcessExit(),
+      message: 'on process exit',
+      exitCode: 1,
+    },
+  ]) {
+    test(`writes the error ${title}, and the history held before it, to disk`, async ({ intake, sdkConfig }) => {
+      test.setTimeout(60_000);
+      const userDataDir = await createUserDataDir();
+      const { electronApp, mainPage } = await launchAppManually(intake, userDataDir, 'await', sdkConfig);
+      try {
+        await mainPage.startOperation('checkout');
+        const child = electronApp.process();
+
+        leave(mainPage);
+        await ensureProcessGone(child.pid);
+        expect(child.exitCode).toBe(exitCode);
+
+        const events = await readBatchEvents(join(userDataDir, 'rum'));
+        const types = events.map((event) => event.type);
+        expect(types).toContain('view');
+        expect(types).toContain('vital');
+        const errors = events.filter((event) => event.type === 'error') as unknown as RumErrorEvent[];
+        expect(errors.map((error) => error.error.message)).toEqual([expect.stringContaining(message)]);
+        expect(rumEvents(intake)).toEqual([]);
+      } finally {
+        await electronApp.close().catch(() => undefined);
+        await cleanupUserDataDir(userDataDir);
+      }
+    });
+  }
+});
+
+test.describe('sessionOnError, renderer envelopes', () => {
+  test.use({ sdkConfig: ON_ERROR_ONLY, rumBrowserSdk: {} });
+
+  test('is not released by a renderer error the intake would drop for a fractional number', async ({
+    intake,
+    mainPage,
+    electronApp,
+  }) => {
+    const bridgeWindow = await mainPage.openBridgeFileWindow(electronApp);
+    await bridgeWindow.sendRaw({
+      eventType: 'rum',
+      event: {
+        type: 'error',
+        date: Date.now() + 0.5,
+        error: { message: 'fractional', source: 'source' },
+        view: { id: 'v' },
+      },
+    });
+    await settle(mainPage);
+    expect(rumEvents(intake)).toEqual([]);
+
+    // Positive control: a well-formed renderer error releases the session; the dropped one is absent.
+    await bridgeWindow.generateError('kept renderer error');
+    await settle(mainPage);
+    const errors = rumEvents(intake).filter((event) => event.type === 'error') as unknown as RumErrorEvent[];
+    expect(errors.map((error) => error.error.message)).toEqual([expect.stringContaining('kept renderer error')]);
+  });
+
+  test('neither uploads nor is released by a renderer envelope that calls itself telemetry', async ({
+    intake,
+    mainPage,
+    electronApp,
+  }) => {
+    const bridgeWindow = await mainPage.openBridgeFileWindow(electronApp);
+    await bridgeWindow.sendRaw({
+      eventType: 'rum',
+      event: { type: 'telemetry', date: Date.now(), telemetry: { type: 'log', status: 'error', message: 'smuggled' } },
+    });
+    await settle(mainPage);
+    const telemetryMessages = () =>
+      intake
+        .getAllEvents()
+        .map((event) => event.body as { type: string; telemetry?: { message?: string } })
+        .filter((body) => body.type === 'telemetry')
+        .map((body) => body.telemetry?.message);
+    // The envelope went nowhere: no RUM event left, and nothing carries its text. What did leave
+    // is the SDK's own telemetry reporting the rejection, which is the proof of it.
+    expect(rumEvents(intake)).toEqual([]);
+    expect(telemetryMessages()).not.toContain('smuggled');
+    expect(telemetryMessages()).toContainEqual(
+      expect.stringContaining('Dropped a renderer RUM event: unsupported type')
+    );
+
+    // Positive control: a genuine renderer error releases the session, and the envelope is not among it.
+    await bridgeWindow.generateError('kept renderer error');
+    await settle(mainPage);
+    expect(rumEvents(intake).map((event) => event.type)).toContain('error');
+    expect(telemetryMessages()).not.toContain('smuggled');
+  });
+});
+
+/** Every event in the RUM track's batch files, rotated or not. */
+async function readBatchEvents(trackDir: string): Promise<SessionEvent[]> {
+  const files = (await readdir(trackDir)).filter((file) => /\.(tmp|log)$/.test(file)).sort();
+  const events: SessionEvent[] = [];
+  for (const file of files) {
+    const content = await readFile(join(trackDir, file), 'utf8');
+    for (const line of content.split('\n').filter((line) => line.trim().length > 0)) {
+      events.push(JSON.parse(line) as SessionEvent);
+    }
+  }
+  return events;
+}
+
+for (const { title, config, reported, viewHistory } of [
+  {
+    title: 'reports the crash of a withheld session, with its view',
+    config: ON_ERROR_ONLY,
+    reported: true,
+    viewHistory: 'kept',
+  },
+  {
+    title: 'reports the crash of a withheld session under a view of its own when the view history is gone',
+    config: ON_ERROR_ONLY,
+    reported: true,
+    viewHistory: 'lost',
+  },
+  {
+    title: 'does not report the crash of a session the draw did not keep',
+    config: { sessionSampleRate: 0 },
+    reported: false,
+    viewHistory: 'kept',
+  },
+]) {
+  test.describe('sessionOnError, native crash', () => {
+    // The app every scenario gets launched anyway runs with the same sampling, so it uploads nothing
+    // that could be mistaken for what the crashed app reports.
+    test.use({ sdkConfig: config });
+
+    test(title, async ({ intake, sdkConfig }) => {
+      test.setTimeout(90_000);
+      const userDataDir = await createUserDataDir();
+
+      const first = await launchAppManually(intake, userDataDir, 'await', sdkConfig);
+      await first.mainPage.flushTransport();
+      const crashedPid = first.electronApp.process().pid;
+      first.mainPage.crash();
+      await waitForCrashDump(userDataDir);
+      await ensureProcessGone(crashedPid);
+      // Nothing of the crashed launch was uploaded: the session never reported an error there.
+      expect(rumEvents(intake)).toEqual([]);
+      if (viewHistory === 'lost') {
+        // The SDK's own view history file, as written by the crashed launch.
+        await rm(join(userDataDir, '_dd_view_history'), { force: true });
+      }
+
+      const second = await launchAppManually(intake, userDataDir, 'await', sdkConfig);
+      try {
+        await second.mainPage.flushTransport();
+        await new Promise((resolve) => setTimeout(resolve, 5_000));
+        await settle(second.mainPage);
+
+        const events = rumEvents(intake);
+        const crashes = events.filter(
+          (event) => event.type === 'error' && (event as unknown as RumErrorEvent).error.is_crash
+        );
+        if (!reported) {
+          expect(events).toEqual([]);
+          return;
+        }
+        expect(crashes).toHaveLength(1);
+        const crash = crashes[0];
+        expect(crash._dd?.configuration?.session_sample_rate).toBe(0);
+        expect(crash.session.id).toEqual(expect.any(String));
+        expect(intake.getProtocolViolations()).toEqual([]);
+        if (viewHistory === 'lost') {
+          // A view of its own, which no view event describes: the crash is not lost for want of one.
+          expect(crash.view.id).toEqual(expect.any(String));
+          expect(events.some((event) => event.type === 'view' && event.view.id === crash.view.id)).toBe(false);
+          return;
+        }
+        const crashedView = events.find((event) => event.type === 'view' && event.view.id === crash.view.id) as
+          | (SessionEvent & RumViewEvent)
+          | undefined;
+        expect(crashedView).toBeDefined();
+        expect(crashedView!.session.sampled_for_error).toBe(true);
+        expect(crashedView!.view.is_active).toBe(false);
+        expect(crashedView!.session.id).toBe(crash.session.id);
+      } finally {
+        await second.electronApp.close();
+        await cleanupUserDataDir(userDataDir);
+      }
+    });
+  });
+}
+
+/** Same hash as the SDK's, to report which delay the immediate release skipped. */
+function computeReleaseDelay(sessionId: string) {
+  let hash = 0;
+  for (let i = 0; i < sessionId.length; i += 1) {
+    hash = Math.imul(hash, 31) + sessionId.charCodeAt(i);
+  }
+  return Math.abs(hash) % 3000;
+}

@@ -3,7 +3,7 @@ import { Assembly, createFormatHooks, registerCommonContext } from './assembly';
 import type { InitConfiguration } from './config';
 import { buildConfiguration } from './config';
 import { RumCollection } from './domain/rum';
-import { SessionManager } from './domain/session';
+import { SessionManager, TrackingType } from './domain/session';
 import { initAnonymousId } from './domain/AnonymousId';
 import { UserContext, type User } from './domain/UserContext';
 import { UserActivityTracker } from './domain/UserActivityTracker';
@@ -53,7 +53,7 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
 
   registerCommonContext(config, hooks, anonymousId, getUserAt);
   startTelemetry(eventManager, config);
-  const manager = await SessionManager.start(eventManager, hooks);
+  const manager = await SessionManager.start(eventManager, hooks, config);
   sessionManager = manager;
 
   const rendererRegistry = new RendererRegistry();
@@ -87,8 +87,11 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
     new SpanProcessor(eventManager, hooks, config);
   }
 
-  transport = await Transport.create(config, eventManager);
-  const rum = await RumCollection.start(eventManager, hooks, rendererRegistry, stackPathNormalizer);
+  const createdTransport = await Transport.create(config, eventManager, manager);
+  transport = createdTransport;
+  const rum = await RumCollection.start(eventManager, hooks, rendererRegistry, stackPathNormalizer, manager, () =>
+    createdTransport.flushToDisk()
+  );
   rumApi = rum.getApi();
 
   return true;
@@ -97,10 +100,17 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
 /**
  * Id of the session renderers should attribute their events to, or `''` while none is active —
  * an expired session must not keep collecting renderer data under its old id.
+ *
+ * A session the sampling draw did not keep is answered as none too. Its renderer events would be
+ * dropped on arrival anyway, and the renderer uploads its Session Replay straight to the intake,
+ * past the main process — `''` is the only way to keep it from recording a session that does not
+ * exist. A session withheld by `sessionOnError` is answered with its id: its renderer events have to
+ * reach the main process to be held, and the bridge has no way to ask for the events but not the
+ * replay.
  */
 function getActiveSessionId(manager: SessionManager): string {
   const session = manager.getSession();
-  return session.status === 'active' ? session.id : '';
+  return session.status === 'active' && session.trackingType !== TrackingType.NOT_TRACKED ? session.id : '';
 }
 
 /**

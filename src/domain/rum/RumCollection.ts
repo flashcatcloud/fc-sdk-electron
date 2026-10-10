@@ -2,9 +2,10 @@ import { EventManager } from '../../event';
 import type { FormatHooks } from '../../assembly';
 import { ErrorCollection, CrashCollection, ProcessGoneCollection } from './error';
 import { OperationCollection } from './operation';
-import { ViewCollection } from './view';
+import { ViewCollection, ViewContext } from './view';
 import type { RendererRegistry } from '../RendererRegistry';
 import type { StackPathNormalizer } from '../StackPathNormalizer';
+import type { SessionManager } from '../session';
 
 export class RumCollection {
   private constructor(
@@ -18,13 +19,16 @@ export class RumCollection {
     eventManager: EventManager,
     hooks: FormatHooks,
     rendererRegistry: RendererRegistry,
-    stackPathNormalizer: StackPathNormalizer
+    stackPathNormalizer: StackPathNormalizer,
+    sessionManager: SessionManager,
+    writtenToDisk: () => Promise<void>
   ): Promise<RumCollection> {
-    const viewCollection = await ViewCollection.start(eventManager, hooks);
+    const viewContext = await ViewContext.init(hooks);
+    const viewCollection = ViewCollection.start(eventManager, viewContext);
     const errorCollection = new ErrorCollection(eventManager, stackPathNormalizer);
     const operationCollection = new OperationCollection(eventManager);
     const processGoneCollection = new ProcessGoneCollection(eventManager, rendererRegistry);
-    CrashCollection.start(eventManager);
+    CrashCollection.start(eventManager, sessionManager, (startTime) => viewContext.findView(startTime), writtenToDisk);
     return new RumCollection(viewCollection, errorCollection, operationCollection, processGoneCollection);
   }
 

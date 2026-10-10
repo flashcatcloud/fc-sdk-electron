@@ -18,10 +18,9 @@ import {
   LifecycleKind,
   ServerRumEvent,
 } from '../../../event';
-import type { FormatHooks } from '../../../assembly';
 import { setInterval, throttle } from '../../telemetry';
 import type { RawRumView } from '../rawRumData.types';
-import { ViewContext } from './ViewContext';
+import type { ViewContext } from './ViewContext';
 
 export const SESSION_KEEP_ALIVE_INTERVAL = 5 * ONE_MINUTE;
 // throttle view updates to avoid bursts
@@ -45,7 +44,6 @@ interface ViewState {
  */
 export class ViewCollection {
   private currentView!: ViewState;
-  private viewContext!: ViewContext;
   private keepAliveIntervalId: ReturnType<typeof setInterval> | undefined;
   private scheduleViewUpdate!: () => void;
   private cancelScheduledViewUpdate!: () => void;
@@ -54,21 +52,20 @@ export class ViewCollection {
 
   constructor(
     private readonly eventManager: EventManager,
-    private readonly hooks: FormatHooks
+    private readonly viewContext: ViewContext
   ) {}
 
-  static async start(eventManager: EventManager, hooks: FormatHooks): Promise<ViewCollection> {
-    const collection = new ViewCollection(eventManager, hooks);
-    await collection.init();
+  static start(eventManager: EventManager, viewContext: ViewContext): ViewCollection {
+    const collection = new ViewCollection(eventManager, viewContext);
+    collection.init();
     return collection;
   }
 
-  private async init(): Promise<void> {
+  private init(): void {
     const { throttled, cancel } = throttle(() => this.emitViewUpdate(), VIEW_UPDATE_THROTTLE_DELAY);
     this.scheduleViewUpdate = throttled;
     this.cancelScheduledViewUpdate = cancel;
 
-    this.viewContext = await ViewContext.init(this.hooks);
     this.createNewView();
 
     this.lifecycleSubscription = this.eventManager.registerHandler<LifecycleEvent>({
@@ -154,11 +151,17 @@ export class ViewCollection {
     }
 
     const type = event.data.type;
-    if (type === 'action' || type === 'error' || type === 'resource') {
-      this.currentView.counters[type].count++;
-      this.currentView.documentVersion++;
-      this.scheduleViewUpdate();
+    if (type !== 'action' && type !== 'error' && type !== 'resource') {
+      return;
     }
+    // Only the current view's own: a crash reported on the next launch belongs to the view it
+    // happened in, which is rebuilt with its own count.
+    if (event.data.view.id !== this.currentView.id) {
+      return;
+    }
+    this.currentView.counters[type].count++;
+    this.currentView.documentVersion++;
+    this.scheduleViewUpdate();
   }
 
   private keepSessionAlive(): void {
