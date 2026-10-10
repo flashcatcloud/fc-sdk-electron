@@ -371,7 +371,9 @@ test.describe('sessionOnError, renderer envelopes', () => {
     // is the SDK's own telemetry reporting the rejection, which is the proof of it.
     expect(rumEvents(intake)).toEqual([]);
     expect(telemetryMessages()).not.toContain('smuggled');
-    expect(telemetryMessages()).toContainEqual(expect.stringContaining('Dropped a renderer RUM event: unsupported type'));
+    expect(telemetryMessages()).toContainEqual(
+      expect.stringContaining('Dropped a renderer RUM event: unsupported type')
+    );
 
     // Positive control: a genuine renderer error releases the session, and the envelope is not among it.
     await bridgeWindow.generateError('kept renderer error');
