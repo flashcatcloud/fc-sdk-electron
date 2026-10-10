@@ -322,6 +322,27 @@ describe('BridgeHandler', () => {
       expect(notified).toEqual([]);
     });
 
+    it('should drop a renderer event carrying a fraction where the intake decodes an integer, and keep one where it decodes a float', () => {
+      const notified: unknown[] = [];
+      eventManager.registerHandler({
+        canHandle: (event) => event.kind === EventKind.RAW,
+        handle: (event) => notified.push(event),
+      });
+
+      simulateIpcMessage(
+        JSON.stringify({ eventType: 'rum', event: { type: 'error', date: 1.5, error: { message: 'x' } } })
+      );
+      simulateIpcMessage(
+        JSON.stringify({
+          eventType: 'rum',
+          event: { type: 'view', date: 1, view: { id: 'v', cumulative_layout_shift: 0.1 } },
+        })
+      );
+
+      expect(notified).toHaveLength(1);
+      expect((notified[0] as { data: { type: string } }).data.type).toBe('view');
+    });
+
     it('should apply the pre-warm timing correction before notifying', () => {
       const collected: RawRumEvent[] = [];
       eventManager.registerHandler<RawRumEvent>({
