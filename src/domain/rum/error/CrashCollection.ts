@@ -24,16 +24,19 @@ export class CrashCollection {
   private constructor(
     private readonly eventManager: EventManager,
     private readonly sessionManager: Pick<SessionManager, 'findSession' | 'getSession' | 'setSessionHasError'>,
-    private readonly findView: (startTime: TimeStamp) => MainView | undefined
+    private readonly findView: (startTime: TimeStamp) => MainView | undefined,
+    /** Resolves once everything handed to the transport so far is in a batch file. */
+    private readonly writtenToDisk: () => Promise<void>
   ) {}
 
   static start(
     eventManager: EventManager,
     sessionManager: Pick<SessionManager, 'findSession' | 'getSession' | 'setSessionHasError'>,
-    findView: (startTime: TimeStamp) => MainView | undefined
+    findView: (startTime: TimeStamp) => MainView | undefined,
+    writtenToDisk: () => Promise<void>
   ): CrashCollection {
     crashReporter.start({ uploadToServer: false, ignoreSystemCrashHandler: true });
-    const collection = new CrashCollection(eventManager, sessionManager, findView);
+    const collection = new CrashCollection(eventManager, sessionManager, findView, writtenToDisk);
     // TODO(RUM-15046): wait for app to be stable (electron + browser windows)
     void app.whenReady().then(monitor(() => collection.processCrashFiles()));
     return collection;
@@ -52,6 +55,9 @@ export class CrashCollection {
     displayInfo(`${dmpFiles.length} crash dumps to process`);
 
     for (const filePath of dmpFiles) {
+      // The dump is the only durable copy of the crash until its report is in a batch file: a
+      // dump whose report could not be written is kept for the next launch to report.
+      let reportWritten = true;
       try {
         const fileStat = await fs.stat(filePath);
         // birthtimeMs can be 0 on Linux (ext4), fall back to mtimeMs.
@@ -73,11 +79,19 @@ export class CrashCollection {
           data: buildCrashErrorEvent(crashReport, crashTime, view?.id ?? generateUUID()),
           startTime: crashTime,
         });
+        try {
+          await this.writtenToDisk();
+        } catch (error) {
+          reportWritten = false;
+          throw error;
+        }
       } catch (error) {
         addError(error);
         displayError('Failed to process crash dump:', filePath, error);
       } finally {
-        await discardCrashFile(filePath);
+        if (reportWritten) {
+          await discardCrashFile(filePath);
+        }
       }
     }
     displayInfo(`Crash dump processing done.`);

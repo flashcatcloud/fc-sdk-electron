@@ -186,6 +186,44 @@ describe('WithheldEventBuffer', () => {
       expect(forwarded).toEqual([next]);
     });
 
+    it('is released at once by a crash reported on the next launch: the batch cycle spreads that upload already', () => {
+      buffer.collect(view(MAIN_VIEW, 1));
+      const crash = error('source', { error: { source: 'source', is_crash: true } });
+
+      buffer.collect(crash);
+
+      expect(forwarded.map((event) => event.type)).toEqual(['view', 'error']);
+      expect(setSessionHasError).toHaveBeenCalledWith(SESSION_ID, expect.any(Number));
+    });
+
+    it('is released by an error it cannot serialize, which goes on its own while the history follows', () => {
+      buffer.collect(view(MAIN_VIEW, 1));
+      const history = detail('action');
+      buffer.collect(history);
+      const unserializable = error('source', { context: { n: 1n } });
+
+      expect(() => buffer.collect(unserializable)).not.toThrow();
+      vi.advanceTimersByTime(WITHHELD_BUFFER_RELEASE_MAX_DELAY);
+
+      expect(forwarded).toContain(unserializable);
+      expect(forwarded).toContain(history);
+    });
+
+    it('releases synchronously once the process is exiting, as no timer will run', () => {
+      buffer.collect(view(MAIN_VIEW, 1));
+      eventManager.notify({
+        kind: EventKind.LIFECYCLE,
+        lifecycle: LifecycleKind.APP_MAY_EXIT,
+        terminal: true,
+      } as never);
+      expect(forwarded).toEqual([]);
+
+      const late = error('source');
+      buffer.collect(late);
+
+      expect(forwarded.map((event) => event.type)).toEqual(['view', 'error']);
+    });
+
     it('is released by an error whose text is not ASCII, as the main process has no window to count bytes with', () => {
       buffer.collect(view(MAIN_VIEW, 1));
       buffer.collect(error('source', { error: { source: 'source', message: '支付失败 💥' } }));
@@ -408,6 +446,17 @@ describe('WithheldEventBuffer', () => {
       expect(forwarded).toContain(failed);
       expect(forwarded).toContain(successes[successes.length - 1]);
       expect(forwarded).not.toContain(successes[0]);
+    });
+
+    it('drops a view update larger than the whole budget, keeping the version held before it', () => {
+      const small = view(MAIN_VIEW, 1);
+      buffer.collect(small);
+      buffer.collect({ ...view(MAIN_VIEW, 1), ...padding(WITHHELD_BUFFER_BYTES_LIMIT) } as RumEvent);
+      buffer.collect({ ...view('huge-from-the-start', 2), ...padding(WITHHELD_BUFFER_BYTES_LIMIT) } as RumEvent);
+      buffer.collect(error());
+      vi.advanceTimersByTime(WITHHELD_BUFFER_RELEASE_MAX_DELAY);
+
+      expect(forwarded.filter((event) => event.type === 'view')).toEqual([small]);
     });
 
     it('drops a single detail larger than the whole budget, and keeps the history', () => {
