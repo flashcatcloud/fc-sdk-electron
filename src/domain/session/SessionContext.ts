@@ -38,6 +38,13 @@ export interface SessionRecord {
    */
   sampleRate: number;
   /**
+   * The version of the remote configuration the session was drawn under, when its draw read one.
+   * Reported on its events as `_dd.configuration.rc_version`, so the console can trace a session
+   * back to the settings that decided whether to keep it — a resumed session and a crash reported
+   * a launch later included.
+   */
+  rcVersion?: number;
+  /**
    * Set once a `TRACKED_ON_ERROR` session reports its first error, which releases what it withheld.
    * Never set on any other session.
    */
@@ -82,7 +89,9 @@ export class SessionContext {
         // A session kept only because it errored stands for itself, not for `100 / rate` sessions
         // like a drawn one: 0 is what the backend reads as "do not extrapolate". Derived from the
         // record, so a resumed session and a crash reported a launch later get it too.
-        _dd: { configuration: { session_sample_rate: sampledForError ? 0 : record.sampleRate } },
+        _dd: {
+          configuration: { session_sample_rate: sampledForError ? 0 : record.sampleRate, rc_version: record.rcVersion },
+        },
       };
     });
 
@@ -169,13 +178,22 @@ function toSessionRecord(value: unknown): SessionRecord | undefined {
 
 const TRACKING_TYPES = new Set<unknown>(Object.values(TrackingType));
 
-/** The record `value` is, or `undefined` when it is not one: a non-empty id, a known type, a rate from 0 to 100, a boolean mark. */
+/**
+ * The record `value` is, or `undefined` when it is not one: a non-empty id, a known type, a rate from
+ * 0 to 100, a whole non-negative configuration version, a boolean mark.
+ */
 export function parseSessionRecord(value: unknown): SessionRecord | undefined {
   if (typeof value !== 'object' || value === null) return undefined;
-  const { id, trackingType, sampleRate, hasError } = value as Record<string, unknown>;
+  const { id, trackingType, sampleRate, rcVersion, hasError } = value as Record<string, unknown>;
   if (typeof id !== 'string' || id === '') return undefined;
   if (!TRACKING_TYPES.has(trackingType)) return undefined;
   if (typeof sampleRate !== 'number' || !(sampleRate >= 0 && sampleRate <= 100)) return undefined;
+  if (rcVersion !== undefined && !isConfigurationVersion(rcVersion)) return undefined;
   if (hasError !== undefined && typeof hasError !== 'boolean') return undefined;
   return value as SessionRecord;
+}
+
+/** A remote configuration version: a publish counter, so a whole number from 0 up. */
+export function isConfigurationVersion(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }

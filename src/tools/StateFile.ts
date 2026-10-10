@@ -13,7 +13,9 @@ import { displayError } from './display';
  * be pending, nor undone by a delete requested before it.
  *
  * Asynchronous writes serialize when they run, not when they are requested, so the last to land
- * carries the latest state. A failure is reported and does not stop later writes.
+ * carries the latest state. A failure is reported and does not stop later writes. Every write
+ * answers whether it landed, so a caller holding state that must reach disk can tell a failed or
+ * superseded write from one that did.
  */
 export class StateFile {
   private requested = 0;
@@ -41,36 +43,45 @@ export class StateFile {
     }
   }
 
-  /** Queues a write of what `serialize` returns when the write runs, behind what was requested before. */
-  write(serialize: () => string): Promise<void> {
+  /**
+   * Queues a write of what `serialize` returns when the write runs, behind what was requested before.
+   * Resolves to whether this write landed: `false` when it failed or a later change landed first.
+   * Never rejects.
+   */
+  write(serialize: () => string): Promise<boolean> {
     const generation = this.nextGeneration();
-    this.queue = this.queue
+    const written = this.queue
       .then(async () => {
         if (generation < this.landed) {
           // Superseded while queued: what landed since is newer than anything requested before it.
-          return;
+          return false;
         }
         const tmpPath = this.tempPath(generation);
         await fs.writeFile(tmpPath, serialize(), 'utf-8');
-        this.land(
+        return this.land(
           generation,
           () => renameSync(tmpPath, this.filePath),
           () => unlinkSync(tmpPath)
         );
       })
-      .catch((error) => displayError(`Failed to write ${this.what}:`, error));
-    return this.queue;
+      .catch((error) => {
+        displayError(`Failed to write ${this.what}:`, error);
+        return false;
+      });
+    this.queue = written.then(() => undefined);
+    return written;
   }
 
-  /** Writes before returning, for a process that may be about to exit. */
-  writeSync(content: string): void {
+  /** Writes before returning, for a process that may be about to exit. Answers whether it landed. */
+  writeSync(content: string): boolean {
     const generation = this.nextGeneration();
     const tmpPath = this.tempPath(generation);
     try {
       writeFileSync(tmpPath, content, 'utf-8');
-      this.land(generation, () => renameSync(tmpPath, this.filePath));
+      return this.land(generation, () => renameSync(tmpPath, this.filePath));
     } catch (error) {
       displayError(`Failed to write ${this.what}:`, error);
+      return false;
     }
   }
 
@@ -78,7 +89,9 @@ export class StateFile {
   delete(): Promise<void> {
     const generation = this.nextGeneration();
     this.queue = this.queue
-      .then(() => this.land(generation, () => this.unlink()))
+      .then(() => {
+        this.land(generation, () => this.unlink());
+      })
       .catch((error) => displayError(`Failed to delete ${this.what}:`, error));
     return this.queue;
   }
@@ -102,14 +115,18 @@ export class StateFile {
     return `${this.filePath}.${process.pid}.${generation}.tmp`;
   }
 
-  /** Applies the change unless a later one has landed already, in which case it is discarded. */
-  private land(generation: number, apply: () => void, discard?: () => void): void {
+  /**
+   * Applies the change unless a later one has landed already, in which case it is discarded.
+   * Answers whether it was applied.
+   */
+  private land(generation: number, apply: () => void, discard?: () => void): boolean {
     if (generation < this.landed) {
       discard?.();
-      return;
+      return false;
     }
     apply();
     this.landed = generation;
+    return true;
   }
 
   private unlink(): void {

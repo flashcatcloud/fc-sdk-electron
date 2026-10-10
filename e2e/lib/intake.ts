@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import * as http from 'node:http';
 
 /**
@@ -16,6 +17,12 @@ import * as http from 'node:http';
  * - `Content-Type: text/plain;charset=UTF-8` (`application/json` is rejected)
  * - body is newline-delimited JSON, one event per line (a JSON array is rejected)
  * - every number is a whole number, except the few fields the intake really types as floats
+ *
+ * It also stands in for the remote configuration endpoint, `GET /api/v2/rum/config`, so remote
+ * configuration is exercised without ever pointing the SDK at a real backend — a fake configuration
+ * version reported to a real one would show up in the console's version statistics. What it answers
+ * is set per test with {@link Intake.setRemoteConfig}; with nothing set it answers what the real
+ * endpoint answers for an application with nothing published: 200, version 0, switched off.
  */
 export interface ReceivedEvent {
   timestamp: number;
@@ -31,6 +38,40 @@ export interface ProtocolViolation {
 }
 
 const RUM_TRACK_PATH = '/api/v2/rum';
+const CONFIG_PATH = '/api/v2/rum/config';
+
+/** How the fake config endpoint answers. */
+export type RemoteConfigBehaviour =
+  /**
+   * 200 with this body, and an `ETag` digested from it the way the real endpoint does — a request
+   * that sends the tag back gets a 304.
+   */
+  | { body: Record<string, unknown> }
+  /** This status, with an empty body. */
+  | { status: number }
+  /** The connection is dropped without an answer: what an offline client sees. */
+  | { reset: true };
+
+/** What the real endpoint answers for an application whose configuration was never published. */
+const NOTHING_PUBLISHED: RemoteConfigBehaviour = {
+  body: {
+    schema_version: 1,
+    version: 0,
+    ttl: 600,
+    enabled: false,
+    activation: 'next_session',
+    refresh_on_foreground: false,
+    rum: {},
+  },
+};
+
+/** A request the SDK made to the config endpoint, as the real endpoint would have read it. */
+export interface ConfigRequest {
+  timestamp: number;
+  /** The query parameters inside `ddforward`, which is where the SDK puts them behind a proxy. */
+  params: Record<string, string>;
+  headers: Record<string, string>;
+}
 const EXPECTED_CONTENT_TYPE = 'text/plain';
 
 /**
@@ -81,6 +122,8 @@ export class Intake {
   private server: http.Server | null = null;
   private rumEvents: ReceivedEvent[] = [];
   private violations: ProtocolViolation[] = [];
+  private configRequests: ConfigRequest[] = [];
+  private remoteConfig: RemoteConfigBehaviour | undefined;
   private port = 0;
 
   private addViolation(reason: string, detail: string) {
@@ -140,6 +183,10 @@ export class Intake {
   async start(port = 0): Promise<number> {
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => {
+        if (req.method === 'GET' && this.isConfigRequest(req)) {
+          this.answerConfigRequest(req, res);
+          return;
+        }
         if (req.method !== 'POST') {
           this.addViolation('unexpected method', `${req.method ?? '?'} ${req.url ?? '/'}`);
           res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -154,15 +201,7 @@ export class Intake {
         });
 
         req.on('end', () => {
-          const headers: Record<string, string> = {};
-
-          for (const [key, value] of Object.entries(req.headers)) {
-            if (typeof value === 'string') {
-              headers[key.toLowerCase()] = value;
-            } else if (Array.isArray(value)) {
-              headers[key.toLowerCase()] = value.join(', ');
-            }
-          }
+          const headers = lowerCaseHeaders(req);
 
           this.checkRequest(req, headers);
           this.storeBody(body, headers);
@@ -251,6 +290,58 @@ export class Intake {
     }
   }
 
+  /** Sets what the config endpoint answers from now on; `undefined` for an application with nothing published. */
+  setRemoteConfig(behaviour: RemoteConfigBehaviour | undefined): void {
+    this.remoteConfig = behaviour;
+  }
+
+  /** Every request made to the config endpoint so far, in arrival order. */
+  getConfigRequests(): ConfigRequest[] {
+    return [...this.configRequests];
+  }
+
+  async waitForConfigRequests(count: number, timeout = 10000): Promise<ConfigRequest[]> {
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeout) {
+      if (this.configRequests.length >= count) {
+        return this.getConfigRequests();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error(`Timed out waiting for ${count} config request(s). Received ${this.configRequests.length}.`);
+  }
+
+  private isConfigRequest(req: http.IncomingMessage): boolean {
+    return forwardedUrl(req).pathname === CONFIG_PATH;
+  }
+
+  private answerConfigRequest(req: http.IncomingMessage, res: http.ServerResponse) {
+    const headers = lowerCaseHeaders(req);
+    this.configRequests.push({
+      timestamp: Date.now(),
+      params: Object.fromEntries(forwardedUrl(req).searchParams),
+      headers,
+    });
+
+    const behaviour = this.remoteConfig ?? NOTHING_PUBLISHED;
+    if ('reset' in behaviour) {
+      req.socket.destroy();
+    } else if ('status' in behaviour) {
+      res.writeHead(behaviour.status);
+      res.end();
+    } else {
+      const body = JSON.stringify(behaviour.body);
+      const etag = `"${createHash('sha256').update(body).digest('hex').slice(0, 16)}"`;
+      if (headers['if-none-match'] === etag) {
+        res.writeHead(304, { ETag: etag });
+        res.end();
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', ETag: etag });
+      res.end(body);
+    }
+  }
+
   /** Every request that breached the intake wire contract, in arrival order. */
   getProtocolViolations(): ProtocolViolation[] {
     return [...this.violations];
@@ -264,11 +355,31 @@ export class Intake {
   clear(): void {
     this.rumEvents = [];
     this.violations = [];
+    this.configRequests = [];
   }
 
   getPort(): number {
     return this.port;
   }
+}
+
+function lowerCaseHeaders(req: http.IncomingMessage): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const [key, value] of Object.entries(req.headers)) {
+    if (typeof value === 'string') {
+      headers[key.toLowerCase()] = value;
+    } else if (Array.isArray(value)) {
+      headers[key.toLowerCase()] = value.join(', ');
+    }
+  }
+  return headers;
+}
+
+/** The URL the real intake would have seen: the one inside `ddforward`, or the request's own. */
+function forwardedUrl(req: http.IncomingMessage): URL {
+  const requestUrl = new URL(req.url ?? '/', 'http://localhost');
+  const forward = requestUrl.searchParams.get('ddforward');
+  return forward === null ? requestUrl : new URL(forward, 'http://localhost');
 }
 
 function truncate(value: string, max = 200): string {

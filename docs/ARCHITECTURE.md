@@ -106,6 +106,17 @@ judged, and reported, by the draw they were made under.
 not drawn, and of a withheld session that ended without an error (its late events), and stamps
 `session.sampled_for_error` and `_dd.configuration.session_sample_rate`.
 
+With `remoteConfigurationEnabled`, the sampling a draw reads comes from `RemoteConfiguration`: the
+console's values over the init ones, fetched at init, at every new session and — when the console
+allows it — on a return to the foreground once the `ttl` has passed, and kept on disk
+(`_fc_remote_config`, replaced through `StateFile`, written synchronously on `APP_MAY_EXIT` if its
+write has not landed) for later draws. At startup, a kept `immediate` configuration judges the
+session the launch starts with before anything is collected. The session records the configuration
+version it was drawn under next to its rate, and `SessionContext` reports it as
+`_dd.configuration.rc_version`. A configuration published with `activation: immediate` asks
+`SessionManager.applySamplingChange` to end the running session where the new sampling is decisive
+for it; anything else applies from the next session.
+
 `WithheldEventBuffer` sits between assembly and the RUM batch, so it sees main-process and renderer
 events alike, already final. It holds a withheld session's events and releases them at the session's
 first error; telemetry bypasses it. `CrashCollection` releases the session of a crash reported on the

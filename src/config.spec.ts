@@ -505,5 +505,32 @@ describe('buildConfiguration', () => {
 
       expect(display.displayWarn).toHaveBeenCalledWith(expect.stringContaining('does not affect new sessions'));
     });
+
+    it('does not warn with remote configuration, which may lower the rate', () => {
+      buildConfiguration({ ...DEFAULT_CONFIG, sessionOnError: true, remoteConfigurationEnabled: true });
+
+      expect(display.displayWarn).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('remoteConfigurationEnabled validation', () => {
+    it('defaults to false', () => {
+      expect(buildConfiguration({ ...DEFAULT_CONFIG })?.remoteConfigurationEnabled).toBe(false);
+    });
+
+    it('accepts true', () => {
+      expect(
+        buildConfiguration({ ...DEFAULT_CONFIG, remoteConfigurationEnabled: true })?.remoteConfigurationEnabled
+      ).toBe(true);
+    });
+
+    it('logs an error and keeps it off when not a boolean', () => {
+      const config = { ...DEFAULT_CONFIG, remoteConfigurationEnabled: 'yes' } as unknown as InitConfiguration;
+
+      expect(buildConfiguration(config)?.remoteConfigurationEnabled).toBe(false);
+      expect(display.displayError).toHaveBeenCalledWith(
+        "Configuration error: 'remoteConfigurationEnabled' must be true or false; remote configuration is disabled"
+      );
+    });
   });
 });

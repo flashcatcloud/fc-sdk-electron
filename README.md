@@ -371,6 +371,14 @@ device.
 Events already reported keep the identity they were reported with, and events describing a moment
 before the logout still resolve to the user who was logged in then.
 
+### `getRemoteConfig(): Record<string, unknown> | undefined`
+
+The application's own `custom` values, as delivered by the console's remote configuration — a copy,
+or `undefined` when `remoteConfigurationEnabled` is off, nothing has been delivered yet, or the
+console set none. Until the server answers, it is read from the configuration kept on disk, so it can
+be read right after `init` resolves. Anyone holding the client token can read these values: put
+nothing secret in them. See [Remote configuration](#remote-configuration).
+
 ### Configuration Options
 
 | Option                        | Type                                     | Required | Default                  | Description                                                                                                                                                                                    |
@@ -383,6 +391,7 @@ before the logout still resolve to the user who was logged in then.
 | `version`                     | `string`                                 | No       | —                        | Application version                                                                                                                                                                            |
 | `sessionSampleRate`           | `number`                                 | No       | `100`                    | Percentage of sessions collected (0–100). An out-of-range value fails `init`. See [Sampling](#sampling)                                                                                        |
 | `sessionOnError`              | `boolean`                                | No       | `false`                  | Keeps the sessions `sessionSampleRate` did not draw in memory, uploading them only if they report an error; one that never errors uploads nothing, not even at quit. See [Sampling](#sampling) |
+| `remoteConfigurationEnabled`  | `boolean`                                | No       | `false`                  | Let the console change the sampling and deliver `custom` values. See [Remote configuration](#remote-configuration)                                                                             |
 | `telemetrySampleRate`         | `number`                                 | No       | `20`                     | Telemetry sample rate (0–100)                                                                                                                                                                  |
 | `batchSize`                   | `'SMALL' \| 'MEDIUM' \| 'LARGE'`         | No       | —                        | Batch size for event uploads                                                                                                                                                                   |
 | `uploadFrequency`             | `'RARE' \| 'NORMAL' \| 'FREQUENT'`       | No       | —                        | Upload frequency for event batches                                                                                                                                                             |
@@ -444,6 +453,79 @@ await init({
 > events must reach the main process to be held — so with `sessionReplayDirectUpload` on, its replay
 > is uploaded whether or not the session ever reports an error. Do not combine the two until the
 > Browser SDK can withhold replay for a bridged session.
+
+### Remote configuration
+
+With `remoteConfigurationEnabled: true`, the console can change `sessionSampleRate` and
+`sessionOnError` without a new release of the application, and hand it `custom` values (read with
+`getRemoteConfig()`). Off by default: nothing is requested and the init values apply.
+
+```ts
+await init({
+  // ...
+  sessionSampleRate: 100, // used until the console says otherwise, and for any knob it does not set
+  remoteConfigurationEnabled: true,
+});
+```
+
+- **Precedence.** A value the console sets takes precedence over the init value; a value it does not
+  set leaves the init value in place. While the console's configuration is switched off, the init
+  values apply.
+- **When it is asked for.** By the main process, at `init` and whenever a new session starts — there
+  is no timer between sessions. When the console allows it (`refresh_on_foreground`, off by
+  default), also when the user comes back to the application — a window of it gains focus; moving
+  focus between the application's own windows counts too, and the ttl absorbs it — and
+  the last completed request, successful or failed, finished at least the server's `ttl` ago (10
+  minutes by default, never less than one minute), revalidating with the ETag it holds. Such a
+  refresh leaves a retry already pending to ask in its place, and does not start a new round of
+  retries. Without that permission, a session that never goes
+  idle keeps the configuration it has until it turns over, after up to four hours. There is never
+  more than one request in flight, and nothing in `init` waits for one.
+- **Failures.** Network failures, timeouts, malformed responses, HTTP 429 and 5xx responses change
+  nothing and are retried with successive delays of approximately 5 s and 60 s, each with ±20%
+  jitter. That two-attempt budget is re-armed by a new session and by any answer that lands; once a
+  run of failures has spent it, a foreground refresh the console allows still makes one attempt, with
+  no retries behind it.
+  Other HTTP errors are not retried. Either way the configuration in force stays as it was.
+- **Kept on disk.** The last configuration accepted is kept in the application's `userData`
+  directory. A graceful exit retries pending or failed writes; a forced termination can leave an
+  older cache. New sessions use it before the network answers, or without the network at all. It
+  applies only to the same intake, application, `env` and `version`.
+- **Resumed sessions.** A valid session resumed from the previous launch keeps its original draw,
+  subject to immediate activation: when what was kept asks to apply immediately, the session is
+  judged by it at startup, as below, unless it was drawn under a newer version than the one kept —
+  an older configuration never overrides a newer draw.
+- **SDK upgrades.** An upgrade keeps the values but asks for the full configuration again rather
+  than revalidating the one the previous version read, and judges the running session again if this
+  version reads it differently.
+- **Nothing published.** An application whose configuration was never published is answered with
+  version 0: whatever else the answer carries, the init values apply and no version is reported.
+- **Trust.** Anyone holding the client token can read these values, so put nothing secret in them;
+  and whoever can answer the configured `proxy` or intake can also set them, the sampling included.
+- **When a change applies.** A session's draw is locked for its whole life, so by default
+  (`next_session`) a change applies from the next session on. When the console asks for a change to
+  apply immediately, the running session is ended — and the next user activity draws a new one —
+  only where the new values decide it:
+  - a collected session ends when the rate becomes `0` (the emergency stop), unless it is a session
+    kept by `sessionOnError` and the switch stays on — rate `0` next to the switch is that switch's
+    ordinary setting;
+  - a session that was not collected, and was drawn at rate `0`, ends when the rate rises above `0`
+    or `sessionOnError` turns on, so that it is drawn again. One that lost a draw at a real rate keeps
+    its outcome.
+
+  Any other change waits for the next session, and none ends a session drawn under a newer version
+  than its own: answers can arrive out of order, and an older configuration never overrides a newer
+  draw.
+
+- **What events report.** A session reports the rate it was drawn at (`0` for a session kept by
+  `sessionOnError`) and, when its draw read a delivered configuration, that configuration's version
+  as `_dd.configuration.rc_version` — on main process and renderer events alike, resumed sessions and
+  next-launch crash reports included.
+
+**Renderers.** The main process owns the sessions and their sampling. A renderer's Browser SDK under
+the bridge needs no configuration of its own (enable it in the main process only), and the main
+process overwrites the sampling attributes and `rc_version` of every event
+a renderer sends, so nothing is applied twice.
 
 ### Pre-warmed windows
 
