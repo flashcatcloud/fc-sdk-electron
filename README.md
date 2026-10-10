@@ -478,8 +478,9 @@ await init({
   more than one request in flight, and nothing in `init` waits for one.
 - **Failures.** Network failures, timeouts, malformed responses, HTTP 429 and 5xx responses change
   nothing and are retried with successive delays of approximately 5 s and 60 s, each with ±20%
-  jitter. That two-attempt budget belongs to the session: a new session resets it, and once it is
-  spent, a foreground refresh the console allows still makes one attempt, with no retries behind it.
+  jitter. That two-attempt budget is re-armed by a new session and by any answer that lands; once a
+  run of failures has spent it, a foreground refresh the console allows still makes one attempt, with
+  no retries behind it.
   Other HTTP errors are not retried. Either way the configuration in force stays as it was.
 - **Kept on disk.** The last configuration accepted is kept in the application's `userData`
   directory. A graceful exit retries pending or failed writes; a forced termination can leave an

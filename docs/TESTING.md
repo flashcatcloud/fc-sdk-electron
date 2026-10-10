@@ -72,9 +72,10 @@ The fake intake also serves the remote configuration endpoint (`GET /api/v2/rum/
 sets what it answers with the `remoteConfig` fixture option or `intake.setRemoteConfig()` — a body
 (with an `ETag`, and a 304 when it is sent back), a status, or a dropped connection; unset, it
 answers like the real endpoint for an application with nothing published (200, version 0, switched
-off) — and reads what the SDK asked with `intake.getConfigRequests()`. Remote configuration is never
-tested against a real backend: a fake configuration version reported there shows up in the console's
-version statistics.
+off) — and reads what the SDK asked with `intake.getConfigRequests()`. These automated suites use the fake
+intake only: never send a fabricated configuration version to a real backend, where it shows up in
+the console's version statistics. Manual acceptance runs against the dev backend, with versions
+published through the console's own API and the application's configuration restored afterwards.
 
 ### Not covered
 
