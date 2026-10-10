@@ -288,6 +288,12 @@ test.describe('sessionOnError, errors reported as the application leaves', () =>
       message: 'before app.exit',
       exitCode: 1,
     },
+    {
+      title: "reported from the host's own exit listener, registered after the SDK's",
+      leave: (mainPage: MainPage) => mainPage.generateManualErrorOnProcessExit(),
+      message: 'on process exit',
+      exitCode: 1,
+    },
   ]) {
     test(`writes the error ${title}, and the history held before it, to disk`, async ({ intake, sdkConfig }) => {
       test.setTimeout(60_000);
@@ -319,6 +325,31 @@ test.describe('sessionOnError, errors reported as the application leaves', () =>
 test.describe('sessionOnError, renderer envelopes', () => {
   test.use({ sdkConfig: ON_ERROR_ONLY, rumBrowserSdk: {} });
 
+  test('is not released by a renderer error the intake would drop for a fractional number', async ({
+    intake,
+    mainPage,
+    electronApp,
+  }) => {
+    const bridgeWindow = await mainPage.openBridgeFileWindow(electronApp);
+    await bridgeWindow.sendRaw({
+      eventType: 'rum',
+      event: {
+        type: 'error',
+        date: Date.now() + 0.5,
+        error: { message: 'fractional', source: 'source' },
+        view: { id: 'v' },
+      },
+    });
+    await settle(mainPage);
+    expect(rumEvents(intake)).toEqual([]);
+
+    // Positive control: a well-formed renderer error releases the session; the dropped one is absent.
+    await bridgeWindow.generateError('kept renderer error');
+    await settle(mainPage);
+    const errors = rumEvents(intake).filter((event) => event.type === 'error') as unknown as RumErrorEvent[];
+    expect(errors.map((error) => error.error.message)).toEqual([expect.stringContaining('kept renderer error')]);
+  });
+
   test('neither uploads nor is released by a renderer envelope that calls itself telemetry', async ({
     intake,
     mainPage,
@@ -340,7 +371,7 @@ test.describe('sessionOnError, renderer envelopes', () => {
     // is the SDK's own telemetry reporting the rejection, which is the proof of it.
     expect(rumEvents(intake)).toEqual([]);
     expect(telemetryMessages()).not.toContain('smuggled');
-    expect(telemetryMessages()).toContainEqual(expect.stringContaining('Unsupported RUM event type from a renderer'));
+    expect(telemetryMessages()).toContainEqual(expect.stringContaining('Dropped a renderer RUM event: unsupported type'));
 
     // Positive control: a genuine renderer error releases the session, and the envelope is not among it.
     await bridgeWindow.generateError('kept renderer error');
