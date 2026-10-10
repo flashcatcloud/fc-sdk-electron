@@ -325,6 +325,30 @@ describe('RemoteConfiguration', () => {
       expect(Object.keys(custom.a as object)).toEqual(['__proto__']);
     });
 
+    it('refuses an answer whose custom values nest deeper than any configuration can, keeps what it holds, and retries', async () => {
+      mfs.readFile.mockResolvedValue(storedFile());
+      const body = JSON.stringify(configurationBody({ custom: { nested: 'DEEP' } })).replace(
+        '"DEEP"',
+        '['.repeat(10_000) + ']'.repeat(10_000)
+      );
+      fetchMock.mockResolvedValueOnce(ok(body));
+
+      const configuration = await start();
+
+      expect(configuration.getSampling()).toEqual({ sessionSampleRate: 0, sessionOnError: true, rcVersion: 2 });
+      expect(writtenFiles()).toEqual([]);
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS[0] * 1.2);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('accepts custom values nested as deep as the backend allows', async () => {
+      fetchMock.mockResolvedValueOnce(ok(configurationBody({ custom: { list: [{ group: { field: 1 } }] } })));
+
+      const configuration = await start();
+
+      expect(configuration.getCustom()).toEqual({ list: [{ group: { field: 1 } }] });
+    });
+
     it('drops a custom bag that is not an object', async () => {
       fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ custom: ['a'] }))));
 
@@ -513,6 +537,21 @@ describe('RemoteConfiguration', () => {
       expect(configuration.getSampling()).toEqual({ sessionSampleRate: 100, sessionOnError: false });
     });
 
+    it('ignores a kept file whose custom values nest deeper than any configuration can', async () => {
+      mfs.readFile.mockResolvedValue(
+        storedFile().replace(
+          '"custom":{"flag":"cached"}',
+          '"custom":{"nested":' + '['.repeat(10_000) + ']'.repeat(10_000) + '}'
+        )
+      );
+      fetchMock.mockReturnValue(new Promise(() => undefined));
+
+      const configuration = await start();
+
+      expect(configuration.getSampling()).toEqual({ sessionSampleRate: 100, sessionOnError: false });
+      expect(configuration.getCustom()).toBeUndefined();
+    });
+
     it('ignores a file that is not JSON', async () => {
       mfs.readFile.mockResolvedValue('{not json');
       fetchMock.mockReturnValue(new Promise(() => undefined));
@@ -637,6 +676,33 @@ describe('RemoteConfiguration', () => {
       expect((fetchMock.mock.calls[0][1]!.signal as AbortSignal).aborted).toBe(true);
       await vi.advanceTimersByTimeAsync(RETRY_DELAYS[0] * 1.2);
       expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([204, 202, 206])('retries on an unexpected %s, as on a malformed answer', async (status) => {
+      fetchMock.mockImplementation(() => Promise.resolve(new Response(null, { status })));
+
+      await start();
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS[0] * 1.2);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('gives a later outage its retries again once an answer has landed', async () => {
+      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      fetchMock.mockRejectedValueOnce(new TypeError('fetch failed'));
+      fetchMock.mockRejectedValueOnce(new TypeError('fetch failed'));
+      fetchMock.mockResolvedValueOnce(ok(configurationBody({ ttl: 60, refresh_on_foreground: true })));
+      fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+      await start();
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS[0] + RETRY_DELAYS[1]);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+
+      // A later outage, past the ttl: the refresh fails, and its two retries follow.
+      await vi.advanceTimersByTimeAsync(60_000);
+      appListeners.get('browser-window-focus')!();
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS[0] + RETRY_DELAYS[1]);
+
+      expect(fetchMock).toHaveBeenCalledTimes(6);
     });
 
     it.each([500, 503, 429])('retries on %s', async (status) => {
@@ -1100,6 +1166,33 @@ describe('RemoteConfiguration', () => {
       mayExit();
 
       expect(syncWrites()).toEqual([]);
+    });
+
+    it('stops whole even when what it must write cannot be serialized', async () => {
+      mfs.writeFile.mockReturnValue(new Promise(() => undefined));
+      fetchMock.mockResolvedValueOnce(ok(configurationBody({ version: 9 }), '"tag-9"'));
+      fetchMock.mockReturnValue(new Promise(() => undefined));
+      await start();
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.SESSION_RENEW });
+      await vi.advanceTimersByTimeAsync(0);
+      const stringify = vi.spyOn(JSON, 'stringify').mockImplementation(() => {
+        throw new RangeError('Maximum call stack size exceeded');
+      });
+
+      let thrown: unknown;
+      try {
+        appListeners.get('quit')!();
+      } catch (error) {
+        thrown = error;
+      } finally {
+        stringify.mockRestore();
+      }
+
+      expect(thrown).toBeUndefined();
+
+      expect((fetchMock.mock.calls[1][1]!.signal as AbortSignal).aborted).toBe(true);
+      expect(appListeners.has('browser-window-focus')).toBe(false);
+      expect(appListeners.has('quit')).toBe(false);
     });
 
     it('stops when the application quits: the request in flight is aborted and nothing is asked again', async () => {

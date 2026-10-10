@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { ONE_SECOND, type Subscription } from '@flashcatcloud/browser-core';
 import type { Configuration } from '../config';
 import { type AppMayExitEvent, EventKind, type EventManager, LifecycleKind, type SessionRenewEvent } from '../event';
-import { displayWarn } from '../tools/display';
+import { displayError, displayWarn } from '../tools/display';
 import { StateFile } from '../tools/StateFile';
 import { isConfigurationVersion, type SamplingConfiguration, type SessionManager } from './session';
 import { addError, setTimeout } from './telemetry';
@@ -27,9 +27,16 @@ export const REQUEST_TIMEOUT = 10 * ONE_SECOND;
  */
 export const MAX_CONFIGURATION_BYTES = 256 * 1024;
 /**
+ * The deepest the application's `custom` values may nest. Generous: the backend allows three levels.
+ * A small answer can still nest thousands of levels deep, which no configuration does, and which
+ * would overflow the stack of every copy and serialization of it in the main process.
+ */
+export const MAX_CUSTOM_DEPTH = 16;
+/**
  * A failed request is retried quickly, then patiently, then not until the next natural trigger (a
- * new session, or the next launch). Two extra requests per outage, so a fleet can never turn an
- * endpoint incident into a storm.
+ * new session, or the next launch). Two extra requests per run of failures — the budget is re-armed
+ * by a new session and by an answer that lands — so a fleet can never turn an endpoint incident
+ * into a storm.
  */
 export const RETRY_DELAYS = [5 * ONE_SECOND, 60 * ONE_SECOND];
 /**
@@ -234,15 +241,19 @@ export class RemoteConfiguration {
 
   /** Stops for good, writing first what has not landed: nothing after this point will. */
   stop(): void {
-    this.writePendingSync();
-    this.stopped = true;
-    this.inFlight?.abort();
-    this.inFlight = undefined;
-    clearTimeout(this.retryTimeoutId);
-    this.subscriptions.forEach((subscription) => subscription.unsubscribe());
-    this.subscriptions = [];
-    app.removeListener('browser-window-focus', this.onForeground);
-    app.removeListener('quit', this.onQuit);
+    try {
+      this.writePendingSync();
+    } finally {
+      // Whatever happened to the write, nothing of this instance may outlive the stop.
+      this.stopped = true;
+      this.inFlight?.abort();
+      this.inFlight = undefined;
+      clearTimeout(this.retryTimeoutId);
+      this.subscriptions.forEach((subscription) => subscription.unsubscribe());
+      this.subscriptions = [];
+      app.removeListener('browser-window-focus', this.onForeground);
+      app.removeListener('quit', this.onQuit);
+    }
   }
 
   private readonly onQuit = () => this.stop();
@@ -270,7 +281,18 @@ export class RemoteConfiguration {
    * by the file, so this one is not overwritten by an older state.
    */
   private writePendingSync(): void {
-    if (this.unlanded && this.stateFile.writeSync(JSON.stringify(this.unlanded))) {
+    if (!this.unlanded) {
+      return;
+    }
+    let content: string;
+    try {
+      content = JSON.stringify(this.unlanded);
+    } catch (error) {
+      // Reported, not thrown: this runs on the way out of the process.
+      displayError('Failed to serialize the remote configuration cache:', error);
+      return;
+    }
+    if (this.stateFile.writeSync(content)) {
       this.unlanded = undefined;
     }
   }
@@ -375,11 +397,17 @@ export class RemoteConfiguration {
     if (response.status !== 200) {
       // Nothing in it is read.
       void response.body?.cancel().catch(() => undefined);
-      if (response.status === 304) {
+      if (response.status === 304 && this.delivered) {
         // Only ever asked with an ETag, which only ever sits next to the values it describes.
-        return this.delivered ? 'done' : 'retry';
+        this.failedAttempts = 0;
+        return 'done';
       }
-      return response.status === 429 || response.status >= 500 ? 'retry' : 'done';
+      // A 304 with nothing it could refer to, another 2xx a proxy made up (a 204, say), a 429 or a
+      // 5xx: as unrecognisable as a malformed answer, and worth asking again. Any other status is an
+      // answer about this client, and asking again would get the same one.
+      const status = response.status;
+      const retry = status < 300 || status === 304 || status === 429 || status >= 500;
+      return retry ? 'retry' : 'done';
     }
     let body: string | undefined;
     try {
@@ -406,6 +434,7 @@ export class RemoteConfiguration {
       }
       return 'done';
     }
+    this.failedAttempts = 0;
     this.apply(parsed, response.headers.get('etag') ?? undefined);
     return 'done';
   }
@@ -555,6 +584,9 @@ function parseResponse(text: string): Delivered | { unsupportedSchema: number } 
   if (rum !== undefined && rum !== null && !isBag(rum)) {
     return undefined;
   }
+  if (nestsDeeperThan(custom, MAX_CUSTOM_DEPTH)) {
+    return undefined;
+  }
   // Version 0 is what an application with nothing published answers: no configuration, whatever
   // else the body carries.
   const published = enabled && version > 0;
@@ -603,6 +635,9 @@ function parseStoredConfiguration(value: unknown): StoredConfiguration | undefin
   if (!isBag(values) || (custom !== undefined && !isBag(custom)) || (etag !== undefined && typeof etag !== 'string')) {
     return undefined;
   }
+  if (nestsDeeperThan(custom, MAX_CUSTOM_DEPTH)) {
+    return undefined;
+  }
   const { sessionSampleRate, sessionOnError } = values;
   if (sessionSampleRate !== undefined && !isRate(sessionSampleRate)) {
     return undefined;
@@ -611,6 +646,28 @@ function parseStoredConfiguration(value: unknown): StoredConfiguration | undefin
     return undefined;
   }
   return value as unknown as StoredConfiguration;
+}
+
+/**
+ * Whether `value` nests objects or arrays more than `limit` levels deep, a scalar counting none.
+ * Walked with a stack of its own rather than by recursion, so that the check itself cannot overflow
+ * on the value it is there to refuse; it stops at the first branch past the limit.
+ */
+function nestsDeeperThan(value: unknown, limit: number): boolean {
+  const pending: { node: unknown; depth: number }[] = [{ node: value, depth: 0 }];
+  while (pending.length > 0) {
+    const { node, depth } = pending.pop()!;
+    if (typeof node !== 'object' || node === null) {
+      continue;
+    }
+    if (depth + 1 > limit) {
+      return true;
+    }
+    for (const child of Object.values(node)) {
+      pending.push({ node: child, depth: depth + 1 });
+    }
+  }
+  return false;
 }
 
 function isPositiveInteger(value: unknown): value is number {
