@@ -60,6 +60,11 @@ export class BatchManager {
     this.producer.writePendingSync();
   }
 
+  /** Drains the write queue and rotates the current batch, without uploading. */
+  flushToDisk(): Promise<void> {
+    return this.producer.flush();
+  }
+
   /** Drains the write queue, rotates the current batch, and uploads all pending files. */
   async flush() {
     await this.triggerUploadCycle();

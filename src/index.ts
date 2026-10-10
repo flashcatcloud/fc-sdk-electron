@@ -94,8 +94,11 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
     new SpanProcessor(eventManager, hooks, config);
   }
 
-  transport = await Transport.create(config, eventManager, manager);
-  const rum = await RumCollection.start(eventManager, hooks, rendererRegistry, stackPathNormalizer, manager);
+  const createdTransport = await Transport.create(config, eventManager, manager);
+  transport = createdTransport;
+  const rum = await RumCollection.start(eventManager, hooks, rendererRegistry, stackPathNormalizer, manager, () =>
+    createdTransport.flushToDisk()
+  );
   rumApi = rum.getApi();
 
   // Last, once every collector listens for the session ending, and never awaited: nothing in init

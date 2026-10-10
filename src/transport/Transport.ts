@@ -10,7 +10,7 @@ import {
   type ServerEvent,
 } from '../event';
 import type { SessionManager } from '../domain/session';
-import { monitor } from '../domain/telemetry';
+import { addError, monitor } from '../domain/telemetry';
 import { BatchManager } from './batch';
 import { WithheldEventBuffer } from './WithheldEventBuffer';
 
@@ -32,6 +32,11 @@ export class Transport {
   private tracks: EventTrack[] = [EventTrack.RUM];
   private batchManagers: BatchManager[] = [];
   private basePath: string;
+  /**
+   * The process is exiting: only the synchronous listeners of the `exit` event run from here on, so
+   * whatever arrives is written before returning rather than queued for a turn that never comes.
+   */
+  private terminal = false;
 
   private constructor(
     private readonly config: Configuration,
@@ -56,13 +61,17 @@ export class Transport {
     });
     // Every point a quit passes, and the last one a `process.exit()` runs: an error reported after
     // one of them — by a later listener, while quitting — is still taken along by the next. Each
-    // pass writes only what arrived since the one before.
-    const mayExit = monitor(() =>
-      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.APP_MAY_EXIT })
-    );
-    app.on('before-quit', mayExit);
-    app.on('will-quit', mayExit);
-    process.on('exit', mayExit);
+    // pass writes only what arrived since the one before. The exit event is terminal: an error a
+    // later exit listener reports has no next pass, so from there on everything is written as it
+    // arrives.
+    const mayExit = (terminal: boolean) =>
+      monitor(() => {
+        transport.terminal ||= terminal;
+        eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.APP_MAY_EXIT, terminal });
+      });
+    app.on('before-quit', mayExit(false));
+    app.on('will-quit', mayExit(false));
+    process.on('exit', mayExit(true));
 
     return transport;
   }
@@ -115,6 +124,9 @@ export class Transport {
         } else {
           batchManager.post(event.data);
         }
+        if (this.terminal) {
+          this.writePendingSync();
+        }
       },
     });
   }
@@ -124,8 +136,21 @@ export class Transport {
     await Promise.all(this.batchManagers.map((m) => m.flush()));
   }
 
+  /** Flushes all batch managers to disk, without uploading. */
+  flushToDisk(): Promise<void> {
+    return Promise.all(this.batchManagers.map((m) => m.flushToDisk())).then(() => undefined);
+  }
+
   private writePendingSync() {
-    this.batchManagers.forEach((m) => m.writePendingSync());
+    for (const batchManager of this.batchManagers) {
+      try {
+        batchManager.writePendingSync();
+      } catch (error) {
+        // A batch that cannot be written must not cost the session its state: that write is the
+        // one the next launch reads.
+        addError(error);
+      }
+    }
     // After the batches: the release they carry has just marked the session, and the mark must
     // reach disk with them.
     this.sessionManager.writePendingSync();

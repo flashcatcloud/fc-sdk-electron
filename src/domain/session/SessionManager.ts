@@ -275,7 +275,12 @@ export class SessionManager {
       // Expired while the state was being read: writing it back would bring the session back.
       return;
     }
-    if (!state || state.id !== this.currentState.id) {
+    if (state?.id !== this.currentState.id) {
+      // The file still holds the session before this one: its delete and this one's write are
+      // queued, and an activity arrived in between. Nothing to report, nothing to write yet.
+      if (state && state.created < this.currentState.created) {
+        return;
+      }
       addError(new Error('SessionManager: Invalid session state'));
       return;
     }
@@ -373,17 +378,15 @@ async function loadSessionState(): Promise<SessionState | undefined> {
 /**
  * The state `value` holds, or `undefined` when it is not one — a corrupt file, a hand edit — so that
  * a fresh session is drawn rather than a draw that was never made resumed. A state written before
- * sessions were sampled has no draw: every session was collected then, and a session keeps the
- * decision it was created with.
+ * sessions were sampled has none of the sampling fields: every session was collected then, and a
+ * session keeps the decision it was created with. A state with some of them is a damaged one, not
+ * a legacy one.
  */
 function parseSessionState(value: unknown): SessionState | undefined {
   if (typeof value !== 'object' || value === null) return undefined;
-  const { created, lastActivity, trackingType, sampleRate, ...rest } = value as Record<string, unknown>;
+  const { created, lastActivity, ...rest } = value as Record<string, unknown>;
   if (!Number.isFinite(created) || !Number.isFinite(lastActivity)) return undefined;
-  const record = parseSessionRecord({
-    ...rest,
-    trackingType: trackingType ?? TrackingType.TRACKED,
-    sampleRate: sampleRate ?? 100,
-  });
+  const legacy = !('trackingType' in rest) && !('sampleRate' in rest) && !('hasError' in rest);
+  const record = parseSessionRecord(legacy ? { ...rest, trackingType: TrackingType.TRACKED, sampleRate: 100 } : rest);
   return record && { ...record, created: created as number, lastActivity: lastActivity as number };
 }

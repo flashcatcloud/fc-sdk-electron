@@ -48,7 +48,7 @@ export class ErrorCollection {
     this.uncaughtExceptionListener = monitor((error: unknown) => {
       this.errorListener(error);
       // After the error itself, so that whatever it released is handed over with it.
-      this.eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.APP_MAY_EXIT });
+      this.eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.APP_MAY_EXIT, terminal: false });
     });
     process.on('uncaughtException', this.uncaughtExceptionListener);
     process.on('unhandledRejection', this.errorListener);

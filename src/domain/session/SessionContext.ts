@@ -179,15 +179,15 @@ function toSessionRecord(value: unknown): SessionRecord | undefined {
 const TRACKING_TYPES = new Set<unknown>(Object.values(TrackingType));
 
 /**
- * The record `value` is, or `undefined` when it is not one: a non-empty id, a known type, a finite
- * rate, a whole non-negative configuration version, a boolean mark.
+ * The record `value` is, or `undefined` when it is not one: a non-empty id, a known type, a rate from
+ * 0 to 100, a whole non-negative configuration version, a boolean mark.
  */
 export function parseSessionRecord(value: unknown): SessionRecord | undefined {
   if (typeof value !== 'object' || value === null) return undefined;
   const { id, trackingType, sampleRate, rcVersion, hasError } = value as Record<string, unknown>;
   if (typeof id !== 'string' || id === '') return undefined;
   if (!TRACKING_TYPES.has(trackingType)) return undefined;
-  if (typeof sampleRate !== 'number' || !Number.isFinite(sampleRate)) return undefined;
+  if (typeof sampleRate !== 'number' || !(sampleRate >= 0 && sampleRate <= 100)) return undefined;
   if (rcVersion !== undefined && !isConfigurationVersion(rcVersion)) return undefined;
   if (hasError !== undefined && typeof hasError !== 'boolean') return undefined;
   return value as SessionRecord;

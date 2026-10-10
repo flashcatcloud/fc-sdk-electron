@@ -138,6 +138,13 @@ void app.whenReady().then(async () => {
     app.quit();
   });
 
+  // An error reported from the host's own exit listener, registered after the SDK's: it runs after
+  // the SDK's drain, and nothing at all runs after it.
+  ipcMain.handle('generateManualErrorOnProcessExit', () => {
+    process.on('exit', () => addError(new Error('manual error on process exit')));
+    process.exit(1);
+  });
+
   // app.exit() skips the quit events; what it leaves the SDK is what this scenario pins.
   ipcMain.handle('generateManualErrorAndAppExit', () => {
     addError(new Error('manual error before app.exit'));

@@ -1077,7 +1077,7 @@ describe('RemoteConfiguration', () => {
 
   describe('when the application exits', () => {
     function mayExit() {
-      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.APP_MAY_EXIT });
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.APP_MAY_EXIT, terminal: false });
     }
 
     function syncWrites(): Record<string, unknown>[] {

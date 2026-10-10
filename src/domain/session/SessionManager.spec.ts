@@ -17,7 +17,13 @@ vi.mock('../../tools/display', () => ({
   displayError: vi.fn(),
 }));
 
+vi.mock('../telemetry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../telemetry')>()),
+  addError: vi.fn(),
+}));
+
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { addError } from '../telemetry';
 import { type TimeStamp } from '@flashcatcloud/browser-core';
 import {
   SessionManager,
@@ -481,7 +487,13 @@ describe('sessionManager', () => {
     it('keeps the decision a resumed session was created with, whatever the configuration says now', async () => {
       const now = Date.now();
       mfs.readFile.mockResolvedValue(
-        JSON.stringify({ id: 'existing', created: now, lastActivity: now, trackingType: TrackingType.TRACKED_ON_ERROR })
+        JSON.stringify({
+          id: 'existing',
+          created: now,
+          lastActivity: now,
+          trackingType: TrackingType.TRACKED_ON_ERROR,
+          sampleRate: 0,
+        })
       );
 
       sessionManager = await SessionManager.start(eventManager, hooks, () => ({
@@ -508,6 +520,7 @@ describe('sessionManager', () => {
           created: now,
           lastActivity: now,
           trackingType: TrackingType.TRACKED_ON_ERROR,
+          sampleRate: 0,
           hasError: true,
         })
       );
@@ -540,6 +553,26 @@ describe('sessionManager', () => {
       expect(sessionManager.getSession().trackingType).toBe(TrackingType.TRACKED_ON_ERROR);
     });
 
+    it.each([
+      ['a null tracking type next to a rate', { trackingType: null, sampleRate: 0 }],
+      ['a rate without a tracking type', { sampleRate: 0 }],
+      ['a tracking type without a rate', { trackingType: TrackingType.TRACKED }],
+      ['an error mark without any sampling field', { hasError: true }],
+      ['a negative rate', { trackingType: TrackingType.TRACKED, sampleRate: -10 }],
+      ['a rate above 100', { trackingType: TrackingType.TRACKED, sampleRate: 150 }],
+    ])('starts a fresh session rather than reading a damaged state as a legacy one (%s)', async (_, fields) => {
+      const now = Date.now();
+      mfs.readFile.mockResolvedValue(JSON.stringify({ id: 'existing', created: now, lastActivity: now, ...fields }));
+
+      sessionManager = await SessionManager.start(eventManager, hooks, () => ({
+        sessionSampleRate: 0,
+        sessionOnError: true,
+      }));
+
+      expect(sessionManager.getSession().id).not.toBe('existing');
+      expect(sessionManager.getSession().trackingType).toBe(TrackingType.TRACKED_ON_ERROR);
+    });
+
     it('resumes a session saved before sessions were sampled as a drawn one', async () => {
       const now = Date.now();
       mfs.readFile.mockResolvedValue(JSON.stringify({ id: 'existing', created: now, lastActivity: now }));
@@ -554,6 +587,34 @@ describe('sessionManager', () => {
       expect(hooks.triggerRum({ eventType: 'view', startTime: now as TimeStamp })).toMatchObject({
         _dd: { configuration: { session_sample_rate: 100 } },
       });
+    });
+
+    it('skips, without reporting, a state read from disk that is older than the session in memory', async () => {
+      mockNoSessionFile();
+      sessionManager = await SessionManager.start(eventManager, hooks, () => SAMPLING);
+      const previous = sessionManager.getSession().id;
+      vi.advanceTimersByTime(1_000);
+      sessionManager.expire();
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.END_USER_ACTIVITY });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sessionManager.getSession().id).not.toBe(previous);
+      // The renewal's delete and write have not landed yet: the file still holds the session before.
+      mfs.access.mockResolvedValue(undefined);
+      mfs.readFile.mockResolvedValue(
+        JSON.stringify({
+          id: previous,
+          created: 0,
+          lastActivity: 0,
+          trackingType: TrackingType.TRACKED,
+          sampleRate: 100,
+        })
+      );
+      vi.mocked(addError).mockClear();
+
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.END_USER_ACTIVITY });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(addError).not.toHaveBeenCalled();
     });
 
     it('draws again when the session is renewed', async () => {
@@ -907,7 +968,13 @@ describe('sessionManager', () => {
         const { id } = sessionManager.getSession();
         mfs.access.mockResolvedValue(undefined);
         mfs.readFile.mockResolvedValue(
-          JSON.stringify({ id, created: 0, lastActivity: 0, trackingType: TrackingType.TRACKED_ON_ERROR })
+          JSON.stringify({
+            id,
+            created: 0,
+            lastActivity: 0,
+            trackingType: TrackingType.TRACKED_ON_ERROR,
+            sampleRate: 0,
+          })
         );
 
         sessionManager.setSessionHasError(id, T0);
@@ -923,7 +990,13 @@ describe('sessionManager', () => {
         const { id } = sessionManager.getSession();
         mfs.access.mockResolvedValue(undefined);
         mfs.readFile.mockResolvedValue(
-          JSON.stringify({ id, created: 0, lastActivity: 0, trackingType: TrackingType.TRACKED_ON_ERROR })
+          JSON.stringify({
+            id,
+            created: 0,
+            lastActivity: 0,
+            trackingType: TrackingType.TRACKED_ON_ERROR,
+            sampleRate: 0,
+          })
         );
         let finishActivityWrite!: () => void;
         mfs.writeFile.mockImplementationOnce(() => new Promise<void>((resolve) => (finishActivityWrite = resolve)));

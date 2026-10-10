@@ -5,6 +5,7 @@ import type { EventManager, LifecycleEvent, RawRumEvent } from '../event';
 import type { RumEvent } from '../domain/rum';
 import { monitor, addError as addTelemetryError } from '../domain/telemetry';
 import { BRIDGE_CHANNEL, CONFIG_CHANNEL, CONFIG_PUSH_CHANNEL } from '../common';
+import { hasFractionWhereIntakeDecodesInteger } from '../tools/intakeNumbers';
 import type { BridgeConfig } from '../common';
 import type { RendererRegistry } from '../domain/RendererRegistry';
 import type { User } from '../domain/UserContext';
@@ -109,7 +110,7 @@ export class BridgeHandler {
     try {
       bridgeEvent = JSON.parse(msg) as BridgeEvent;
     } catch {
-      addTelemetryError(new Error(`Failed to parse bridge message: ${msg}`));
+      addTelemetryError(new Error(`Failed to parse bridge message: ${msg.slice(0, 200)}`));
       return;
     }
 
@@ -120,7 +121,15 @@ export class BridgeHandler {
         // either.
         const type = (bridgeEvent.event as { type?: unknown } | undefined)?.type;
         if (!RUM_EVENT_TYPES.has(type)) {
-          addTelemetryError(new Error(`Unsupported RUM event type from a renderer: ${String(type)}`));
+          addTelemetryError(new Error('Dropped a renderer RUM event: unsupported type'));
+          break;
+        }
+        // A fraction where the intake decodes an integer fails the whole event there, silently —
+        // and an error that would never land must not earn a session its release.
+        if (hasFractionWhereIntakeDecodesInteger(bridgeEvent.event)) {
+          addTelemetryError(
+            new Error('Dropped a renderer RUM event: a number the intake decodes as an integer is fractional')
+          );
           break;
         }
         this.trackRenderer(bridgeEvent.event, webContentsId);

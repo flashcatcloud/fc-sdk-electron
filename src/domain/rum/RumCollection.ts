@@ -20,14 +20,15 @@ export class RumCollection {
     hooks: FormatHooks,
     rendererRegistry: RendererRegistry,
     stackPathNormalizer: StackPathNormalizer,
-    sessionManager: SessionManager
+    sessionManager: SessionManager,
+    writtenToDisk: () => Promise<void>
   ): Promise<RumCollection> {
     const viewContext = await ViewContext.init(hooks);
     const viewCollection = ViewCollection.start(eventManager, viewContext);
     const errorCollection = new ErrorCollection(eventManager, stackPathNormalizer);
     const operationCollection = new OperationCollection(eventManager);
     const processGoneCollection = new ProcessGoneCollection(eventManager, rendererRegistry);
-    CrashCollection.start(eventManager, sessionManager, (startTime) => viewContext.findView(startTime));
+    CrashCollection.start(eventManager, sessionManager, (startTime) => viewContext.findView(startTime), writtenToDisk);
     return new RumCollection(viewCollection, errorCollection, operationCollection, processGoneCollection);
   }
 

@@ -93,6 +93,8 @@ export class WithheldEventBuffer {
   private oversizeErrorViewIds = new Set<string>();
   /** The error that earned the release: never evicted, whatever else the buffer holds. */
   private armingEvent: RumEvent | undefined;
+  /** The process is exiting: a release is made as it is earned, since no timer will run. */
+  private terminal = false;
   private releaseTimeoutId: ReturnType<typeof setTimeout> | undefined;
   /** When the release was scheduled, on the monotonic clock: what freezes the window — see {@link prune}. */
   private releaseScheduledAt: number | undefined;
@@ -108,7 +110,12 @@ export class WithheldEventBuffer {
       canHandle: (event): event is LifecycleEvent =>
         event.kind === EventKind.LIFECYCLE &&
         (event.lifecycle === LifecycleKind.SESSION_EXPIRED || event.lifecycle === LifecycleKind.APP_MAY_EXIT),
-      handle: (event) => this.settle(event.lifecycle === LifecycleKind.SESSION_EXPIRED ? 'session-ended' : 'may-exit'),
+      handle: (event) => {
+        if (event.lifecycle === LifecycleKind.APP_MAY_EXIT && event.terminal) {
+          this.terminal = true;
+        }
+        this.settle(event.lifecycle === LifecycleKind.SESSION_EXPIRED ? 'session-ended' : 'may-exit');
+      },
     });
   }
 
@@ -151,8 +158,9 @@ export class WithheldEventBuffer {
   private hold(event: RumEvent, measuredBytes?: number): void {
     if (event.type === 'view') {
       const viewId = event.view?.id;
-      if (viewId === undefined) {
-        // A view without an id is no container for anything.
+      if (viewId === undefined || computeEventBytes(event) > WITHHELD_BUFFER_BYTES_LIMIT) {
+        // A view without an id is no container for anything; an update larger than the whole
+        // budget is not worth holding, and the version held before it keeps the view's place.
         this.droppedCount += 1;
         return;
       }
@@ -270,6 +278,13 @@ export class WithheldEventBuffer {
     }
     this.releaseScheduledAt = relativeNow();
     this.releaseErrorTime = timeStampNow();
+    if (this.terminal || isCrash(this.armingEvent)) {
+      // No timer will run once the process is exiting. A crash reported on the next launch has no
+      // storm to spread either: it reaches the intake with the next upload cycle, which spreads
+      // uploads already, and its dump is kept only until its report is on disk.
+      this.release();
+      return;
+    }
     this.releaseTimeoutId = setTimeout(() => this.release(), computeReleaseDelay(this.withheldForSessionId!));
   }
 
@@ -352,9 +367,21 @@ function viewIdOf(event: RumEvent): string {
   return event.view?.id ?? '';
 }
 
-/** Node's count: browser-core's reaches for `window.TextEncoder` on non-ASCII text, which the main process has not. */
+function isCrash(event: RumEvent | undefined): boolean {
+  return event?.type === 'error' && event.error?.is_crash === true;
+}
+
+/**
+ * Node's count: browser-core's reaches for `window.TextEncoder` on non-ASCII text, which the main
+ * process has not. An event that cannot be serialized — a BigInt in a context, say — counts as
+ * larger than any budget, so that it is dropped or forwarded on its own rather than throwing here.
+ */
 function computeEventBytes(event: RumEvent): number {
-  return Buffer.byteLength(JSON.stringify(event), 'utf8');
+  try {
+    return Buffer.byteLength(JSON.stringify(event), 'utf8');
+  } catch {
+    return Infinity;
+  }
 }
 
 function getEvictionTier(event: RumEvent): EvictionTier {

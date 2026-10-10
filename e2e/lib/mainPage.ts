@@ -28,6 +28,7 @@ interface ElectronAppWindow {
     generateManualErrorAndExit: () => Promise<void>;
     generateManualErrorOnWillQuit: () => Promise<void>;
     generateManualErrorAndAppExit: () => Promise<void>;
+    generateManualErrorOnProcessExit: () => Promise<void>;
   };
 }
 
@@ -89,6 +90,13 @@ export class MainPage {
   generateManualErrorOnWillQuit() {
     void this.page
       .evaluate(() => (globalThis as unknown as ElectronAppWindow).electronAPI.generateManualErrorOnWillQuit())
+      .catch(() => undefined);
+  }
+
+  /** Fire and forget, as above. */
+  generateManualErrorOnProcessExit() {
+    void this.page
+      .evaluate(() => (globalThis as unknown as ElectronAppWindow).electronAPI.generateManualErrorOnProcessExit())
       .catch(() => undefined);
   }
 

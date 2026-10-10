@@ -78,6 +78,8 @@ export interface UserChangedEvent {
 export interface AppMayExitEvent {
   kind: typeof EventKind.LIFECYCLE;
   lifecycle: typeof LifecycleKind.APP_MAY_EXIT;
+  /** The process is exiting: nothing runs after the current listeners, so nothing may be deferred. */
+  terminal: boolean;
 }
 
 export type LifecycleEvent =

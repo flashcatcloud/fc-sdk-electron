@@ -109,10 +109,12 @@ function startCollection(
   eventManager: EventManager,
   sessionManager: Pick<SessionManager, 'findSession' | 'getSession' | 'setSessionHasError'> = TRACKED_SESSION_MANAGER
 ) {
-  return CrashCollection.start(eventManager, sessionManager, () => ({
-    id: 'main-view-id',
-    startTime: 0 as TimeStamp,
-  }));
+  return CrashCollection.start(
+    eventManager,
+    sessionManager,
+    () => ({ id: 'main-view-id', startTime: 0 as TimeStamp }),
+    () => Promise.resolve()
+  );
 }
 
 async function startAndFlush(
@@ -829,7 +831,8 @@ describe('CrashCollection', () => {
 
     async function processCrash(
       sessionManager: Pick<SessionManager, 'findSession' | 'getSession' | 'setSessionHasError'>,
-      findView: () => MainView | undefined = () => ({ id: 'crashed-view', startTime: VIEW_START })
+      findView: () => MainView | undefined = () => ({ id: 'crashed-view', startTime: VIEW_START }),
+      writtenToDisk: () => Promise<void> = () => Promise.resolve()
     ) {
       mockDmpFile('crash.dmp', CRASH_TIME);
       vi.mocked(processMinidump).mockResolvedValue(createMinidumpResult());
@@ -837,7 +840,7 @@ describe('CrashCollection', () => {
         canHandle: (event): event is RawRumEvent => event.kind === EventKind.RAW,
         handle: (event) => calls.push(event.data.type),
       });
-      CrashCollection.start(eventManager, sessionManager, findView);
+      CrashCollection.start(eventManager, sessionManager, findView, writtenToDisk);
       resolveWhenReady();
       await vi.advanceTimersToNextTimerAsync();
     }
@@ -877,6 +880,30 @@ describe('CrashCollection', () => {
       const crash = rawRumEvents[0].data as RawRumError;
       expect(crash.error.is_crash).toBe(true);
       expect(typeof crash.view?.id).toBe('string');
+    });
+
+    it('keeps the dump until its report is written to disk, and deletes it then', async () => {
+      let written!: () => void;
+      const writtenToDisk = () => new Promise<void>((resolve) => (written = resolve));
+      mfs.unlink.mockResolvedValue(undefined);
+      const processing = processCrash(sessionManagerFor(WITHHELD), undefined, writtenToDisk);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(calls).toContain('error');
+      expect(mfs.unlink).not.toHaveBeenCalled();
+
+      written();
+      await processing;
+      expect(mfs.unlink).toHaveBeenCalledWith('/mock/crash/dumps/crash.dmp');
+    });
+
+    it('keeps the dump when its report could not be written, to report it on the next launch', async () => {
+      mfs.unlink.mockResolvedValue(undefined);
+
+      await processCrash(sessionManagerFor(WITHHELD), undefined, () => Promise.reject(new Error('ENOSPC')));
+
+      expect(calls).toContain('error');
+      expect(mfs.unlink).not.toHaveBeenCalled();
     });
 
     it('leaves the mark to the release when the crashed session was resumed and is the current one', async () => {

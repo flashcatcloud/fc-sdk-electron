@@ -126,7 +126,8 @@ and the process `exit` event), the buffer releases what has earned its release a
 writes every queued event, and the session state, before returning, since the batch otherwise writes
 on later turns of the event loop; an append already issued is not completed synchronously. Each pass
 writes only what arrived since the one before, so an error reported between two of them is taken
-along by the next. The session state and history files are replaced whole, through a temp file and a
+along by the next; and once the process `exit` event has started — the last pass, after which
+nothing runs — every event is released and written as it arrives. The session state and history files are replaced whole, through a temp file and a
 rename, in the order the writes were requested (`StateFile`). See the JSDoc of each class.
 
 ### Event Manager
