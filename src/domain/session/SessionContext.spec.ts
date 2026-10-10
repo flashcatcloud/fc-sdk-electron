@@ -372,6 +372,9 @@ describe('SessionContext', () => {
       ['an unknown tracking type', { id: 'bad', trackingType: 7, sampleRate: 0 }],
       ['a rate that is not a finite number', { id: 'bad', trackingType: '2', sampleRate: null }],
       ['no id', { trackingType: '2', sampleRate: 100 }],
+      ['a rate above 100', { id: 'bad', trackingType: '2', sampleRate: 150 }],
+      ['a negative rate', { id: 'bad', trackingType: '2', sampleRate: -1 }],
+      ['a null tracking type', { id: 'bad', trackingType: null, sampleRate: 0 }],
     ])(
       'discards the events of a session whose saved record is malformed (%s), rather than uploading them',
       async (_, value) => {
