@@ -110,7 +110,8 @@ export class BridgeHandler {
     try {
       bridgeEvent = JSON.parse(msg) as BridgeEvent;
     } catch {
-      addTelemetryError(new Error(`Failed to parse bridge message: ${msg.slice(0, 200)}`));
+      // The message is renderer text, and telemetry leaves the device: only its size is reported.
+      addTelemetryError(new Error(`Failed to parse bridge message (${msg.length} characters)`));
       return;
     }
 

@@ -397,6 +397,15 @@ describe('BridgeHandler', () => {
       expect(notified).toEqual([]);
     });
 
+    it('should report a message it cannot parse without any of its text', () => {
+      simulateIpcMessage('{"eventType":"rum","event":{"type":"error","error":{"message":"card 4111 1111"}}');
+
+      expect(mockAddError).toHaveBeenCalledWith(expect.any(Error));
+      const message = (mockAddError.mock.calls[0][0] as Error).message;
+      expect(message).not.toContain('4111');
+      expect(message).toContain('(80 characters)');
+    });
+
     it('should apply the pre-warm timing correction before notifying', () => {
       const collected: RawRumEvent[] = [];
       eventManager.registerHandler<RawRumEvent>({
