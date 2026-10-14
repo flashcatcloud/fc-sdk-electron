@@ -366,6 +366,37 @@ describe('BridgeHandler', () => {
       }
     });
 
+    it('should keep a renderer event whose free-form context holds a fraction: the intake stores it as is', () => {
+      const notified: unknown[] = [];
+      eventManager.registerHandler({
+        canHandle: (event) => event.kind === EventKind.RAW,
+        handle: (event) => notified.push(event),
+      });
+
+      simulateIpcMessage(
+        JSON.stringify({
+          eventType: 'rum',
+          event: { type: 'error', date: 1, error: { message: 'x' }, context: { price: 19.99 }, usr: { score: 0.5 } },
+        })
+      );
+
+      expect(notified).toHaveLength(1);
+    });
+
+    it('should drop a renderer event with a fraction at a path the intake decodes as an integer', () => {
+      const notified: unknown[] = [];
+      eventManager.registerHandler({
+        canHandle: (event) => event.kind === EventKind.RAW,
+        handle: (event) => notified.push(event),
+      });
+
+      simulateIpcMessage(
+        JSON.stringify({ eventType: 'rum', event: { type: 'view', date: 1, view: { id: 'v', time_spent: 1.5 } } })
+      );
+
+      expect(notified).toEqual([]);
+    });
+
     it('should apply the pre-warm timing correction before notifying', () => {
       const collected: RawRumEvent[] = [];
       eventManager.registerHandler<RawRumEvent>({

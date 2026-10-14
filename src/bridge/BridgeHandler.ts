@@ -5,7 +5,7 @@ import type { EventManager, LifecycleEvent, RawRumEvent } from '../event';
 import type { RumEvent } from '../domain/rum';
 import { monitor, addError as addTelemetryError } from '../domain/telemetry';
 import { BRIDGE_CHANNEL, CONFIG_CHANNEL, CONFIG_PUSH_CHANNEL } from '../common';
-import { hasFractionWhereIntakeDecodesInteger, hasPrototypeKey } from '../tools/intakeNumbers';
+import { findFractionAtIntakeIntegerPath, hasPrototypeKey } from '../tools/intakeNumbers';
 import type { BridgeConfig } from '../common';
 import type { RendererRegistry } from '../domain/RendererRegistry';
 import type { User } from '../domain/UserContext';
@@ -132,8 +132,9 @@ export class BridgeHandler {
           break;
         }
         // A fraction where the intake decodes an integer fails the whole event there, silently —
-        // and an error that would never land must not earn a session its release.
-        if (hasFractionWhereIntakeDecodesInteger(bridgeEvent.event)) {
+        // and an error that would never land must not earn a session its release. Only the paths
+        // the intake decodes as integers are looked at; free-form attributes are the renderer's.
+        if (findFractionAtIntakeIntegerPath(bridgeEvent.event) !== undefined) {
           addTelemetryError(
             new Error('Dropped a renderer RUM event: a number the intake decodes as an integer is fractional')
           );

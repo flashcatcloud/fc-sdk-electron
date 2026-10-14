@@ -325,6 +325,30 @@ test.describe('sessionOnError, errors reported as the application leaves', () =>
 test.describe('sessionOnError, renderer envelopes', () => {
   test.use({ sdkConfig: ON_ERROR_ONLY, rumBrowserSdk: {} });
 
+  test('is released by a renderer error whose free-form context holds a fraction', async ({
+    intake,
+    mainPage,
+    electronApp,
+  }) => {
+    const bridgeWindow = await mainPage.openBridgeFileWindow(electronApp);
+    await bridgeWindow.sendRaw({
+      eventType: 'rum',
+      event: {
+        type: 'error',
+        date: Date.now(),
+        error: { message: 'priced', source: 'source' },
+        view: { id: 'v' },
+        context: { price: 19.99 },
+      },
+    });
+    await settle(mainPage);
+
+    const errors = rumEvents(intake).filter((event) => event.type === 'error') as unknown as RumErrorEvent[];
+    expect(errors.map((error) => error.error.message)).toEqual(['priced']);
+    expect((errors[0] as unknown as { context?: { price?: number } }).context?.price).toBe(19.99);
+    expect(intake.getProtocolViolations()).toEqual([]);
+  });
+
   test('is not released by a renderer error the intake would drop for a fractional number', async ({
     intake,
     mainPage,
