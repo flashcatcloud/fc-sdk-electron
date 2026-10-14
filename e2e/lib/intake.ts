@@ -8,15 +8,19 @@ import * as http from 'node:http';
  * `ddforward` query parameter carries the intake path the SDK would have used without a proxy,
  * so asserting on it is equivalent to asserting on the real request path.
  *
- * Beyond storing events, this server validates the wire contract the FlashCat intake enforces.
- * The real intake answers a breach with `400`, which the SDK retries forever — so a test that
- * only looked at the parsed events could stay green while nothing was ever ingested. Breaches
- * are therefore recorded and asserted explicitly by `intake-contract.scenario.ts`:
+ * Beyond storing events, this server validates the wire contract the FlashCat intake enforces,
+ * since a test that only looked at the parsed events could stay green while nothing was ever
+ * ingested. Breaches are recorded and asserted explicitly by `intake-contract.scenario.ts`. The
+ * real intake answers the request-level ones with `400`, which the SDK retries forever:
  *
  * - path is `/api/v2/rum` (the only track FlashCat exposes — there is no `/api/v2/spans`)
  * - `Content-Type: text/plain;charset=UTF-8` (`application/json` is rejected)
  * - body is newline-delimited JSON, one event per line (a JSON array is rejected)
- * - every number is a whole number, except the few fields the intake really types as floats
+ *
+ * The event-level one it does not answer at all — the `202` is sent before the events are
+ * decoded, and an event that fails to decode is dropped silently:
+ *
+ * - every value at a path the intake decodes as an integer is a whole number
  *
  * It also stands in for the remote configuration endpoint, `GET /api/v2/rum/config`, so remote
  * configuration is exercised without ever pointing the SDK at a real backend — a fake configuration
@@ -75,13 +79,15 @@ export interface ConfigRequest {
 const EXPECTED_CONTENT_TYPE = 'text/plain';
 
 /**
- * The event fields the intake decodes as integers, by JSON path, per event type: a fraction there
- * fails the whole event on the real intake, silently, since the `202` is sent before decoding. A
- * JavaScript mock parses such an event happily, so without this check the suite stays green while
- * nothing is ingested. Only these paths are looked at; free-form attributes are stored as they are.
+ * The event fields the intake decodes as integers, by JSON path, per event type: anything but a
+ * whole number there — a fraction, a string, a boolean — fails the whole event on the real intake,
+ * silently, since the `202` is sent before decoding. A JavaScript mock parses such an event
+ * happily, so without this check the suite stays green while nothing is ingested. Only these paths
+ * are looked at; free-form attributes are stored as they are.
  *
  * A mirror of `src/tools/intakeNumbers.ts` — the e2e project cannot import `src` — taken from the
- * integer-typed fields of the event structs in `fc-rum/types/datadog/rum.go`.
+ * integer-typed fields of the event structs in `fc-rum/types/datadog/rum.go`; `[]` stands for each
+ * element of an array, `*` for each value of a map.
  */
 const COMMON = ['_dd.format_version', '_dd.session.plan', 'date'];
 
@@ -145,6 +151,7 @@ const INTAKE_INTEGER_PATHS: Record<string, readonly string[]> = {
     'view.app_launch',
     'view.crash.count',
     'view.cumulative_layout_shift_time',
+    'view.custom_timings.*',
     'view.dom_complete',
     'view.dom_content_loaded',
     'view.dom_interactive',
@@ -225,8 +232,8 @@ export class Intake {
         continue;
       }
 
-      for (const path of findFractionalFields(parsed)) {
-        this.addViolation('fractional number in an integer field', `${eventLabel(parsed)} → ${path}`);
+      for (const path of findInvalidIntegers(parsed)) {
+        this.addViolation('value the intake cannot decode into an integer', `${eventLabel(parsed)} → ${path}`);
       }
 
       this.rumEvents.push({ timestamp: Date.now(), body: parsed, headers });
@@ -455,31 +462,49 @@ function truncate(value: string, max = 200): string {
   return value.length > max ? `${value.slice(0, max)}…` : value;
 }
 
-/** Dotted paths of every number the intake would fail to decode into an integer. */
-function findFractionalFields(event: unknown): string[] {
+/** Dotted paths of every value the intake would fail to decode into an integer, with the value. */
+function findInvalidIntegers(event: unknown): string[] {
   const type = (event as { type?: unknown } | undefined)?.type;
   const found: string[] = [];
   for (const path of INTAKE_INTEGER_PATHS[typeof type === 'string' ? type : ''] ?? []) {
-    findFractionAt(event, path.split('.'), '', found);
+    findInvalidIntegerAt(event, path.split('.'), '', found);
   }
   return found;
 }
 
-function findFractionAt(value: unknown, segments: readonly string[], at: string, found: string[]): void {
+/** Whether the intake decodes `value` into an integer: absent, `null`, or a whole number it holds exactly. */
+function isIntakeInteger(value: unknown): boolean {
+  return value === undefined || value === null || (typeof value === 'number' && Number.isSafeInteger(value));
+}
+
+function findInvalidIntegerAt(value: unknown, segments: readonly string[], at: string, found: string[]): void {
   if (segments.length === 0) {
-    if (typeof value === 'number' && !Number.isInteger(value)) {
-      found.push(`${at} = ${value}`);
+    if (!isIntakeInteger(value)) {
+      found.push(`${at} = ${JSON.stringify(value)}`);
     }
     return;
   }
   const [segment, ...rest] = segments;
+  if (segment === '*') {
+    if (value === undefined || value === null) {
+      return;
+    }
+    if (typeof value !== 'object' || Array.isArray(value)) {
+      found.push(`${at} = ${JSON.stringify(value)}`);
+      return;
+    }
+    for (const [key, item] of Object.entries(value)) {
+      findInvalidIntegerAt(item, rest, `${at}.${key}`, found);
+    }
+    return;
+  }
   const key = segment.endsWith('[]') ? segment.slice(0, -2) : segment;
   const child = (value as Record<string, unknown> | null | undefined)?.[key];
   const childPath = at === '' ? key : `${at}.${key}`;
   if (!segment.endsWith('[]')) {
-    findFractionAt(child, rest, childPath, found);
+    findInvalidIntegerAt(child, rest, childPath, found);
   } else if (Array.isArray(child)) {
-    child.forEach((item, index) => findFractionAt(item, rest, `${childPath}[${index}]`, found));
+    child.forEach((item, index) => findInvalidIntegerAt(item, rest, `${childPath}[${index}]`, found));
   }
 }
 

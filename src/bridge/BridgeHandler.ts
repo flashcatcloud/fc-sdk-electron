@@ -5,7 +5,7 @@ import type { EventManager, LifecycleEvent, RawRumEvent } from '../event';
 import type { RumEvent } from '../domain/rum';
 import { monitor, addError as addTelemetryError } from '../domain/telemetry';
 import { BRIDGE_CHANNEL, CONFIG_CHANNEL, CONFIG_PUSH_CHANNEL } from '../common';
-import { findFractionAtIntakeIntegerPath, hasPrototypeKey } from '../tools/intakeNumbers';
+import { findInvalidIntakeInteger, hasPrototypeKey } from '../tools/intakeNumbers';
 import type { BridgeConfig } from '../common';
 import type { RendererRegistry } from '../domain/RendererRegistry';
 import type { User } from '../domain/UserContext';
@@ -114,6 +114,13 @@ export class BridgeHandler {
       addTelemetryError(new Error(`Failed to parse bridge message (${msg.length} characters)`));
       return;
     }
+    // A property named like a prototype's is not data: merged, `__proto__` reaches
+    // `Object.prototype` itself. Dropped whole rather than stripped — nothing honest sends one,
+    // and a message with a hole where a renderer put something is a message nobody asked for.
+    if (hasPrototypeKey(bridgeEvent)) {
+      addTelemetryError(new Error('Dropped a bridge message: forbidden property name'));
+      return;
+    }
 
     switch (bridgeEvent.eventType) {
       case 'rum': {
@@ -125,19 +132,13 @@ export class BridgeHandler {
           addTelemetryError(new Error('Dropped a renderer RUM event: unsupported type'));
           break;
         }
-        // A property named like a prototype's is not data: merged, `__proto__` reaches
-        // `Object.prototype` itself. Dropped whole rather than stripped — nothing honest sends one,
-        // and an event with a hole where a renderer put something is an event nobody asked for.
-        if (hasPrototypeKey(bridgeEvent.event)) {
-          addTelemetryError(new Error('Dropped a renderer RUM event: forbidden property name'));
-          break;
-        }
-        // A fraction where the intake decodes an integer fails the whole event there, silently —
-        // and an error that would never land must not earn a session its release. Only the paths
-        // the intake decodes as integers are looked at; free-form attributes are the renderer's.
-        if (findFractionAtIntakeIntegerPath(bridgeEvent.event) !== undefined) {
+        // A value the intake cannot decode into an integer — a fraction, a string, a boolean —
+        // fails the whole event there, silently; and an error that would never land must not earn
+        // a session its release. Only the paths the intake decodes as integers are looked at;
+        // free-form attributes are the renderer's.
+        if (findInvalidIntakeInteger(bridgeEvent.event) !== undefined) {
           addTelemetryError(
-            new Error('Dropped a renderer RUM event: a number the intake decodes as an integer is fractional')
+            new Error('Dropped a renderer RUM event: a value the intake decodes as an integer is not a whole number')
           );
           break;
         }

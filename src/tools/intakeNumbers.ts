@@ -1,15 +1,16 @@
 /**
  * The event fields the intake decodes as integers, by JSON path, per event type. Go's decoder
- * refuses a fraction into an integer and fails the whole event — silently, since the intake
- * answers `202` before it decodes. See `toIntakeTimeStamp` for the timestamps the SDK rounds
- * itself; this is for numbers the SDK did not produce.
+ * refuses anything but a whole number into an integer — a fraction, a string, a boolean, an
+ * object — and fails the whole event, silently, since the intake answers `202` before it decodes.
+ * See `toIntakeTimeStamp` for the timestamps the SDK rounds itself; this is for values the SDK
+ * did not produce.
  *
  * Only these paths are looked at. Everything else — `context`, `usr`, `feature_flags`, custom
- * attributes — the intake stores as it is, fractions included, and is never inspected here.
+ * attributes — the intake stores as it is, and is never inspected here.
  *
  * Taken from the integer-typed fields of the event structs in `fc-rum/types/datadog/rum.go`,
- * walked by type; `[]` stands for each element of an array. The e2e intake keeps the same table
- * to flag what a real intake would drop.
+ * walked by type; `[]` stands for each element of an array, `*` for each value of a map. The e2e
+ * intake keeps the same table to flag what a real intake would drop.
  */
 const COMMON = ['_dd.format_version', '_dd.session.plan', 'date'];
 
@@ -73,6 +74,7 @@ const INTAKE_INTEGER_PATHS: Record<string, readonly string[]> = {
     'view.app_launch',
     'view.crash.count',
     'view.cumulative_layout_shift_time',
+    'view.custom_timings.*',
     'view.dom_complete',
     'view.dom_content_loaded',
     'view.dom_interactive',
@@ -114,13 +116,14 @@ const INTAKE_INTEGER_PATHS: Record<string, readonly string[]> = {
 };
 
 /**
- * The path of the first fraction found where the intake decodes an integer, or `undefined` when
- * there is none. An event of an unknown type has no such paths.
+ * The path of the first value the intake could not decode into an integer, or `undefined` when
+ * every value at an integer path is one. An absent or `null` value is accepted: the intake
+ * decodes either as zero. An event of an unknown type has no such paths.
  */
-export function findFractionAtIntakeIntegerPath(event: unknown): string | undefined {
+export function findInvalidIntakeInteger(event: unknown): string | undefined {
   const type = (event as { type?: unknown } | undefined)?.type;
   for (const path of INTAKE_INTEGER_PATHS[typeof type === 'string' ? type : ''] ?? []) {
-    const found = findFractionAt(event, path.split('.'), '');
+    const found = findInvalidIntegerAt(event, path.split('.'), '');
     if (found !== undefined) {
       return found;
     }
@@ -128,22 +131,42 @@ export function findFractionAtIntakeIntegerPath(event: unknown): string | undefi
   return undefined;
 }
 
-function findFractionAt(value: unknown, segments: readonly string[], at: string): string | undefined {
+/** Whether the intake decodes `value` into an integer: absent, `null`, or a whole number it holds exactly. */
+function isIntakeInteger(value: unknown): boolean {
+  return value === undefined || value === null || (typeof value === 'number' && Number.isSafeInteger(value));
+}
+
+function findInvalidIntegerAt(value: unknown, segments: readonly string[], at: string): string | undefined {
   if (segments.length === 0) {
-    return typeof value === 'number' && !Number.isInteger(value) ? at : undefined;
+    return isIntakeInteger(value) ? undefined : at;
   }
   const [segment, ...rest] = segments;
+  if (segment === '*') {
+    if (value === undefined || value === null) {
+      return undefined;
+    }
+    if (typeof value !== 'object' || Array.isArray(value)) {
+      return at;
+    }
+    for (const [key, item] of Object.entries(value)) {
+      const found = findInvalidIntegerAt(item, rest, `${at}.${key}`);
+      if (found !== undefined) {
+        return found;
+      }
+    }
+    return undefined;
+  }
   const key = segment.endsWith('[]') ? segment.slice(0, -2) : segment;
   const child = (value as Record<string, unknown> | null | undefined)?.[key];
   const childPath = at === '' ? key : `${at}.${key}`;
   if (!segment.endsWith('[]')) {
-    return findFractionAt(child, rest, childPath);
+    return findInvalidIntegerAt(child, rest, childPath);
   }
   if (!Array.isArray(child)) {
     return undefined;
   }
   for (const [index, item] of child.entries()) {
-    const found = findFractionAt(item, rest, `${childPath}[${index}]`);
+    const found = findInvalidIntegerAt(item, rest, `${childPath}[${index}]`);
     if (found !== undefined) {
       return found;
     }
