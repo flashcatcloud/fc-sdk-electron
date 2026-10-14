@@ -195,6 +195,43 @@ Chromium actually report — which differs between a packaged (asar) and an unpa
 > Filtering on `source:electron` alone silently drops every renderer event — which is most of the
 > volume (views, actions, resources, web vitals).
 
+## 4b. Sampling and `sessionOnError`
+
+Run against the real backend, on a dedicated test application. Verify each result in the event
+store or the console, not only in the upload log: the intake answers `202` before it decodes.
+
+- [ ] `sessionSampleRate: 0` + `sessionOnError: true`, a session that reports no error and is then
+      stopped: nothing is uploaded and **no session is stored**
+- [ ] Same, with a main-process error and a renderer error: the session is stored with
+      `session.sampled_for_error: true` and `_dd.configuration.session_sample_rate: 0`, with both the
+      main-process and the renderer views and the activity that preceded the error
+- [ ] Same, with `sessionOnError` off (negative control): no session is stored, errors included
+- [ ] `Crash` in a withheld session: the crash is reported on the next launch, `is_crash: true`, under
+      a session stored with the marker and rate `0`
+- [ ] Default configuration (no new options): sessions are stored as before, rate `100`, no marker
+
+## 4c. Remote configuration
+
+Use a dedicated test application, and publish through the same API the console uses — **never**
+fabricate a configuration version toward a real backend: it shows up in the console's version
+statistics. Record the application's configuration before you start.
+
+- [ ] With `remoteConfigurationEnabled: true`, the request to `/api/v2/rum/config` carries
+      `sdk=electron`; a rule matching `sdk: electron` applies, and the console preview for another
+      `sdk` returns no values
+- [ ] A session drawn under a published version is stored with `rc_version` equal to that version
+- [ ] The next request carries `applied_version` and `If-None-Match`, and the backend answers `304`
+- [ ] An `immediate` stop (rate `0`, switch off) ends the running session; nothing more is stored
+- [ ] An `immediate` rate `0` with the switch on leaves an on-error session running, and its error
+      releases what it held
+- [ ] Restart with the configuration endpoint unreachable: the first session draws with the cached
+      configuration (`rc_version` of the cached version); with the cache deleted (negative control),
+      it draws with the init values
+- [ ] Publish a version restoring the recorded configuration, and check the endpoint serves it
+
+> An application that never published answers version `0`; versions only go up, so restoring it
+> means publishing `enabled: false` with no rules — clients then behave exactly as before.
+
 ## 5. Package
 
 ```sh
