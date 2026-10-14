@@ -183,16 +183,22 @@ describe('BatchProducer', () => {
       expect(fsMocks.appendFile.mock.calls[0][1]).toBe(`{"good":true}\n`);
     });
 
-    it('swallows appendFile errors and keeps queue processing subsequent posts', async () => {
-      fsMocks.appendFile.mockRejectedValueOnce(new Error('write failed')).mockResolvedValueOnce(undefined);
+    it('keeps writing after a failed append, and the next flush reports the failure once', async () => {
+      fsMocks.appendFile.mockRejectedValueOnce(new Error('write failed')).mockResolvedValue(undefined);
 
       const producer = await BatchProducer.create(config);
 
       producer.post({ bad: true });
       producer.post({ good: true });
 
-      await expect(producer.flush()).resolves.not.toThrow();
+      // The queue went on: the good event was written. The flush says what was lost, so a caller
+      // that must know its events are on disk — crash reporting — does; the batch is rotated all
+      // the same, so what was written still uploads.
+      await expect(producer.flush()).rejects.toThrow('write failed');
       expect(fsMocks.appendFile).toHaveBeenCalledTimes(2);
+      expect(fsMocks.rename).toHaveBeenCalledTimes(1);
+      producer.post({ later: true });
+      await expect(producer.flush()).resolves.toBeUndefined();
     });
   });
 
