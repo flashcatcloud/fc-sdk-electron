@@ -366,6 +366,25 @@ describe('BridgeHandler', () => {
       }
     });
 
+    it('should drop an envelope that names a prototype property outside the event too', () => {
+      const notified: unknown[] = [];
+      eventManager.registerHandler({
+        canHandle: (event) => event.kind === EventKind.RAW,
+        handle: (event) => notified.push(event),
+      });
+
+      try {
+        simulateIpcMessage(
+          '{"eventType":"rum","constructor":{"polluted":true},"event":{"type":"view","date":1,"view":{"id":"v"}}}'
+        );
+
+        expect(notified).toEqual([]);
+        expect(mockAddError).toHaveBeenCalledWith(expect.any(Error));
+      } finally {
+        delete (Object.prototype as { polluted?: unknown }).polluted;
+      }
+    });
+
     it('should drop a renderer event with a value of the wrong type where the intake decodes an integer', () => {
       const notified: unknown[] = [];
       eventManager.registerHandler({

@@ -114,6 +114,13 @@ export class BridgeHandler {
       addTelemetryError(new Error(`Failed to parse bridge message (${msg.length} characters)`));
       return;
     }
+    // A property named like a prototype's is not data: merged, `__proto__` reaches
+    // `Object.prototype` itself. Dropped whole rather than stripped — nothing honest sends one,
+    // and a message with a hole where a renderer put something is a message nobody asked for.
+    if (hasPrototypeKey(bridgeEvent)) {
+      addTelemetryError(new Error('Dropped a bridge message: forbidden property name'));
+      return;
+    }
 
     switch (bridgeEvent.eventType) {
       case 'rum': {
@@ -123,13 +130,6 @@ export class BridgeHandler {
         const type = (bridgeEvent.event as { type?: unknown } | undefined)?.type;
         if (!RUM_EVENT_TYPES.has(type)) {
           addTelemetryError(new Error('Dropped a renderer RUM event: unsupported type'));
-          break;
-        }
-        // A property named like a prototype's is not data: merged, `__proto__` reaches
-        // `Object.prototype` itself. Dropped whole rather than stripped — nothing honest sends one,
-        // and an event with a hole where a renderer put something is an event nobody asked for.
-        if (hasPrototypeKey(bridgeEvent.event)) {
-          addTelemetryError(new Error('Dropped a renderer RUM event: forbidden property name'));
           break;
         }
         // A value the intake cannot decode into an integer — a fraction, a string, a boolean —
