@@ -50,3 +50,22 @@ export function hasFractionWhereIntakeDecodesInteger(value: unknown, field = '')
   }
   return false;
 }
+
+/**
+ * Whether `value` holds, anywhere, a property named like a prototype's. Such a key is not data:
+ * merged into an object, `__proto__` reaches that object's prototype — `Object.prototype`, for
+ * every object of the process. A payload carrying one is dropped whole.
+ */
+export function hasPrototypeKey(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some(hasPrototypeKey);
+  }
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  return Object.keys(value).some(
+    (key) => PROTOTYPE_KEYS.has(key) || hasPrototypeKey((value as Record<string, unknown>)[key])
+  );
+}
+
+const PROTOTYPE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);

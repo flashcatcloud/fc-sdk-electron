@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventFormat, EventKind, EventManager, EventSource, LifecycleKind } from '../event';
 import type { RawRumEvent } from '../event';
+import { Assembly, createFormatHooks } from '../assembly';
 import { BridgeHandler } from './BridgeHandler';
 import type { BridgeOptions } from './BridgeHandler';
 import { BRIDGE_CHANNEL, CONFIG_CHANNEL, CONFIG_PUSH_CHANNEL } from '../common';
@@ -341,6 +342,28 @@ describe('BridgeHandler', () => {
 
       expect(notified).toHaveLength(1);
       expect((notified[0] as { data: { type: string } }).data.type).toBe('view');
+    });
+
+    it('should drop an envelope that names a prototype property, so assembly never merges it into Object.prototype', () => {
+      new Assembly(eventManager, createFormatHooks());
+      const collected: unknown[] = [];
+      eventManager.registerHandler({
+        canHandle: (event) => event.kind === EventKind.SERVER,
+        handle: (event) => collected.push(event),
+      });
+      // Built by hand: in an object literal `__proto__:` sets the prototype, while in JSON it is a
+      // key like any other — which is what JSON.parse hands the bridge.
+      const envelope =
+        '{"eventType":"rum","event":{"type":"view","date":1,"view":{"id":"v","__proto__":{"polluted":true}},"__proto__":{"polluted":true}}}';
+
+      try {
+        simulateIpcMessage(envelope);
+
+        expect(({} as { polluted?: unknown }).polluted).toBeUndefined();
+        expect(collected).toEqual([]);
+      } finally {
+        delete (Object.prototype as { polluted?: unknown }).polluted;
+      }
     });
 
     it('should apply the pre-warm timing correction before notifying', () => {

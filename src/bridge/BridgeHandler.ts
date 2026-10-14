@@ -5,7 +5,7 @@ import type { EventManager, LifecycleEvent, RawRumEvent } from '../event';
 import type { RumEvent } from '../domain/rum';
 import { monitor, addError as addTelemetryError } from '../domain/telemetry';
 import { BRIDGE_CHANNEL, CONFIG_CHANNEL, CONFIG_PUSH_CHANNEL } from '../common';
-import { hasFractionWhereIntakeDecodesInteger } from '../tools/intakeNumbers';
+import { hasFractionWhereIntakeDecodesInteger, hasPrototypeKey } from '../tools/intakeNumbers';
 import type { BridgeConfig } from '../common';
 import type { RendererRegistry } from '../domain/RendererRegistry';
 import type { User } from '../domain/UserContext';
@@ -122,6 +122,13 @@ export class BridgeHandler {
         const type = (bridgeEvent.event as { type?: unknown } | undefined)?.type;
         if (!RUM_EVENT_TYPES.has(type)) {
           addTelemetryError(new Error('Dropped a renderer RUM event: unsupported type'));
+          break;
+        }
+        // A property named like a prototype's is not data: merged, `__proto__` reaches
+        // `Object.prototype` itself. Dropped whole rather than stripped — nothing honest sends one,
+        // and an event with a hole where a renderer put something is an event nobody asked for.
+        if (hasPrototypeKey(bridgeEvent.event)) {
+          addTelemetryError(new Error('Dropped a renderer RUM event: forbidden property name'));
           break;
         }
         // A fraction where the intake decodes an integer fails the whole event there, silently —
