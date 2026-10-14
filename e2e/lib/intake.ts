@@ -45,14 +45,18 @@ const EXPECTED_CONTENT_TYPE = 'text/plain';
  * are looked at; free-form attributes are stored as they are.
  *
  * A mirror of `src/tools/intakeNumbers.ts` — the e2e project cannot import `src` — taken from the
- * integer-typed fields of the event structs in `fc-rum/types/datadog/rum.go`; `[]` stands for each
- * element of an array, `*` for each value of a map.
+ * integer-typed fields of the event structs for the six intake-supported types in
+ * `fc-rum/types/datadog/rum.go`, with Go's shadowing of embedded fields applied; `[]` stands for
+ * each element of an array, `*` for each value of a map.
  */
-const COMMON = ['_dd.format_version', '_dd.session.plan', 'date'];
+const COMMON = ['_dd.format_version', 'date'];
+// Every event type declares its own `_dd`; only the view's lacks a `session`.
+const SESSION_PLAN = '_dd.session.plan';
 
 const INTAKE_INTEGER_PATHS: Record<string, readonly string[]> = {
   action: [
     ...COMMON,
+    SESSION_PLAN,
     '_dd.action.target.height',
     '_dd.action.target.width',
     'action.crash.count',
@@ -61,9 +65,10 @@ const INTAKE_INTEGER_PATHS: Record<string, readonly string[]> = {
     'action.long_task.count',
     'action.resource.count',
   ],
-  error: [...COMMON, 'error.resource.status_code', 'error.time_since_app_start', 'freeze.duration'],
+  error: [...COMMON, SESSION_PLAN, 'error.resource.status_code', 'error.time_since_app_start', 'freeze.duration'],
   long_task: [
     ...COMMON,
+    SESSION_PLAN,
     'long_task.blocking_duration',
     'long_task.duration',
     'long_task.first_ui_event_timestamp',
@@ -77,6 +82,7 @@ const INTAKE_INTEGER_PATHS: Record<string, readonly string[]> = {
   ],
   resource: [
     ...COMMON,
+    SESSION_PLAN,
     'resource.connect.duration',
     'resource.connect.start',
     'resource.decoded_body_size',
@@ -148,7 +154,7 @@ const INTAKE_INTEGER_PATHS: Record<string, readonly string[]> = {
     'view.slow_frame.count',
     'view.time_spent',
   ],
-  vital: [...COMMON, 'vital.duration'],
+  vital: [...COMMON, SESSION_PLAN, 'vital.duration'],
 };
 
 const byType = (type: string) => (event: ReceivedEvent) => (event.body as { type?: string }).type === type;
