@@ -17,7 +17,7 @@ graph TB
         end
     end
 
-    DD[(Datadog)]
+    DD[(FlashCat RUM ingest)]
 
     %% Browser SDK → Electron SDK via bridge
     BP -->|"RUM events<br/>(IPC bridge)"| SDK
@@ -28,7 +28,7 @@ graph TB
     %% Electron SDK internal sources
     SDK -->|"span → resource conversion<br/>RUM data collection<br/>RUM APIs<br/>session + main process view"| SDK
 
-    %% Electron SDK → Datadog
+    %% Electron SDK → FlashCat RUM ingest
     SDK -->|"enriched events<br/>(HTTP)"| DD
 
     %% Styling
@@ -45,7 +45,7 @@ graph TB
 
 ### Main Process
 
-The Electron SDK captures RUM sessions, collects RUM events, and forwards them to Datadog, enriching events from dd-trace and the Browser SDK with RUM and Electron context along the way. dd-trace instruments network requests, command executions, and IPC calls, then forwards spans to the Electron SDK through the `diagnostics_channel`.
+The Electron SDK captures RUM sessions, collects RUM events, and forwards them to the FlashCat RUM ingest, enriching events from dd-trace and the Browser SDK with RUM and Electron context along the way. dd-trace instruments network requests, command executions, and IPC calls, then forwards spans to the Electron SDK through the `diagnostics_channel`.
 
 More details in the [How tracing works](#how-tracing-works) section.
 
@@ -87,7 +87,8 @@ flowchart LR
     SC -. "session.id, sampling" .-> HOOKS
     VC -. "view.id, view.name, ..." .-> HOOKS
     HOOKS --> COMBINE
-    COMBINE -- ServerEvent --> WB
+    COMBINE -- "ServerEvent (RUM)" --> WB
+    COMBINE -- "ServerEvent (telemetry)" --> BM
     WB -- "released / not withheld" --> BM
     BM --> BP
     BM --> BC
