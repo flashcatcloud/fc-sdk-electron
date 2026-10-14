@@ -24,6 +24,8 @@ export class BatchProducer {
   private draining: Promise<void> = Promise.resolve();
   /** The timestamp of the last batch file named, so that the next is named after a later one. */
   private lastBatchTimestamp = 0;
+  /** The first append that failed since the last flush, which reports it: a caller that must know its events are on disk does. */
+  private writeFailure: Error | undefined;
   /**
    * The batch file an asynchronous append is writing to, if one is: `writePendingSync` must not
    * write to it meanwhile — a large event is appended in several chunks, and a line written between
@@ -77,10 +79,18 @@ export class BatchProducer {
     }
   }
 
-  /** Waits for pending writes to complete and rotates the current batch file. */
+  /**
+   * Waits for pending writes to complete and rotates the current batch file. Rejects if an append
+   * failed since the last flush — after rotating, so that what was written still uploads.
+   */
   async flush() {
     await this.draining;
     await this.rotateBatch();
+    const failure = this.writeFailure;
+    this.writeFailure = undefined;
+    if (failure !== undefined) {
+      throw failure;
+    }
   }
 
   /**
@@ -121,8 +131,9 @@ export class BatchProducer {
         if (this.currentBatchFile === file) {
           this.currentBatchSize += dataSize;
         }
-      } catch {
-        // Silently ignore write errors to ensure the queue continues processing
+      } catch (error) {
+        // The queue goes on; the next flush reports it.
+        this.writeFailure ??= error instanceof Error ? error : new Error(String(error));
       } finally {
         this.inFlightFile = null;
       }

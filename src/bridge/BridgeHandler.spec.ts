@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventFormat, EventKind, EventManager, EventSource, LifecycleKind } from '../event';
 import type { RawRumEvent } from '../event';
+import { Assembly, createFormatHooks } from '../assembly';
 import { BridgeHandler } from './BridgeHandler';
 import type { BridgeOptions } from './BridgeHandler';
 import { BRIDGE_CHANNEL, CONFIG_CHANNEL, CONFIG_PUSH_CHANNEL } from '../common';
@@ -341,6 +342,68 @@ describe('BridgeHandler', () => {
 
       expect(notified).toHaveLength(1);
       expect((notified[0] as { data: { type: string } }).data.type).toBe('view');
+    });
+
+    it('should drop an envelope that names a prototype property, so assembly never merges it into Object.prototype', () => {
+      new Assembly(eventManager, createFormatHooks());
+      const collected: unknown[] = [];
+      eventManager.registerHandler({
+        canHandle: (event) => event.kind === EventKind.SERVER,
+        handle: (event) => collected.push(event),
+      });
+      // Built by hand: in an object literal `__proto__:` sets the prototype, while in JSON it is a
+      // key like any other — which is what JSON.parse hands the bridge.
+      const envelope =
+        '{"eventType":"rum","event":{"type":"view","date":1,"view":{"id":"v","__proto__":{"polluted":true}},"__proto__":{"polluted":true}}}';
+
+      try {
+        simulateIpcMessage(envelope);
+
+        expect(({} as { polluted?: unknown }).polluted).toBeUndefined();
+        expect(collected).toEqual([]);
+      } finally {
+        delete (Object.prototype as { polluted?: unknown }).polluted;
+      }
+    });
+
+    it('should keep a renderer event whose free-form context holds a fraction: the intake stores it as is', () => {
+      const notified: unknown[] = [];
+      eventManager.registerHandler({
+        canHandle: (event) => event.kind === EventKind.RAW,
+        handle: (event) => notified.push(event),
+      });
+
+      simulateIpcMessage(
+        JSON.stringify({
+          eventType: 'rum',
+          event: { type: 'error', date: 1, error: { message: 'x' }, context: { price: 19.99 }, usr: { score: 0.5 } },
+        })
+      );
+
+      expect(notified).toHaveLength(1);
+    });
+
+    it('should drop a renderer event with a fraction at a path the intake decodes as an integer', () => {
+      const notified: unknown[] = [];
+      eventManager.registerHandler({
+        canHandle: (event) => event.kind === EventKind.RAW,
+        handle: (event) => notified.push(event),
+      });
+
+      simulateIpcMessage(
+        JSON.stringify({ eventType: 'rum', event: { type: 'view', date: 1, view: { id: 'v', time_spent: 1.5 } } })
+      );
+
+      expect(notified).toEqual([]);
+    });
+
+    it('should report a message it cannot parse without any of its text', () => {
+      simulateIpcMessage('{"eventType":"rum","event":{"type":"error","error":{"message":"card 4111 1111"}}');
+
+      expect(mockAddError).toHaveBeenCalledWith(expect.any(Error));
+      const message = (mockAddError.mock.calls[0][0] as Error).message;
+      expect(message).not.toContain('4111');
+      expect(message).toContain('(80 characters)');
     });
 
     it('should apply the pre-warm timing correction before notifying', () => {
