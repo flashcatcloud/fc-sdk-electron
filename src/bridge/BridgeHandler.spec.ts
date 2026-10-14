@@ -366,6 +366,24 @@ describe('BridgeHandler', () => {
       }
     });
 
+    it('should drop a renderer event with a value of the wrong type where the intake decodes an integer', () => {
+      const notified: unknown[] = [];
+      eventManager.registerHandler({
+        canHandle: (event) => event.kind === EventKind.RAW,
+        handle: (event) => notified.push(event),
+      });
+
+      simulateIpcMessage(
+        JSON.stringify({
+          eventType: 'rum',
+          event: { type: 'error', date: 1, error: { message: 'x', resource: { status_code: '500' } } },
+        })
+      );
+
+      expect(notified).toEqual([]);
+      expect(mockAddError).toHaveBeenCalledWith(expect.any(Error));
+    });
+
     it('should keep a renderer event whose free-form context holds a fraction: the intake stores it as is', () => {
       const notified: unknown[] = [];
       eventManager.registerHandler({

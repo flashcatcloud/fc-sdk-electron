@@ -374,6 +374,40 @@ test.describe('sessionOnError, renderer envelopes', () => {
     expect(errors.map((error) => error.error.message)).toEqual([expect.stringContaining('kept renderer error')]);
   });
 
+  test('is not released by a renderer error the intake would reject for a wrongly typed number', async ({
+    intake,
+    mainPage,
+    electronApp,
+  }) => {
+    const bridgeWindow = await mainPage.openBridgeFileWindow(electronApp);
+    await bridgeWindow.sendRaw({
+      eventType: 'rum',
+      event: {
+        type: 'error',
+        date: Date.now(),
+        error: { message: 'typed', source: 'source', resource: { method: 'GET', status_code: '500', url: 'u' } },
+        view: { id: 'v' },
+      },
+    });
+    await settle(mainPage);
+    expect(rumEvents(intake)).toEqual([]);
+
+    // Positive control: the same error with its status code as a number releases the session.
+    await bridgeWindow.sendRaw({
+      eventType: 'rum',
+      event: {
+        type: 'error',
+        date: Date.now(),
+        error: { message: 'kept typed', source: 'source', resource: { method: 'GET', status_code: 500, url: 'u' } },
+        view: { id: 'v' },
+      },
+    });
+    await settle(mainPage);
+    const errors = rumEvents(intake).filter((event) => event.type === 'error') as unknown as RumErrorEvent[];
+    expect(errors.map((error) => error.error.message)).toEqual(['kept typed']);
+    expect(intake.getProtocolViolations()).toEqual([]);
+  });
+
   test('neither uploads nor is released by a renderer envelope that calls itself telemetry', async ({
     intake,
     mainPage,
