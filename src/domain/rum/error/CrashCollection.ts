@@ -56,7 +56,10 @@ export class CrashCollection {
 
     for (const filePath of dmpFiles) {
       // The dump is the only durable copy of the crash until its report is in a batch file: a
-      // dump whose report could not be written is kept for the next launch to report.
+      // dump whose report could not be written is kept for the next launch to report. The flush
+      // reports any append that failed since the last one, not this report's alone, so a kept
+      // dump may be one whose report did land — and the crash is then reported twice. A duplicate
+      // is preferred over losing it.
       let reportWritten = true;
       try {
         const fileStat = await fs.stat(filePath);
