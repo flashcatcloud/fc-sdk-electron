@@ -2,6 +2,32 @@
 
 All notable changes to `@flashcatcloud/electron-sdk` are documented here.
 
+## [0.4.0]
+
+### ✨ Features
+
+- New `sessionSampleRate` (0–100, default `100`): the share of sessions collected. It is drawn once per session in the main process and decides for the renderers too, since their events reach the intake through the main process; a renderer's own `sessionSampleRate` does not apply to what it sends over the bridge. A session resumed after a restart keeps the decision it was created with. Every RUM event now reports the rate its session was drawn at as `_dd.configuration.session_sample_rate`; with the default rate nothing else changes. An out-of-range value fails `init`.
+
+- New `sessionOnError` (default `false`): sessions the rate did not draw are held in memory instead of dropped — up to 60 seconds of what preceded the error, within 64 KiB of detail, 200 events and 50 views — and uploaded only if the session reports an error, main process and renderers alike. At the first error, what is held is released together with the error 0–3 s later, spread per session so that one outage does not make every client upload at once, and the session then reports like any drawn one. A session that ends without an error uploads no RUM events, not even at quit. A release already earned is written to disk when the application may be about to exit: on an uncaught main-process exception, on `before-quit` and `will-quit`, and on the process `exit` event. A native crash counts as an error and is reported on the next launch with the view it happened in. Such a session reports `session.sampled_for_error: true` on its views and a `session_sample_rate` of `0`, so that it is counted as itself rather than extrapolated by the rate. See [Sampling](README.md#sampling).
+
+- New `remoteConfigurationEnabled` (default `false`) and `getRemoteConfig()`: the console can change `sessionSampleRate` and `sessionOnError` without a new release of the application, and hand it `custom` values. The configuration is requested by the main process at `init` and at each new session, and — only when the console allows it — when the user comes back to the application after the server's ttl. The last accepted configuration is kept on disk, so new sessions use it before the network answers or without it. A change applies from the next session, unless the console asks for it to apply immediately: then the running session is ended only where the new values decide it, such as an emergency stop to rate `0`. A session whose draw read a delivered configuration reports its version as `_dd.configuration.rc_version`. Off by default: nothing is requested and the init values apply. See [Remote configuration](README.md#remote-configuration).
+
+### ⚠️ Known limitation
+
+- **Session Replay is not withheld by `sessionOnError`.** A renderer uploads its replay itself, past the main process. With `sessionReplayDirectUpload` on, the replay of a session kept by `sessionOnError` is uploaded whether or not the session ever reports an error. Do not combine the two.
+
+### 🐛 Bug Fixes
+
+- Renderer events the intake would fail to decode are dropped at the bridge, and reported through SDK telemetry, instead of being uploaded to be discarded silently. That covers any value other than a whole number at a path the intake decodes as an integer — a fraction, a numeric string, a boolean. Only those paths are checked: fractional values in free-form attributes such as `context` and `usr` are uploaded as they are.
+
+- A bridge message naming `__proto__`, `constructor` or `prototype` anywhere is dropped, so that a renderer cannot reach the main process's object prototypes through the event merge.
+
+- A native crash dump is kept for the next launch when writing its report to disk fails, rather than deleted with the report lost. When an unrelated write failed in the same flush, the crash can be reported twice; a duplicate is preferred over a loss.
+
+- A bridge message that fails to parse is reported through SDK telemetry by its length only, never its content.
+
+- The SDK's console messages are prefixed `[FlashCat electron-sdk]`.
+
 ## [0.3.0]
 
 ### ✨ Features
