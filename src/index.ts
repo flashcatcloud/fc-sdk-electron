@@ -5,6 +5,7 @@ import { buildConfiguration } from './config';
 import { RumCollection } from './domain/rum';
 import { SessionManager, TrackingType } from './domain/session';
 import { initAnonymousId } from './domain/AnonymousId';
+import { RemoteConfiguration } from './domain/RemoteConfiguration';
 import { UserContext, type User } from './domain/UserContext';
 import { UserActivityTracker } from './domain/UserActivityTracker';
 import { RendererRegistry } from './domain/RendererRegistry';
@@ -25,6 +26,7 @@ let transport: Transport | undefined;
 let rumApi: ReturnType<RumCollection['getApi']> | undefined;
 let tracing: Tracing | undefined;
 let userContext: UserContext | undefined;
+let remoteConfiguration: RemoteConfiguration | undefined;
 
 /**
  * Initialize the Electron SDK
@@ -53,8 +55,13 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
 
   registerCommonContext(config, hooks, anonymousId, getUserAt);
   startTelemetry(eventManager, config);
-  const manager = await SessionManager.start(eventManager, hooks, config);
+  // Before the first session is drawn: it draws with what the previous launch kept, if anything.
+  const remote = await RemoteConfiguration.init(config);
+  remoteConfiguration = remote;
+  const manager = await SessionManager.start(eventManager, hooks, () => remote.getSampling());
   sessionManager = manager;
+  // Before anything is collected: a resumed session may have to end under what the previous launch kept.
+  remote.applyKept(manager);
 
   const rendererRegistry = new RendererRegistry();
   const stackPathNormalizer = await StackPathNormalizer.create(config.normalizeStackPaths, config.normalizeStackPath);
@@ -93,6 +100,10 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
     createdTransport.flushToDisk()
   );
   rumApi = rum.getApi();
+
+  // Last, once every collector listens for the session ending, and never awaited: nothing in init
+  // waits on the network.
+  remote.start(eventManager, manager);
 
   return true;
 }
@@ -163,6 +174,19 @@ export function getUser(): User | undefined {
  */
 export function clearUser(): void {
   callMonitored(() => userContext?.clear());
+}
+
+/**
+ * The application's own `custom` values, as delivered by the console's remote configuration —
+ * a copy, or `undefined` when `remoteConfigurationEnabled` is off, nothing has been delivered yet,
+ * or the console set none. Until the server answers, it is read from the last configuration
+ * kept on disk, so it can be read right after `init` resolves.
+ *
+ * The name matches `flashcatRum.getRemoteConfig()` in `@flashcatcloud/browser-rum`. Anyone holding
+ * the client token can read these values: put nothing secret in them.
+ */
+export function getRemoteConfig(): Record<string, unknown> | undefined {
+  return callMonitored(() => remoteConfiguration?.getCustom());
 }
 
 /**

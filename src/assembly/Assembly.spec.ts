@@ -182,6 +182,39 @@ describe('Assembly — renderer events', () => {
     expect(data._dd.configuration).toEqual({ session_sample_rate: 0, session_replay_sample_rate: 20 });
   });
 
+  it.each([
+    { title: "the main process's", main: 4, expected: 4 },
+    { title: 'none, when the main process drew without one', main: undefined, expected: undefined },
+  ])(
+    "should report $title remote configuration version on renderer events, never the renderer's",
+    ({ main, expected }) => {
+      const { eventManager, hooks } = setup();
+      hooks.registerRum(() => ({ _dd: { configuration: { session_sample_rate: 100, rc_version: main } } }));
+      const collected: ServerEvent[] = [];
+      eventManager.registerHandler<ServerEvent>({
+        canHandle: (event): event is ServerEvent => event.kind === EventKind.SERVER,
+        handle: (event) => collected.push(event),
+      });
+
+      eventManager.notify({
+        kind: EventKind.RAW,
+        source: EventSource.RENDERER,
+        format: EventFormat.RUM,
+        data: {
+          type: 'view',
+          source: 'browser',
+          view: { id: 'renderer-view-id' },
+          session: { id: 'renderer-session-id', type: 'user' },
+          application: { id: 'renderer-app-id' },
+          _dd: { configuration: { session_sample_rate: 100, rc_version: 9 } },
+        },
+      } as unknown as RawRumEvent);
+
+      const configuration = (collected[0].data as RumEvent)._dd.configuration as Record<string, unknown>;
+      expect(configuration.rc_version).toBe(expected);
+    }
+  );
+
   it("should replace a renderer's own sampling marker with the main process's, absent included", () => {
     const { eventManager } = setup();
     const collected: ServerEvent[] = [];

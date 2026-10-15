@@ -1,4 +1,4 @@
-const PREFIX = '[Datadog electron-sdk]';
+const PREFIX = '[FlashCat electron-sdk]';
 
 /**
  * Display an error in the console with the SDK prefix

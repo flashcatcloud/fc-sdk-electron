@@ -12,6 +12,7 @@ import {
   setUser,
   getUser,
   clearUser,
+  getRemoteConfig,
   startOperation,
   succeedOperation,
   failOperation,
@@ -103,6 +104,8 @@ void app.whenReady().then(async () => {
   });
 
   ipcMain.handle('getUser', () => getUser());
+
+  ipcMain.handle('getRemoteConfig', () => getRemoteConfig());
 
   ipcMain.handle('clearUser', () => {
     clearUser();

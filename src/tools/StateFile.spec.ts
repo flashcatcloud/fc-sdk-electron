@@ -106,6 +106,28 @@ describe('StateFile', () => {
     expect(renameSync).toHaveBeenCalledTimes(1);
   });
 
+  it('answers whether each write landed: true when it did, false when it failed or was superseded', async () => {
+    const file = new StateFile(FILE_PATH, 'state');
+
+    expect(await file.write(() => 'landed')).toBe(true);
+
+    mfs.writeFile.mockRejectedValueOnce(new Error('ENOSPC'));
+    expect(await file.write(() => 'failed')).toBe(false);
+
+    let finishWrite!: () => void;
+    mfs.writeFile.mockImplementationOnce(() => new Promise<void>((resolve) => (finishWrite = resolve)));
+    const superseded = file.write(() => 'old');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(file.writeSync('new')).toBe(true);
+    finishWrite();
+    expect(await superseded).toBe(false);
+
+    writeFileSync.mockImplementationOnce(() => {
+      throw new Error('EACCES');
+    });
+    expect(file.writeSync('failed')).toBe(false);
+  });
+
   it('sweeps the temp files an earlier launch left next to it', () => {
     readdirSync.mockReturnValue(['_dd_state', '_dd_state.123.4.tmp', '_dd_state.123.5.tmp', 'other.1.1.tmp']);
 

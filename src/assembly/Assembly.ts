@@ -52,9 +52,9 @@ export class Assembly {
   /**
    * Renderer RUM events arrive already assembled by `@flashcatcloud/browser-rum`.
    * Only `session.id`, `application.id` and the session's sampling attributes
-   * (`session.sampled_for_error`, `_dd.configuration.session_sample_rate`) are
-   * overridden from the main process hooks, preserving the renderer's own view,
-   * source, and other attributes.
+   * (`session.sampled_for_error`, `_dd.configuration.session_sample_rate` and
+   * `_dd.configuration.rc_version`) are overridden from the main process hooks, preserving the
+   * renderer's own view, source, and other attributes.
    */
   private assembleRendererRumEvent(event: RawRumEvent): ServerEvent | DISCARDED {
     const hookResult = this.hooks.triggerRum({
@@ -82,6 +82,13 @@ export class Assembly {
     // Assigned rather than merged: `combine` keeps the renderer's value where the main process has
     // none, and the marker is the main process's to set or clear.
     data.session.sampled_for_error = session?.sampled_for_error;
+    // Same for the remote configuration version: the main process draws the session, so a version
+    // the renderer's own SDK reported — it reads no configuration under the bridge, but it could —
+    // must not survive next to the main process's draw.
+    const configuration = data._dd.configuration as { rc_version?: unknown } | undefined;
+    if (configuration) {
+      configuration.rc_version = _dd?.configuration?.rc_version;
+    }
 
     return {
       kind: EventKind.SERVER,

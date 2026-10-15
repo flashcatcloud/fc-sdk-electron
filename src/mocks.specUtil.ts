@@ -38,6 +38,7 @@ export function createTestConfiguration(overrides: Partial<Configuration> = {}):
     applicationId: 'test-app-id',
     sessionSampleRate: 100,
     sessionOnError: false,
+    remoteConfigurationEnabled: false,
     telemetrySampleRate: 100,
     defaultPrivacyLevel: 'mask',
     allowedWebViewHosts: [],

@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setUser: (user: Record<string, unknown>) => ipcRenderer.invoke('setUser', user),
   getUser: () => ipcRenderer.invoke('getUser'),
   clearUser: () => ipcRenderer.invoke('clearUser'),
+  getRemoteConfig: () => ipcRenderer.invoke('getRemoteConfig'),
   generateUncaughtException: () => ipcRenderer.invoke('generateUncaughtException'),
   generateUncaughtExceptionAndExit: () => ipcRenderer.invoke('generateUncaughtExceptionAndExit'),
   generateManualErrorAndExit: () => ipcRenderer.invoke('generateManualErrorAndExit'),
