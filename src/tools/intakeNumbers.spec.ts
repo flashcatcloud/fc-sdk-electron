@@ -59,6 +59,13 @@ describe('findInvalidIntakeInteger', () => {
     expect(findInvalidIntakeInteger(view(undefined))).toBeUndefined();
   });
 
+  it('checks the session plan on every type but view, whose own `_dd` has none', () => {
+    expect(findInvalidIntakeInteger({ type: 'view', date: 1, _dd: { session: { plan: 1.5 } } })).toBeUndefined();
+    expect(findInvalidIntakeInteger({ type: 'error', date: 1, _dd: { session: { plan: 1.5 } } })).toBe(
+      '_dd.session.plan'
+    );
+  });
+
   it('follows arrays on the way to an integer', () => {
     const event = {
       type: 'long_task',
