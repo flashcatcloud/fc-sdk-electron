@@ -490,7 +490,8 @@ await init({
 - **Kept on disk.** The last configuration accepted is kept in the application's `userData`
   directory. A graceful exit retries pending or failed writes; a forced termination can leave an
   older cache. New sessions use it before the network answers, or without the network at all. It
-  applies only to the same intake, application, `env` and `version`.
+  applies only to the same intake, application and `env`; an application upgrade keeps it, so the
+  first session after one is drawn on the previous release's settings until a new answer is stored.
 - **Resumed sessions.** A valid session resumed from the previous launch keeps its original draw,
   subject to immediate activation: when what was kept asks to apply immediately, the session is
   judged by it at startup, as below, unless it was drawn under a newer version than the one kept —
