@@ -7,15 +7,19 @@ import * as http from 'node:http';
  * `ddforward` query parameter carries the intake path the SDK would have used without a proxy,
  * so asserting on it is equivalent to asserting on the real request path.
  *
- * Beyond storing events, this server validates the wire contract the FlashCat intake enforces.
- * The real intake answers a breach with `400`, which the SDK retries forever — so a test that
- * only looked at the parsed events could stay green while nothing was ever ingested. Breaches
- * are therefore recorded and asserted explicitly by `intake-contract.scenario.ts`:
+ * Beyond storing events, this server validates the wire contract the FlashCat intake enforces,
+ * since a test that only looked at the parsed events could stay green while nothing was ever
+ * ingested. Breaches are recorded and asserted explicitly by `intake-contract.scenario.ts`. The
+ * real intake answers the request-level ones with `400`, which the SDK retries forever:
  *
  * - path is `/api/v2/rum` (the only track FlashCat exposes — there is no `/api/v2/spans`)
  * - `Content-Type: text/plain;charset=UTF-8` (`application/json` is rejected)
  * - body is newline-delimited JSON, one event per line (a JSON array is rejected)
- * - every number is a whole number, except the few fields the intake really types as floats
+ *
+ * The event-level one it does not answer at all — the `202` is sent before the events are
+ * decoded, and an event that fails to decode is dropped silently:
+ *
+ * - every value at a path the intake decodes as an integer is a whole number
  */
 export interface ReceivedEvent {
   timestamp: number;
@@ -34,46 +38,124 @@ const RUM_TRACK_PATH = '/api/v2/rum';
 const EXPECTED_CONTENT_TYPE = 'text/plain';
 
 /**
- * Event fields the intake decodes into a floating-point type. Everything else numeric is an
- * `int64` over there, and Go's JSON decoder refuses a fractional number into an integer — it
- * fails the whole event, silently, because the `202` is returned before decoding.
+ * The event fields the intake decodes as integers, by JSON path, per event type: anything but a
+ * whole number there — a fraction, a string, a boolean — fails the whole event on the real intake,
+ * silently, since the `202` is sent before decoding. A JavaScript mock parses such an event
+ * happily, so without this check the suite stays green while nothing is ingested. Only these paths
+ * are looked at; free-form attributes are stored as they are.
  *
- * JavaScript has no such boundary, so a float slips through this mock unnoticed unless it is
- * checked for explicitly. That is exactly how a fractional `date` (`fs.Stats.birthtimeMs` carries
- * sub-millisecond precision) kept every native crash out of Error Tracking up to v0.1.0 while
- * every test stayed green.
- *
- * Taken from `fc-rum/types/datadog/rum.go` — `grep 'float64 \`json:'`.
+ * A mirror of `src/tools/intakeNumbers.ts` — the e2e project cannot import `src` — taken from the
+ * integer-typed fields of the event structs for the six intake-supported types in
+ * `fc-rum/types/datadog/rum.go`, with Go's shadowing of embedded fields applied; `[]` stands for
+ * each element of an array, `*` for each value of a map.
  */
-const FRACTIONAL_FIELDS = new Set([
-  'average',
-  'cpu_ticks_count',
-  'cpu_ticks_per_second',
-  'cumulative_layout_shift',
-  'custom',
-  'execution_start',
-  'freeze_rate',
-  'height',
-  'max',
-  'max_depth',
-  'max_depth_scroll_top',
-  'max_scroll_height',
-  'memory_average',
-  'memory_max',
-  'metric_max',
-  'min',
-  'refresh_rate_average',
-  'refresh_rate_min',
-  'render_start',
-  'rule_psr',
-  'score',
-  'session_replay_sample_rate',
-  'session_sample_rate',
-  'slow_frames_rate',
-  'width',
-  'x',
-  'y',
-]);
+const COMMON = ['_dd.format_version', 'date'];
+// Every event type declares its own `_dd`; only the view's lacks a `session`.
+const SESSION_PLAN = '_dd.session.plan';
+
+const INTAKE_INTEGER_PATHS: Record<string, readonly string[]> = {
+  action: [
+    ...COMMON,
+    SESSION_PLAN,
+    '_dd.action.target.height',
+    '_dd.action.target.width',
+    'action.crash.count',
+    'action.error.count',
+    'action.loading_time',
+    'action.long_task.count',
+    'action.resource.count',
+  ],
+  error: [...COMMON, SESSION_PLAN, 'error.resource.status_code', 'error.time_since_app_start', 'freeze.duration'],
+  long_task: [
+    ...COMMON,
+    SESSION_PLAN,
+    'long_task.blocking_duration',
+    'long_task.duration',
+    'long_task.first_ui_event_timestamp',
+    'long_task.scripts[].duration',
+    'long_task.scripts[].forced_style_and_layout_duration',
+    'long_task.scripts[].pause_duration',
+    'long_task.scripts[].source_char_position',
+    'long_task.scripts[].start_time',
+    'long_task.start_time',
+    'long_task.style_and_layout_start',
+  ],
+  resource: [
+    ...COMMON,
+    SESSION_PLAN,
+    'resource.connect.duration',
+    'resource.connect.start',
+    'resource.decoded_body_size',
+    'resource.dns.duration',
+    'resource.dns.start',
+    'resource.download.duration',
+    'resource.download.start',
+    'resource.duration',
+    'resource.encoded_body_size',
+    'resource.first_byte.duration',
+    'resource.first_byte.start',
+    'resource.redirect.duration',
+    'resource.redirect.start',
+    'resource.size',
+    'resource.ssl.duration',
+    'resource.ssl.start',
+    'resource.status_code',
+    'resource.transfer_size',
+    'resource.worker.duration',
+    'resource.worker.start',
+  ],
+  view: [
+    ...COMMON,
+    '_dd.document_version',
+    '_dd.page_states[].start',
+    '_dd.replay_stats.records_count',
+    '_dd.replay_stats.segments_count',
+    '_dd.replay_stats.segments_total_raw_size',
+    'display.scroll.max_scroll_height_time',
+    'view.action.count',
+    'view.app_launch',
+    'view.crash.count',
+    'view.cumulative_layout_shift_time',
+    'view.custom_timings.*',
+    'view.dom_complete',
+    'view.dom_content_loaded',
+    'view.dom_interactive',
+    'view.error.count',
+    'view.evaluate_script',
+    'view.first_byte',
+    'view.first_contentful_paint',
+    'view.first_input_delay',
+    'view.first_input_time',
+    'view.first_render',
+    'view.frozen_frame.count',
+    'view.frustration.count',
+    'view.in_foreground_periods[].duration',
+    'view.in_foreground_periods[].start',
+    'view.interaction_to_next_paint',
+    'view.interaction_to_next_paint_time',
+    'view.interaction_to_next_view_time',
+    'view.largest_contentful_paint',
+    'view.load_event',
+    'view.loading_time',
+    'view.long_task.count',
+    'view.network_settled_time',
+    'view.onload_to_onshow',
+    'view.onshow_to_onready',
+    'view.performance.cls.timestamp',
+    'view.performance.fcp.timestamp',
+    'view.performance.fid.duration',
+    'view.performance.fid.timestamp',
+    'view.performance.inp.duration',
+    'view.performance.inp.timestamp',
+    'view.performance.lcp.timestamp',
+    'view.resource.count',
+    'view.setdata.count',
+    'view.setdata.duration',
+    'view.slow_frame.count',
+    'view.time_spent',
+  ],
+  vital: [...COMMON, SESSION_PLAN, 'vital.duration'],
+};
 
 const byType = (type: string) => (event: ReceivedEvent) => (event.body as { type?: string }).type === type;
 
@@ -113,8 +195,8 @@ export class Intake {
         continue;
       }
 
-      for (const path of findFractionalFields(parsed)) {
-        this.addViolation('fractional number in an integer field', `${eventLabel(parsed)} → ${path}`);
+      for (const path of findInvalidIntegers(parsed)) {
+        this.addViolation('value the intake cannot decode into an integer', `${eventLabel(parsed)} → ${path}`);
       }
 
       this.rumEvents.push({ timestamp: Date.now(), body: parsed, headers });
@@ -275,21 +357,50 @@ function truncate(value: string, max = 200): string {
   return value.length > max ? `${value.slice(0, max)}…` : value;
 }
 
-/** Dotted paths of every number the intake would fail to decode into an integer. */
-function findFractionalFields(value: unknown, path = ''): string[] {
-  if (typeof value === 'number') {
-    const field = path.split('.').pop() ?? '';
-    return Number.isInteger(value) || FRACTIONAL_FIELDS.has(field) ? [] : [`${path} = ${value}`];
+/** Dotted paths of every value the intake would fail to decode into an integer, with the value. */
+function findInvalidIntegers(event: unknown): string[] {
+  const type = (event as { type?: unknown } | undefined)?.type;
+  const found: string[] = [];
+  for (const path of INTAKE_INTEGER_PATHS[typeof type === 'string' ? type : ''] ?? []) {
+    findInvalidIntegerAt(event, path.split('.'), '', found);
   }
-  if (Array.isArray(value)) {
-    return value.flatMap((item, index) => findFractionalFields(item, `${path}[${index}]`));
+  return found;
+}
+
+/** Whether the intake decodes `value` into an integer: absent, `null`, or a whole number it holds exactly. */
+function isIntakeInteger(value: unknown): boolean {
+  return value === undefined || value === null || (typeof value === 'number' && Number.isSafeInteger(value));
+}
+
+function findInvalidIntegerAt(value: unknown, segments: readonly string[], at: string, found: string[]): void {
+  if (segments.length === 0) {
+    if (!isIntakeInteger(value)) {
+      found.push(`${at} = ${JSON.stringify(value)}`);
+    }
+    return;
   }
-  if (value !== null && typeof value === 'object') {
-    return Object.entries(value).flatMap(([key, item]) =>
-      findFractionalFields(item, path === '' ? key : `${path}.${key}`)
-    );
+  const [segment, ...rest] = segments;
+  if (segment === '*') {
+    if (value === undefined || value === null) {
+      return;
+    }
+    if (typeof value !== 'object' || Array.isArray(value)) {
+      found.push(`${at} = ${JSON.stringify(value)}`);
+      return;
+    }
+    for (const [key, item] of Object.entries(value)) {
+      findInvalidIntegerAt(item, rest, `${at}.${key}`, found);
+    }
+    return;
   }
-  return [];
+  const key = segment.endsWith('[]') ? segment.slice(0, -2) : segment;
+  const child = (value as Record<string, unknown> | null | undefined)?.[key];
+  const childPath = at === '' ? key : `${at}.${key}`;
+  if (!segment.endsWith('[]')) {
+    findInvalidIntegerAt(child, rest, childPath, found);
+  } else if (Array.isArray(child)) {
+    child.forEach((item, index) => findInvalidIntegerAt(item, rest, `${childPath}[${index}]`, found));
+  }
 }
 
 function eventLabel(event: unknown): string {

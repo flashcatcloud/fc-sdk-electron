@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises';
 import type { TimeStamp } from '@flashcatcloud/browser-core';
 import { TimeStampValueHistory, type TimeStampHistoryEntry } from './TimeStampValueHistory';
-import { displayError } from './display';
+import { StateFile } from './StateFile';
 
 /**
  * Disk-backed extension of TimeStampValueHistory. All in-memory operations delegate to an
@@ -17,16 +17,17 @@ import { displayError } from './display';
  * are restored as active (endTime = Infinity).
  *
  * Error handling: write failures are logged via displayError and do not throw.
- * Read/parse failures leave the history empty (silent fallback).
+ * Read/parse failures leave the history empty (silent fallback); an entry whose times are not
+ * numbers is skipped.
  */
 export class DiskValueHistory<T> {
   private readonly history: TimeStampValueHistory<T>;
-  private readonly filePath: string;
-  private pendingWrite: Promise<void> = Promise.resolve();
+  private readonly file: StateFile;
 
   private constructor(history: TimeStampValueHistory<T>, filePath: string) {
     this.history = history;
-    this.filePath = filePath;
+    this.file = new StateFile(filePath, 'value history');
+    this.file.sweep();
   }
 
   static async init<T>(opts: { filePath: string; expireDelay: number }): Promise<DiskValueHistory<T>> {
@@ -48,6 +49,7 @@ export class DiskValueHistory<T> {
     // Iterate oldest-to-newest to rebuild history in chronological order
     for (let i = rawEntries.length - 1; i >= 0; i--) {
       const entry = rawEntries[i];
+      if (!isWellFormed(entry)) continue;
       // Skip entries that would be immediately pruned
       if (entry.endTime !== null && (entry.endTime as number) < expireThreshold) continue;
       history.add(entry.value, entry.startTime);
@@ -61,28 +63,42 @@ export class DiskValueHistory<T> {
 
   add(value: T, startTime: TimeStamp): void {
     this.history.add(value, startTime);
-    this.persistToDisk();
+    this.persist();
   }
 
   find(startTime: TimeStamp): T | undefined {
     return this.history.find(startTime);
   }
 
+  findEntry(startTime: TimeStamp): TimeStampHistoryEntry<T> | undefined {
+    return this.history.findEntry(startTime);
+  }
+
   closeActive(endTime: TimeStamp): void {
     this.history.closeActive(endTime);
-    this.persistToDisk();
+    this.persist();
   }
 
   getEntries(): readonly TimeStampHistoryEntry<T>[] {
     return this.history.getEntries();
   }
 
-  private persistToDisk(): void {
-    const snapshot = JSON.stringify(this.history.getEntries());
-    this.pendingWrite = this.pendingWrite
-      .then(() => fs.writeFile(this.filePath, snapshot, 'utf-8'))
-      .catch((error) => {
-        displayError('Failed to persist value history:', error);
-      });
+  /**
+   * Write the entries to disk. Called by `add()` and `closeActive()`, and after a value is updated
+   * in place. The entries are serialized when the write runs, not when it is queued, so a write
+   * still queued never lands a state older than one written since.
+   */
+  persist(): void {
+    void this.file.write(() => JSON.stringify(this.history.getEntries()));
   }
+
+  /** `persist` before returning, for a process that may be about to exit. See {@link StateFile}. */
+  persistSync(): void {
+    this.file.writeSync(JSON.stringify(this.history.getEntries()));
+  }
+}
+
+function isWellFormed(entry: unknown): entry is TimeStampHistoryEntry<unknown> {
+  const { startTime, endTime } = (entry ?? {}) as { startTime?: unknown; endTime?: unknown };
+  return Number.isFinite(startTime) && (endTime === null || Number.isFinite(endTime));
 }

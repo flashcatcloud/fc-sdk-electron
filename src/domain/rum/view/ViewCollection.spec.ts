@@ -13,6 +13,7 @@ vi.mock('../../../tools/display', () => ({
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { type TimeStamp } from '@flashcatcloud/browser-core';
 import { ViewCollection, SESSION_KEEP_ALIVE_INTERVAL, VIEW_UPDATE_THROTTLE_DELAY } from './ViewCollection';
+import { ViewContext } from './ViewContext';
 import {
   EventManager,
   EventKind,
@@ -21,6 +22,7 @@ import {
   EventTrack,
   LifecycleKind,
   type RawRumEvent,
+  type ServerRumEvent,
 } from '../../../event';
 import { createFormatHooks, type FormatHooks } from '../../../assembly';
 import { createServerRumEvent, createServerRumView } from '../../../mocks.specUtil';
@@ -52,7 +54,7 @@ describe('ViewCollection', () => {
       handle: (event) => rawRumEvents.push(event),
     });
 
-    viewCollection = await ViewCollection.start(eventManager, hooks);
+    viewCollection = ViewCollection.start(eventManager, await ViewContext.init(hooks));
   });
 
   afterEach(() => {
@@ -106,7 +108,7 @@ describe('ViewCollection', () => {
         handle: (event) => emitted.push(event),
       });
 
-      const racyCollection = await ViewCollection.start(racyEventManager, racyHooks);
+      const racyCollection = ViewCollection.start(racyEventManager, await ViewContext.init(racyHooks));
       getTime.mockRestore();
 
       try {
@@ -232,6 +234,11 @@ describe('ViewCollection', () => {
     });
   });
 
+  /** The main view's own id: only its own events count towards it. */
+  function currentViewId() {
+    return (rawRumEvents[0].data as RawRumView).view.id;
+  }
+
   describe('event counters', () => {
     it.each(['action', 'error', 'resource'] as const)(
       'increments %s counter on corresponding ServerRumEvent',
@@ -240,7 +247,7 @@ describe('ViewCollection', () => {
           kind: EventKind.SERVER,
           track: EventTrack.RUM,
           source: EventSource.MAIN,
-          data: createServerRumEvent(type),
+          data: createServerRumEvent(type, { view: { id: currentViewId() } }),
         });
 
         expect(rawRumEvents).toHaveLength(2);
@@ -249,6 +256,31 @@ describe('ViewCollection', () => {
         expect(data._dd.document_version).toBe(2);
       }
     );
+
+    it("does not count another view's events, as a crash reported on the next launch is the view it happened in's", () => {
+      eventManager.notify({
+        kind: EventKind.SERVER,
+        track: EventTrack.RUM,
+        source: EventSource.MAIN,
+        data: createServerRumEvent('error', { view: { id: 'previous-launch-view' } }),
+      });
+
+      // Only the initial event, no update
+      expect(rawRumEvents).toHaveLength(1);
+    });
+
+    it('leaves a telemetry event alone, view or not, as one assembled after the view closed has none', () => {
+      expect(() =>
+        eventManager.notify({
+          kind: EventKind.SERVER,
+          track: EventTrack.RUM,
+          data: { type: 'telemetry', telemetry: { type: 'log', status: 'error', message: 'boom' } },
+        } as unknown as ServerRumEvent)
+      ).not.toThrow();
+
+      // Only the initial event, no update
+      expect(rawRumEvents).toHaveLength(1);
+    });
 
     it('does not count view type ServerEvents', () => {
       eventManager.notify({
@@ -267,7 +299,7 @@ describe('ViewCollection', () => {
         kind: EventKind.SERVER,
         track: EventTrack.RUM,
         source: EventSource.RENDERER,
-        data: createServerRumEvent('error'),
+        data: createServerRumEvent('error', { view: { id: currentViewId() } }),
       });
 
       // Only the initial event, no update
@@ -293,7 +325,7 @@ describe('ViewCollection', () => {
         kind: EventKind.SERVER,
         track: EventTrack.RUM,
         source: EventSource.MAIN,
-        data: createServerRumEvent(type),
+        data: createServerRumEvent(type, { view: { id: currentViewId() } }),
       });
     }
 

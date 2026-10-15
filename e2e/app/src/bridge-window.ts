@@ -8,6 +8,9 @@ flashcatRum.init({
   trackResources: true,
   trackLongTasks: true,
   trackUserInteractions: true,
+  // Lets a scenario report an error that `beforeSend` drops, which must not count as the session's
+  // error anywhere downstream.
+  beforeSend: (event) => !(event.type === 'error' && event.error.message.includes('dropped-by-beforeSend')),
 });
 
 document.getElementById('status')!.textContent = 'bridge-ready';

@@ -5,6 +5,7 @@ import type { InitConfiguration } from './config';
 import * as display from './tools/display';
 vi.mock('./tools/display', () => ({
   displayError: vi.fn(),
+  displayWarn: vi.fn(),
 }));
 
 describe('buildConfiguration', () => {
@@ -447,6 +448,62 @@ describe('buildConfiguration', () => {
 
       expect(result?.telemetrySampleRate).toBe(20);
       expect(display.displayError).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('sessionSampleRate validation', () => {
+    it('defaults to 100 when not provided', () => {
+      expect(buildConfiguration({ ...DEFAULT_CONFIG })?.sessionSampleRate).toBe(100);
+    });
+
+    it.each([0, 12.5, 100])('accepts valid value: %d', (value) => {
+      expect(buildConfiguration({ ...DEFAULT_CONFIG, sessionSampleRate: value })?.sessionSampleRate).toBe(value);
+    });
+
+    it.each([
+      { value: -1, description: 'negative number' },
+      { value: 101, description: 'greater than 100' },
+      { value: '50', description: 'numeric string' },
+    ])('fails initialization when $description, like the browser SDK', ({ value }) => {
+      const config = { ...DEFAULT_CONFIG, sessionSampleRate: value } as unknown as InitConfiguration;
+
+      expect(buildConfiguration(config)).toBeUndefined();
+      expect(display.displayError).toHaveBeenCalledWith(
+        "SDK initialization failed: 'sessionSampleRate' must be a finite number from 0 to 100"
+      );
+    });
+
+    it('defaults to 100 when null (no error)', () => {
+      const config = { ...DEFAULT_CONFIG, sessionSampleRate: null } as unknown as InitConfiguration;
+
+      expect(buildConfiguration(config)?.sessionSampleRate).toBe(100);
+      expect(display.displayError).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('sessionOnError validation', () => {
+    it('defaults to false', () => {
+      expect(buildConfiguration({ ...DEFAULT_CONFIG })?.sessionOnError).toBe(false);
+    });
+
+    it('accepts true', () => {
+      expect(
+        buildConfiguration({ ...DEFAULT_CONFIG, sessionSampleRate: 0, sessionOnError: true })?.sessionOnError
+      ).toBe(true);
+      expect(display.displayWarn).not.toHaveBeenCalled();
+    });
+
+    it('logs error and uses false when not a boolean', () => {
+      const config = { ...DEFAULT_CONFIG, sessionOnError: 'yes' } as unknown as InitConfiguration;
+
+      expect(buildConfiguration(config)?.sessionOnError).toBe(false);
+      expect(display.displayError).toHaveBeenCalledWith("Configuration error: 'sessionOnError' must be a boolean");
+    });
+
+    it('warns that it can never apply while sessionSampleRate is 100', () => {
+      buildConfiguration({ ...DEFAULT_CONFIG, sessionOnError: true });
+
+      expect(display.displayWarn).toHaveBeenCalledWith(expect.stringContaining('does not affect new sessions'));
     });
   });
 });

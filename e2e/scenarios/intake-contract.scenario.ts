@@ -34,3 +34,26 @@ test('uploads to /api/v2/rum as newline-delimited JSON with a text/plain content
     expect(typeof event.body).toBe('object');
   }
 });
+
+test('flags a value the real intake would fail to decode into an integer, and nothing else', async ({ intake }) => {
+  // Straight to the fake intake, bypassing the SDK: this pins the oracle itself, not the bridge
+  // in front of it. Each line is one event, as the SDK sends them.
+  const events = [
+    { type: 'error', date: '1700000000000', error: { message: 'string date' } },
+    { type: 'view', date: 1700000000000, view: { id: 'v', custom_timings: { boot: 1.5 } } },
+    { type: 'view', date: 1700000000000, view: { id: 'v', custom_timings: { boot: 15 } } },
+    { type: 'error', date: 1700000000000, error: { message: 'priced' }, context: { price: 19.99 } },
+  ];
+  const response = await fetch(`http://127.0.0.1:${intake.getPort()}/api/v2/rum?ddforward=%2Fapi%2Fv2%2Frum`, {
+    method: 'POST',
+    headers: { 'content-type': 'text/plain;charset=UTF-8' },
+    body: events.map((event) => JSON.stringify(event)).join('\n'),
+  });
+
+  expect(response.status).toBe(202);
+  expect(intake.getProtocolViolations().map((violation) => `${violation.reason}: ${violation.detail}`)).toEqual([
+    'value the intake cannot decode into an integer: unknown/error → date = "1700000000000"',
+    'value the intake cannot decode into an integer: unknown/view → view.custom_timings.boot = 1.5',
+  ]);
+  intake.clear();
+});

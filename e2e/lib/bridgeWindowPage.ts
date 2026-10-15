@@ -7,6 +7,7 @@ interface BridgeWindow {
     getSessionId: () => string;
     getAnonymousId: () => string;
     getUser: () => string;
+    send: (msg: string) => void;
   };
 }
 
@@ -22,6 +23,14 @@ export class BridgeWindowPage {
     await page.waitForSelector('#status');
     await page.waitForFunction('document.getElementById("status")?.textContent === "bridge-ready"');
     return new BridgeWindowPage(page);
+  }
+
+  /** Hands the bridge a raw envelope, as a page script could. */
+  async sendRaw(envelope: Record<string, unknown>) {
+    await this.page.evaluate(
+      (json) => (globalThis as unknown as BridgeWindow).DatadogEventBridge.send(json),
+      JSON.stringify(envelope)
+    );
   }
 
   async generateError(message: string) {

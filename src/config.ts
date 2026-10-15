@@ -1,5 +1,11 @@
-import { ONE_KIBI_BYTE, ONE_MEBI_BYTE, ONE_SECOND, DefaultPrivacyLevel } from '@flashcatcloud/browser-core';
-import { displayError } from './tools/display';
+import {
+  ONE_KIBI_BYTE,
+  ONE_MEBI_BYTE,
+  ONE_SECOND,
+  DefaultPrivacyLevel,
+  isPercentage,
+} from '@flashcatcloud/browser-core';
+import { displayError, displayWarn } from './tools/display';
 
 /**
  * Intake host used when `site` is omitted.
@@ -36,6 +42,22 @@ export interface InitConfiguration {
   applicationId: string;
   env?: string;
   version?: string;
+  /**
+   * Percentage of sessions collected (0–100). Defaults to `100`. Drawn once per session, in the main
+   * process, and it applies to the renderer events that reach it over the bridge too.
+   */
+  sessionSampleRate?: number;
+  /**
+   * Keep collecting the sessions `sessionSampleRate` did not draw, but upload them only if they
+   * report an error. Defaults to `false`.
+   *
+   * Such a session holds the last minute of its events in memory and uploads nothing; at its first
+   * error it hands that minute to the upload batch along with the error, 0–3 s later, then reports
+   * as it happens like any other session. A session that ends without an error is thrown away
+   * whole. It only applies to what the plain rate missed, so with the default `sessionSampleRate`
+   * of 100 there is nothing left for it to apply to.
+   */
+  sessionOnError?: boolean;
   telemetrySampleRate?: number;
   batchSize?: BatchSize;
   uploadFrequency?: UploadFrequency;
@@ -90,6 +112,8 @@ export interface Configuration {
   env?: string;
   version?: string;
   proxy?: string;
+  sessionSampleRate: number;
+  sessionOnError: boolean;
   telemetrySampleRate: number;
   batchSize?: BatchSize;
   uploadFrequency?: UploadFrequency;
@@ -130,6 +154,15 @@ function validateOptionalString(value: unknown): string | undefined {
   }
 
   return value.length > 0 ? value : undefined;
+}
+
+/** Same contract as the browser SDK: an out-of-range rate fails `init` rather than being guessed at. */
+function isValidSessionSampleRate(value: unknown): boolean {
+  if (value !== undefined && value !== null && !isPercentage(value)) {
+    displayError("SDK initialization failed: 'sessionSampleRate' must be a finite number from 0 to 100");
+    return false;
+  }
+  return true;
 }
 
 function validateTelemetrySampleRate(value: unknown): number {
@@ -199,11 +232,24 @@ export function buildConfiguration(initConfig: InitConfiguration): Configuration
   const applicationId = validateRequiredString(initConfig.applicationId, 'applicationId');
   const site = validateSite(initConfig.site);
 
-  if (service === undefined || clientToken === undefined || applicationId === undefined || site === undefined) {
+  if (
+    service === undefined ||
+    clientToken === undefined ||
+    applicationId === undefined ||
+    site === undefined ||
+    !isValidSessionSampleRate(initConfig.sessionSampleRate)
+  ) {
     return undefined;
   }
 
   const proxy = validateOptionalString(initConfig.proxy);
+  const sessionSampleRate = initConfig.sessionSampleRate ?? 100;
+  const sessionOnError = validateOptionalBoolean(initConfig.sessionOnError, 'sessionOnError', false);
+  if (sessionOnError && sessionSampleRate === 100) {
+    displayWarn(
+      'sessionOnError does not affect new sessions at sessionSampleRate 100. Resumed sessions retain their previous sampling decision.'
+    );
+  }
 
   return {
     site,
@@ -213,6 +259,8 @@ export function buildConfiguration(initConfig: InitConfiguration): Configuration
     env: validateOptionalString(initConfig.env),
     version: validateOptionalString(initConfig.version),
     proxy,
+    sessionSampleRate,
+    sessionOnError,
     telemetrySampleRate: validateTelemetrySampleRate(initConfig.telemetrySampleRate),
     defaultPrivacyLevel: validateDefaultPrivacyLevel(initConfig.defaultPrivacyLevel),
     allowedWebViewHosts: validateAllowedWebViewHosts(initConfig.allowedWebViewHosts),

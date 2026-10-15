@@ -10,7 +10,7 @@ import {
 } from '@flashcatcloud/browser-core/cjs/tools/monitor';
 import type { Configuration } from '../../config';
 import { EventKind, EventSource, EventManager, SessionRenewEvent, LifecycleKind, EventFormat } from '../../event';
-import { RawTelemetryError } from './rawTelemetryData.types';
+import type { RawTelemetryData, RawTelemetryError } from './rawTelemetryData.types';
 
 export { monitor, callMonitored };
 
@@ -43,22 +43,38 @@ class Telemetry {
   }
 
   addError(error: unknown): void {
-    if (!this.isEnabled || this.eventCount >= MAX_TELEMETRY_EVENTS_PER_SESSION) {
+    // Before formatting: a telemetry that is sampled out or capped must cost nothing, and must not
+    // throw on a value it cannot serialize, since its callers are error paths themselves.
+    if (!this.canSend()) {
       return;
     }
+    this.notify(this.createErrorEvent(error));
+  }
+
+  addDebug(message: string, context: Record<string, unknown>): void {
+    if (!this.canSend()) {
+      return;
+    }
+    this.notify({ type: 'telemetry', telemetry: { type: 'log', status: 'debug', message, ...context } });
+  }
+
+  stop(): void {
+    resetMonitor();
+    this.sessionRenewSubscription?.unsubscribe();
+  }
+
+  private canSend(): boolean {
+    return this.isEnabled && this.eventCount < MAX_TELEMETRY_EVENTS_PER_SESSION;
+  }
+
+  private notify(data: RawTelemetryData): void {
     this.eventCount++;
-    const data = this.createErrorEvent(error);
     this.eventManager.notify({
       kind: EventKind.RAW,
       source: EventSource.MAIN,
       format: EventFormat.TELEMETRY,
       data,
     });
-  }
-
-  stop(): void {
-    resetMonitor();
-    this.sessionRenewSubscription?.unsubscribe();
   }
 
   private createErrorEvent(error: unknown): RawTelemetryError {
@@ -81,6 +97,11 @@ export function startTelemetry(eventManager: EventManager, configuration: Config
 
 export function addError(error: unknown): void {
   telemetryInstance?.addError(error);
+}
+
+/** Internal debug log, sampled and capped like the errors. `context` is spread into `telemetry`. */
+export function addTelemetryDebug(message: string, context: Record<string, unknown>): void {
+  telemetryInstance?.addDebug(message, context);
 }
 
 export function stopTelemetry(): void {

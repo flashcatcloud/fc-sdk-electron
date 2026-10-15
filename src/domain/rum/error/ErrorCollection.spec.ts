@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ErrorCollection } from './ErrorCollection';
-import { EventFormat, EventKind, EventManager, type RawRumEvent } from '../../../event';
+import { type Event, EventFormat, EventKind, EventManager, LifecycleKind, type RawRumEvent } from '../../../event';
 import type { RawRumError } from '../rawRumData.types';
 import { StackPathNormalizer } from '../../StackPathNormalizer';
 
@@ -58,6 +58,35 @@ describe('ErrorCollection', () => {
       expect(data.error.message).toBe('Uncaught "string error"');
       expect(data.error.stack).toBeUndefined();
       expect(data.error.type).toBeUndefined();
+    });
+  });
+
+  describe('application exit', () => {
+    function collectLifecycle(): string[] {
+      const seen: string[] = [];
+      eventManager.registerHandler<Event>({
+        canHandle: (event): event is Event => event.kind === EventKind.LIFECYCLE || event.kind === EventKind.RAW,
+        handle: (event) => seen.push(event.kind === EventKind.LIFECYCLE ? event.lifecycle : event.kind),
+      });
+      return seen;
+    }
+
+    it('announces that the application may exit after an uncaught exception, once the error is out', () => {
+      errorCollection = new ErrorCollection(eventManager, stackPathNormalizer);
+      const seen = collectLifecycle();
+
+      process.emit('uncaughtException', new Error('test error'));
+
+      expect(seen).toEqual([EventKind.RAW, LifecycleKind.APP_MAY_EXIT]);
+    });
+
+    it('does not after an unhandled rejection', () => {
+      errorCollection = new ErrorCollection(eventManager, stackPathNormalizer);
+      const seen = collectLifecycle();
+
+      process.emit('unhandledRejection', new Error('test error'), Promise.resolve());
+
+      expect(seen).toEqual([EventKind.RAW]);
     });
   });
 

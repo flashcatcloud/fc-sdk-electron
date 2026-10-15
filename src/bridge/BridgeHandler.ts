@@ -2,8 +2,10 @@ import { ipcMain, webContents } from 'electron';
 import type { IpcMainEvent } from 'electron';
 import { EventKind, EventSource, EventFormat, LifecycleKind } from '../event';
 import type { EventManager, LifecycleEvent, RawRumEvent } from '../event';
+import type { RumEvent } from '../domain/rum';
 import { monitor, addError as addTelemetryError } from '../domain/telemetry';
 import { BRIDGE_CHANNEL, CONFIG_CHANNEL, CONFIG_PUSH_CHANNEL } from '../common';
+import { findInvalidIntakeInteger, hasPrototypeKey } from '../tools/intakeNumbers';
 import type { BridgeConfig } from '../common';
 import type { RendererRegistry } from '../domain/RendererRegistry';
 import type { User } from '../domain/UserContext';
@@ -11,6 +13,15 @@ import type { ViewTimingCorrector } from '../domain/ViewTimingCorrector';
 import type { StackPathNormalizer } from '../domain/StackPathNormalizer';
 
 type BridgeEventType = 'rum' | 'log' | 'internal_telemetry';
+
+const RUM_EVENT_TYPES = new Set<unknown>([
+  'view',
+  'action',
+  'error',
+  'resource',
+  'long_task',
+  'vital',
+] satisfies RumEvent['type'][]);
 
 interface BridgeEvent {
   eventType: BridgeEventType;
@@ -99,12 +110,38 @@ export class BridgeHandler {
     try {
       bridgeEvent = JSON.parse(msg) as BridgeEvent;
     } catch {
-      addTelemetryError(new Error(`Failed to parse bridge message: ${msg}`));
+      // The message is renderer text, and telemetry leaves the device: only its size is reported.
+      addTelemetryError(new Error(`Failed to parse bridge message (${msg.length} characters)`));
+      return;
+    }
+    // A property named like a prototype's is not data: merged, `__proto__` reaches
+    // `Object.prototype` itself. Dropped whole rather than stripped — nothing honest sends one,
+    // and a message with a hole where a renderer put something is a message nobody asked for.
+    if (hasPrototypeKey(bridgeEvent)) {
+      addTelemetryError(new Error('Dropped a bridge message: forbidden property name'));
       return;
     }
 
     switch (bridgeEvent.eventType) {
-      case 'rum':
+      case 'rum': {
+        // Only the RUM event types the intake accepts: an envelope claiming to be telemetry, say,
+        // is neither a RUM event nor the SDK's own telemetry, and would bypass what applies to
+        // either.
+        const type = (bridgeEvent.event as { type?: unknown } | undefined)?.type;
+        if (!RUM_EVENT_TYPES.has(type)) {
+          addTelemetryError(new Error('Dropped a renderer RUM event: unsupported type'));
+          break;
+        }
+        // A value the intake cannot decode into an integer — a fraction, a string, a boolean —
+        // fails the whole event there, silently; and an error that would never land must not earn
+        // a session its release. Only the paths the intake decodes as integers are looked at;
+        // free-form attributes are the renderer's.
+        if (findInvalidIntakeInteger(bridgeEvent.event) !== undefined) {
+          addTelemetryError(
+            new Error('Dropped a renderer RUM event: a value the intake decodes as an integer is not a whole number')
+          );
+          break;
+        }
         this.trackRenderer(bridgeEvent.event, webContentsId);
         // Both rewrite the event in place, before it is handed over: everything downstream
         // treats the bridged event as final. They are independent of one another and the order
@@ -121,6 +158,7 @@ export class BridgeHandler {
           data: bridgeEvent.event,
         } as RawRumEvent);
         break;
+      }
       case 'log':
         // TODO(RUM-15047)
         break;

@@ -27,4 +27,5 @@ export const LifecycleKind = {
   SESSION_EXPIRED: 'session_expired',
   SESSION_RENEW: 'session_renew',
   USER_CHANGED: 'user_changed',
+  APP_MAY_EXIT: 'app_may_exit',
 } as const;

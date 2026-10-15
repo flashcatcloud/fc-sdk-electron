@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { addError, callMonitored, monitor, startTelemetry, stopTelemetry } from './Telemetry';
+import { addError, addTelemetryDebug, callMonitored, monitor, startTelemetry, stopTelemetry } from './Telemetry';
 import { createTestConfiguration } from '../../mocks.specUtil';
 import { EventManager, RawEvent, EventKind, LifecycleKind } from '../../event';
-import { RawTelemetryData } from './rawTelemetryData.types';
+import type { RawTelemetryData, RawTelemetryError } from './rawTelemetryData.types';
 
 describe('telemetry', () => {
   let eventManager: EventManager;
@@ -49,6 +49,29 @@ describe('telemetry', () => {
     });
   });
 
+  describe('addTelemetryDebug', () => {
+    it('notifies a debug log carrying its context', () => {
+      startTelemetry(eventManager, createTestConfiguration());
+
+      addTelemetryDebug('something happened', { 'buffer.views_count': 2 });
+
+      expect(notifiedEvents).toEqual([
+        {
+          type: 'telemetry',
+          telemetry: { type: 'log', status: 'debug', message: 'something happened', 'buffer.views_count': 2 },
+        },
+      ]);
+    });
+
+    it('is sampled like errors', () => {
+      startTelemetry(eventManager, createTestConfiguration({ telemetrySampleRate: 0 }));
+
+      addTelemetryDebug('something happened', {});
+
+      expect(notifiedEvents).toEqual([]);
+    });
+  });
+
   describe('addError', () => {
     it('notifies with formatted event', () => {
       const config = createTestConfiguration();
@@ -59,7 +82,7 @@ describe('telemetry', () => {
       addError(testError);
 
       expect(notifiedEvents).toHaveLength(1);
-      const event = notifiedEvents[0];
+      const event = notifiedEvents[0] as RawTelemetryError;
 
       expect(event.type).toBe('telemetry');
       expect(event.telemetry.type).toBe('log');
@@ -92,6 +115,25 @@ describe('telemetry', () => {
   });
 
   describe('sampling', () => {
+    it('does not format an error it will not send, so a value it cannot serialize costs nothing', () => {
+      startTelemetry(eventManager, createTestConfiguration({ telemetrySampleRate: 0 }));
+
+      expect(() => addError(1n)).not.toThrow();
+
+      expect(notifiedEvents).toHaveLength(0);
+    });
+
+    it('does not format an error once capped either', () => {
+      startTelemetry(eventManager, createTestConfiguration({ telemetrySampleRate: 100 }));
+      for (let i = 0; i < 100; i += 1) {
+        addError(new Error(`error ${i}`));
+      }
+
+      expect(() => addError(1n)).not.toThrow();
+
+      expect(notifiedEvents).toHaveLength(100);
+    });
+
     it('does not notify when sample rate is 0', () => {
       const config = createTestConfiguration({ telemetrySampleRate: 0 });
       startTelemetry(eventManager, config);

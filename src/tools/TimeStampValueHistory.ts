@@ -36,10 +36,14 @@ export class TimeStampValueHistory<T> {
   }
 
   find(startTime: TimeStamp): T | undefined {
+    return this.findEntry(startTime)?.value;
+  }
+
+  findEntry(startTime: TimeStamp): TimeStampHistoryEntry<T> | undefined {
     for (const entry of this.entries) {
       if (entry.startTime <= startTime) {
         if (startTime <= entry.endTime) {
-          return entry.value;
+          return entry;
         }
         break;
       }
