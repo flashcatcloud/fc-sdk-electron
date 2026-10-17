@@ -65,7 +65,7 @@ function storedFile(overrides: Record<string, unknown> = {}) {
   return JSON.stringify({
     format: 1,
     sdkVersion: 'test',
-    identity: JSON.stringify(['http://proxy.test', 'test-app-id', 'prod', '1.2.3']),
+    identity: JSON.stringify(['http://proxy.test', 'test-app-id', 'prod']),
     version: 2,
     values: { sessionSampleRate: 0, sessionOnError: true },
     custom: { flag: 'cached' },
@@ -473,7 +473,7 @@ describe('RemoteConfiguration', () => {
         {
           format: 1,
           sdkVersion: 'test',
-          identity: JSON.stringify(['http://proxy.test', 'test-app-id', 'prod', '1.2.3']),
+          identity: JSON.stringify(['http://proxy.test', 'test-app-id', 'prod']),
           version: 3,
           values: { sessionSampleRate: 25, sessionOnError: true },
           custom: { flag: 1 },
@@ -497,9 +497,13 @@ describe('RemoteConfiguration', () => {
     });
 
     it.each([
-      ['another env', { identity: JSON.stringify(['http://proxy.test', 'test-app-id', 'staging', '1.2.3']) }],
-      ['another app version', { identity: JSON.stringify(['http://proxy.test', 'test-app-id', 'prod', '1.2.2']) }],
-      ['another application', { identity: JSON.stringify(['http://proxy.test', 'other-app', 'prod', '1.2.3']) }],
+      ['another env', { identity: JSON.stringify(['http://proxy.test', 'test-app-id', 'staging']) }],
+      ['another intake', { identity: JSON.stringify(['http://other-proxy.test', 'test-app-id', 'prod']) }],
+      [
+        'a build that keyed it on the app version',
+        { identity: JSON.stringify(['http://proxy.test', 'test-app-id', 'prod', '1.2.3']) },
+      ],
+      ['another application', { identity: JSON.stringify(['http://proxy.test', 'other-app', 'prod']) }],
       ['another file format', { format: 2 }],
       ['a rate out of range', { values: { sessionSampleRate: 200 } }],
       ['a switch that is not a boolean', { values: { sessionOnError: 'true' } }],
@@ -514,6 +518,34 @@ describe('RemoteConfiguration', () => {
       expect(configuration.getCustom()).toBeUndefined();
       expect(requestedUrl().searchParams.has('applied_version')).toBe(false);
       expect(requestHeaders()).toEqual({});
+    });
+
+    it('applies a file written under another app version', async () => {
+      config = { ...config, version: '2.0.0' };
+      mfs.readFile.mockResolvedValue(storedFile());
+      fetchMock.mockReturnValue(new Promise(() => undefined));
+
+      const configuration = await start();
+
+      expect(configuration.getSampling()).toEqual({ sessionSampleRate: 0, sessionOnError: true, rcVersion: 2 });
+      expect(requestedUrl().searchParams.get('app_version')).toBe('2.0.0');
+      expect(requestedUrl().searchParams.get('applied_version')).toBe('2');
+    });
+
+    it('writes the same identity whatever the app version', async () => {
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody())));
+      const identityWritten = async (version: string | undefined) => {
+        writtenFiles().length = 0;
+        mfs.writeFile.mockClear();
+        config = { ...config, version };
+        remote?.stop();
+        await start();
+        return (writtenFiles()[0] as { identity: string }).identity;
+      };
+
+      const first = await identityWritten('1.2.3');
+      expect(await identityWritten('2.0.0')).toBe(first);
+      expect(await identityWritten(undefined)).toBe(first);
     });
 
     it('reads a kept version 0 as no configuration, whatever it holds', async () => {

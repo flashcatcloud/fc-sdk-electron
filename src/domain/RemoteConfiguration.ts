@@ -105,7 +105,7 @@ interface StoredConfiguration extends Omit<Delivered, 'activation' | 'refreshOnF
    * console's values rather than back on the init ones.
    */
   sdkVersion: string;
-  /** Who the answer was for: it only applies to the same endpoint, application, env and version. */
+  /** Who the answer was for: it only applies to the same endpoint, application and env, whatever the application version. */
   identity: string;
   etag?: string;
 }
@@ -153,9 +153,12 @@ export class RemoteConfiguration {
   private stopped = false;
 
   private constructor(private readonly config: Configuration) {
-    // The client token is not part of it: the configuration belongs to the application, so a token
-    // rotated for the same application, env and version is answered the same.
-    this.identity = JSON.stringify([config.proxy ?? config.site, config.applicationId, config.env, config.version]);
+    // Neither the client token nor the application version is part of it. The configuration belongs
+    // to the application, so a token rotated for the same application and env is answered the same.
+    // An installed application runs one version at a time, and keying on it would put the first
+    // session after every upgrade back on the init values: until the new fetch is stored, the
+    // previous release's settings are the better answer.
+    this.identity = JSON.stringify([config.proxy ?? config.site, config.applicationId, config.env]);
   }
 
   /** Reads the configuration the previous launch kept, if remote configuration is on. */
