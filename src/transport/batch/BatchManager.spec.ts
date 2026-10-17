@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { computeIntakeUrlForTrack } from '../utils';
 import { BatchManager } from './BatchManager';
 import { BatchConsumer } from './BatchConsumer';
 import { EventTrack } from '../../event';
@@ -84,6 +85,12 @@ describe('BatchManager', () => {
         intakeUrl: 'https://mock-intake.com/api/v2/rum',
         clientToken: 'test-token',
       });
+    });
+
+    it('builds the intake URL with the configured environment', async () => {
+      await BatchManager.create({ ...config, env: 'production' }, batchConfig);
+
+      expect(computeIntakeUrlForTrack).toHaveBeenCalledWith(config.site, 'rum', config.proxy, 'production');
     });
 
     it('should start the upload cycle', async () => {

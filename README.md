@@ -570,7 +570,8 @@ await init({
 });
 ```
 
-Events are then uploaded to `https://rum.example.internal/api/v2/rum`.
+Events are then uploaded to `https://rum.example.internal/api/v2/rum`, with `?ddtags=env%3A<env>` when
+`env` is set — the intake reads the environment from the request, not from the events.
 
 > **The scheme is always `https://`.** It is hardcoded in the URL template, so an intake served over
 > plain **HTTP**, or one that is not at the root of its host, cannot be reached through `site` — use
@@ -588,9 +589,9 @@ await init({
 });
 ```
 
-The SDK then POSTs to `<proxy>?ddforward=%2Fapi%2Fv2%2Frum`. Your endpoint must forward the request
-body to `/api/v2/rum` on your FlashCat instance, preserving the `DD-API-KEY` and `Content-Type`
-headers.
+The SDK then POSTs to `<proxy>?ddforward=%2Fapi%2Fv2%2Frum` (with the `ddtags` query inside
+`ddforward` when `env` is set). Your endpoint must forward the request body to the path and query
+in `ddforward` on your FlashCat instance, preserving the `DD-API-KEY` and `Content-Type` headers.
 
 The SDK never reports its own uploads: it excludes exactly the **origin** it uploads to — scheme,
 host and port — from instrumentation. Application requests to the same host on a different port,
