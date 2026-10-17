@@ -23,10 +23,28 @@ export function computeIntakeOrigin(site: string, proxy?: string): string | unde
   }
 }
 
-export function computeIntakeUrlForTrack(site: string, trackType: string, proxy?: string): string {
+/**
+ * The URL the SDK uploads a track to.
+ *
+ * The intake reads an event's environment from the request's `ddtags` query parameter, not from
+ * the event — the body has no field for it — so `env` travels there, as `env:<env>`, the one tag
+ * the intake takes from the query. Service and version are read from each event, which matters
+ * because a renderer's events carry their own; and nothing is sent without an environment, so the
+ * URL is then the bare track.
+ *
+ * Behind a proxy, the whole path and query the intake has to see travel inside `ddforward`; the
+ * intake reads its query parameters from there.
+ */
+export function computeIntakeUrlForTrack(site: string, trackType: string, proxy?: string, env?: string): string {
+  const pathAndQuery = `/api/v2/${trackType}${env ? `?ddtags=${encodeURIComponent(buildTag('env', env))}` : ''}`;
   if (proxy) {
-    return `${proxy}?ddforward=${encodeURIComponent(`/api/v2/${trackType}`)}`;
+    return `${proxy}?ddforward=${encodeURIComponent(pathAndQuery)}`;
   }
 
-  return `https://${site}/api/v2/${trackType}`;
+  return `https://${site}${pathAndQuery}`;
+}
+
+/** `key:value`, with the characters the intake splits tags on — commas, and colons — replaced. */
+function buildTag(key: string, value: string): string {
+  return `${key}:${value.replace(/[,:]/g, '_')}`;
 }

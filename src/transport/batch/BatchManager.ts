@@ -39,7 +39,7 @@ export class BatchManager {
     const { path: configPath, trackType, batchSize, uploadFrequency } = batchConfig;
 
     const trackPath = path.join(configPath, trackType);
-    const intakeUrl = computeIntakeUrlForTrack(config.site, trackType, config.proxy);
+    const intakeUrl = computeIntakeUrlForTrack(config.site, trackType, config.proxy, config.env);
 
     const producer = await BatchProducer.create({ trackPath, batchSize });
     const consumer = new BatchConsumer({ trackPath, intakeUrl, clientToken });

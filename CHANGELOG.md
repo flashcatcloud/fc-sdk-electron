@@ -2,6 +2,14 @@
 
 All notable changes to `@flashcatcloud/electron-sdk` are documented here.
 
+## [0.4.1]
+
+### 🐛 Bug Fixes
+
+- `env` now reaches the intake. It was only ever used for the SDK's own purposes, so every event landed with an empty environment, whatever `init` was given. It is sent as the `ddtags` query parameter of the upload (`env:<env>`), inside `ddforward` when a `proxy` is set; a proxy endpoint must forward the query it finds there along with the path. Events from renderers, which the main process uploads, carry it too. Without an `env`, nothing changes.
+
+- The stored remote configuration now survives an application upgrade. It was kept per application version, so every upgrade discarded it and the first session of the new release was drawn on the `init` values, reporting no `rc_version`, until the next answer arrived; it now applies to the same intake, application and `env` whatever the version, and the version is still sent with each request. The first launch after updating to this SDK release refreshes the stored configuration once.
+
 ## [0.4.0]
 
 ### ✨ Features

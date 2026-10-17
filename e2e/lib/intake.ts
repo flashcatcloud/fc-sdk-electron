@@ -32,6 +32,8 @@ export interface ReceivedEvent {
   timestamp: number;
   body: unknown;
   headers: Record<string, string>;
+  /** The query parameters of the request, read as the real intake reads them: inside `ddforward` behind a proxy. */
+  params: Record<string, string>;
 }
 
 /** A breach of the intake wire contract described above. */
@@ -216,7 +218,7 @@ export class Intake {
    * Parses a newline-delimited JSON payload and stores one event per line.
    * Records a violation for anything the real intake would reject.
    */
-  private storeBody(rawBody: string, headers: Record<string, string>) {
+  private storeBody(rawBody: string, headers: Record<string, string>, params: Record<string, string>) {
     const lines = rawBody.split('\n').filter((line) => line.trim().length > 0);
 
     if (lines.length === 0) {
@@ -242,15 +244,15 @@ export class Intake {
         this.addViolation('value the intake cannot decode into an integer', `${eventLabel(parsed)} → ${path}`);
       }
 
-      this.rumEvents.push({ timestamp: Date.now(), body: parsed, headers });
+      this.rumEvents.push({ timestamp: Date.now(), body: parsed, headers, params });
     }
   }
 
   private checkRequest(req: http.IncomingMessage, headers: Record<string, string>) {
-    const requestUrl = new URL(req.url ?? '/', 'http://localhost');
     // Without a `proxy`, the SDK POSTs straight to `https://${site}${ddforward}`, so `ddforward`
-    // is the path the real intake would have seen.
-    const track = requestUrl.searchParams.get('ddforward') ?? requestUrl.pathname;
+    // is the path and query the real intake would have seen; it parses them as a URL, and so
+    // does this — the track is the path alone, whatever query travels with it.
+    const track = forwardedUrl(req).pathname;
 
     if (track !== RUM_TRACK_PATH) {
       this.addViolation('unexpected intake path', track);
@@ -286,7 +288,7 @@ export class Intake {
           const headers = lowerCaseHeaders(req);
 
           this.checkRequest(req, headers);
-          this.storeBody(body, headers);
+          this.storeBody(body, headers, Object.fromEntries(forwardedUrl(req).searchParams));
 
           res.writeHead(202, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ status: 'accepted' }));

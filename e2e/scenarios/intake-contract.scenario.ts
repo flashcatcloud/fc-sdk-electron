@@ -26,6 +26,8 @@ test('uploads to /api/v2/rum as newline-delimited JSON with a text/plain content
   expect(intake.getProtocolViolations()).toEqual([]);
   expect(events[0].headers['content-type']).toBe('text/plain;charset=UTF-8');
   expect(events[0].headers['dd-api-key']).toBe('test-client-token');
+  // The intake reads the environment from the request's tags, not from the events.
+  expect(events[0].params.ddtags).toBe('env:test');
   expect(events[0].headers['user-agent']).toBeTruthy();
 
   // Every event arrived as its own JSON object, not wrapped in an array.

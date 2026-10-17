@@ -76,6 +76,8 @@ test.describe('bridge window — event types', () => {
     expect(view.session.id).toBe(mainView.session.id);
     expect(view.application.id).toBe('e2e-test-app-id');
     expect(view.service).toBe('e2e-renderer');
+    // The main process uploads the renderer's events, so they carry its environment tag.
+    expect(bridgeViews[0].params.ddtags).toBe('env:test');
 
     // View attributes come from the renderer's browser-rum
     expect(view.view.id).toBeDefined();
