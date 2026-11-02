@@ -5,6 +5,7 @@ import { buildConfiguration } from './config';
 import { RumCollection } from './domain/rum';
 import { SessionManager, TrackingType } from './domain/session';
 import { initAnonymousId } from './domain/AnonymousId';
+import { ActivePing } from './domain/ActivePing';
 import { RemoteConfiguration } from './domain/RemoteConfiguration';
 import { UserContext, type User } from './domain/UserContext';
 import { UserActivityTracker } from './domain/UserActivityTracker';
@@ -100,6 +101,12 @@ export async function init(configuration: InitConfiguration): Promise<boolean> {
     createdTransport.flushToDisk()
   );
   rumApi = rum.getApi();
+
+  // With the remote configuration, at the end and never awaited beyond the read of what an
+  // earlier launch left undelivered: the daily active beacon. It is not gated on the sampling
+  // draw — the anonymous id and the user are all it reads.
+  const activePing = await ActivePing.init(config, anonymousId, () => context.get());
+  activePing.start(eventManager);
 
   // Last, once every collector listens for the session ending, and never awaited: nothing in init
   // waits on the network.
