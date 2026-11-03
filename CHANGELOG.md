@@ -2,6 +2,12 @@
 
 All notable changes to `@flashcatcloud/electron-sdk` are documented here.
 
+## [0.5.0]
+
+### ✨ Features
+
+- The SDK now reports the day's active device and logged-in user through a dedicated request (`POST /api/v2/rum/active`), sent from the main process when a window gains focus, again when a new user is set through `setUser`, and again on the next local day. It is independent of `sessionSampleRate` and is not an event, so a launch lasting a few seconds still counts toward the day's active devices and logged-in users, which the console answers from these reports merged with view events. A report that could not be delivered is kept next to the anonymous device id and resent on a later launch with its age; the server dates it, never this machine's clock. A renderer behind the bridge never sends its own: the main process owns the device identity.
+
 ## [0.4.1]
 
 ### 🐛 Bug Fixes
