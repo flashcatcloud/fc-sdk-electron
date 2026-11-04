@@ -72,6 +72,29 @@ function storedFile(pendingFirstAttemptAt: number) {
   });
 }
 
+/** What an earlier day would have kept for one undelivered user report. */
+function storedUserFile(pendingFirstAttemptAt: number) {
+  return JSON.stringify({
+    format: 2,
+    day: localDay(pendingFirstAttemptAt),
+    sent: [],
+    pending: [
+      {
+        combination: `${encodeURIComponent(ANONYMOUS_ID)}|user-42|1.2.3`,
+        report: {
+          service: 'test-service',
+          build_version: '',
+          sdk_version: '0.0.0-test',
+          usr: { anonymous_id: ANONYMOUS_ID, id: 'user-42' },
+          os: { name: 'Earlier OS', version: '1' },
+          device: { type: 'Desktop', model: '', brand: '' },
+        },
+        firstAttemptAt: pendingFirstAttemptAt,
+      },
+    ],
+  });
+}
+
 describe('ActivePing', () => {
   let fetchMock: Mock<typeof fetch>;
   let eventManager: EventManager;
@@ -227,6 +250,60 @@ describe('ActivePing', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(payloadOf(1)).toEqual(expect.objectContaining({ usr: { anonymous_id: ANONYMOUS_ID } }));
+  });
+
+  it("records today's user activity behind yesterday's undelivered report for the same user", async () => {
+    let answer!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          answer = resolve;
+        })
+    );
+    vi.setSystemTime(new Date('2026-11-03T00:01:00'));
+    mfs.readFile.mockResolvedValue(storedUserFile(new Date('2026-11-02T23:59:00').getTime()));
+    currentUser = { id: 'user-42' };
+    focusedWindow.current = {};
+
+    await start();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    currentUser = undefined;
+    eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.USER_CHANGED });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    answer(accepted());
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(payloadOf(1)).toEqual(expect.objectContaining({ usr: { anonymous_id: ANONYMOUS_ID, id: 'user-42' } }));
+    expect(payloadOf(2)).toEqual(expect.objectContaining({ usr: { anonymous_id: ANONYMOUS_ID } }));
+  });
+
+  it('does not create a new-day report when an old request merely completes after midnight', async () => {
+    let answer!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          answer = resolve;
+        })
+    );
+    vi.setSystemTime(new Date('2026-11-02T23:59:00'));
+    focusedWindow.current = {};
+
+    await start();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    vi.setSystemTime(new Date('2026-11-03T00:01:00'));
+    answer(accepted());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.END_USER_ACTIVITY });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('retries a failed report under the same event id', async () => {

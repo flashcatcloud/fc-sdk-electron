@@ -226,7 +226,16 @@ export class ActivePing {
     // the moment it happened — not the moment the network answers — is what dates it: queue
     // the combination now, with its own first-attempt time, and let the sends drain serially.
     this.recordCurrentCombination();
-    if (this.inFlight) {
+    this.drainQueue();
+  }
+
+  /**
+   * Sends the oldest queued report, if any. Network continuations call only this — never
+   * `attempt()` — so a request that finishes after midnight cannot by itself look like
+   * activity on the new day; a new day is recorded only by a real trigger.
+   */
+  private drainQueue(): void {
+    if (this.stopped || this.inFlight) {
       return;
     }
     // An earlier launch's undelivered reports go first, focused or not: they describe activity
@@ -248,7 +257,11 @@ export class ActivePing {
     const combination = combinationOf(this.anonymousId, userId, this.config.version ?? '');
     if (
       this.state.sent.includes(combination) ||
-      this.state.pending.some((candidate) => candidate.combination === combination)
+      // A report left over from an earlier day does not cover today's activity, even for the
+      // same combination: it will be dated to its own first attempt when it finally leaves.
+      this.state.pending.some(
+        (candidate) => candidate.combination === combination && localDay(candidate.firstAttemptAt) === this.state.day
+      )
     ) {
       return;
     }
@@ -301,18 +314,16 @@ export class ActivePing {
             this.state.sent = this.state.sent.slice(-MAX_SENT_COMBINATIONS);
           }
           this.persist();
-          // More may be queued behind this one, or today's combination still unsent.
-          this.attempt();
+          // Only what a real trigger already queued goes out next; completing a request —
+          // possibly after midnight — is not itself activity on a new day.
+          this.drainQueue();
         } else if (outcome === 'rejected') {
           // The server answered about this report itself; asking again would get the same answer.
           this.failedAttempts = 0;
           this.state.pending = this.state.pending.filter((candidate) => candidate !== pending);
           this.persist();
           // Whatever was queued behind it still goes out; only this one was refused.
-          const next = this.state.pending[0];
-          if (next) {
-            this.send(next);
-          }
+          this.drainQueue();
         } else {
           this.scheduleRetry();
         }
@@ -330,7 +341,8 @@ export class ActivePing {
     this.failedAttempts += 1;
     this.retryTimeoutId = setTimeout(() => {
       this.retryTimeoutId = undefined;
-      this.attempt();
+      // A retry re-sends what is already queued; it must not record a new day by itself.
+      this.drainQueue();
     }, delay);
   }
 
