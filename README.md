@@ -10,7 +10,7 @@ Real User Monitoring for Electron applications.
 
 ### Prerequisites
 
-- Electron 30+ — on Electron 30 to 36, requests made through Electron's own `net` module produce no `resource` events, because dd-trace only instruments it from Electron 37. Node `http`/`https` and the global `fetch` are traced on every supported version.
+- Electron 30+ — on an older Electron the SDK disables itself: `init` returns `false` and no renderer bridge is installed, so the Browser SDK in renderers keeps reporting directly. On Electron 30 to 36, requests made through Electron's own `net` module produce no `resource` events, because dd-trace only instruments it from Electron 37. Node `http`/`https` and the global `fetch` are traced on every supported version.
 
 ### Install
 
@@ -303,7 +303,7 @@ error reporting down.
 
 ### `init(config: InitConfiguration): Promise<boolean>`
 
-Initialize the SDK. Returns `true` on success, `false` if configuration is invalid.
+Initialize the SDK. Returns `true` on success, `false` if configuration is invalid or the Electron version is below 30.
 
 ### `addError(error: unknown, options?: ErrorOptions): void`
 
