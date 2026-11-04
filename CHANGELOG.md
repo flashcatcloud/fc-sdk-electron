@@ -2,6 +2,12 @@
 
 All notable changes to `@flashcatcloud/electron-sdk` are documented here.
 
+## [Unreleased]
+
+### ⚠️ Breaking Changes / Notes
+
+- On Electron versions below 30, which the SDK does not support, it now disables itself instead of half-starting: `init` warns and returns `false`, and the instrumentation entry point installs neither the tracer nor the renderer bridge, so the Browser SDK in renderers keeps reporting directly. Previously `init` returned `true` there, yet the main process could upload nothing (its Node has no global `fetch`) while unsent batches accumulated on disk, and the bridge diverted the renderers' events to it, so they were lost too. `init` also returns `false` outside Electron. Supported versions are unaffected.
+
 ## [0.4.1]
 
 ### 🐛 Bug Fixes
