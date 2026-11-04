@@ -181,6 +181,54 @@ describe('ActivePing', () => {
     expect(payloadOf(1)).toEqual(expect.objectContaining({ usr: { anonymous_id: ANONYMOUS_ID, id: 'user-42' } }));
   });
 
+  it('keeps a login that starts and ends while an earlier report is in flight', async () => {
+    let answer!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          answer = resolve;
+        })
+    );
+    await start();
+    focusWindow();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // The whole login happens while the anonymous report is still unanswered. Recording
+    // the user only when the network replies would lose them for the day entirely.
+    currentUser = { id: 'user-42' };
+    eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.USER_CHANGED });
+    currentUser = undefined;
+    eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.USER_CHANGED });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    answer(accepted());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(payloadOf(1)).toEqual(expect.objectContaining({ usr: { anonymous_id: ANONYMOUS_ID, id: 'user-42' } }));
+  });
+
+  it('reports the new day when a window stays in use across midnight', async () => {
+    vi.setSystemTime(new Date('2026-11-02T23:59:00'));
+    await start();
+    focusWindow();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.END_USER_ACTIVITY });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    vi.setSystemTime(new Date('2026-11-03T00:01:00'));
+    eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.END_USER_ACTIVITY });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(payloadOf(1)).toEqual(expect.objectContaining({ usr: { anonymous_id: ANONYMOUS_ID } }));
+  });
+
   it('retries a failed report under the same event id', async () => {
     fetchMock.mockResolvedValueOnce(new Response(null, { status: 500 })).mockResolvedValue(accepted());
     await start();

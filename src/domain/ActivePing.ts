@@ -8,6 +8,7 @@ import {
   EventKind,
   LifecycleKind,
   type AppMayExitEvent,
+  type EndUserActivityEvent,
   type EventManager,
   type SessionRenewEvent,
   type UserChangedEvent,
@@ -89,6 +90,8 @@ type RequestOutcome = 'accepted' | 'rejected' | 'retry';
  * started hidden by the OS (a login item, a background relaunch) has not been *used* yet;
  * counting it would report activity nobody performed. Focus is also the trigger, alongside a new
  * session and a change of user: each is a moment the answer to "who is active today" can change.
+ * A window kept in use across midnight owes the new day a report too: real user activity (the
+ * same presence input that renews sessions) re-checks the date, cheaply, and reports then.
  *
  * A report is written to disk before it is sent and removed only once the server has accepted
  * it. A launch that ends seconds later — the very case this exists for — therefore still counts:
@@ -137,6 +140,18 @@ export class ActivePing {
         canHandle: (event): event is SessionRenewEvent =>
           event.kind === EventKind.LIFECYCLE && event.lifecycle === LifecycleKind.SESSION_RENEW,
         handle: () => this.attempt(),
+      }),
+      eventManager.registerHandler<EndUserActivityEvent>({
+        canHandle: (event): event is EndUserActivityEvent =>
+          event.kind === EventKind.LIFECYCLE && event.lifecycle === LifecycleKind.END_USER_ACTIVITY,
+        // Presence events are frequent; the date comparison is the whole cost unless the
+        // day has actually rolled over under a window that stayed open across midnight,
+        // in which case the new day's report is owed before this user quits.
+        handle: () => {
+          if (localDay(Date.now()) !== this.state.day) {
+            this.attempt();
+          }
+        },
       }),
       eventManager.registerHandler<AppMayExitEvent>({
         canHandle: (event): event is AppMayExitEvent =>
@@ -201,18 +216,29 @@ export class ActivePing {
   }
 
   private attempt(): void {
-    if (this.stopped || this.inFlight) {
+    if (this.stopped) {
       return;
     }
     this.rollDay();
     this.prunePending();
+    // Today's activity is recorded before anything can make this call return early. A login
+    // that starts and ends while an earlier report is still in flight is activity today, and
+    // the moment it happened — not the moment the network answers — is what dates it: queue
+    // the combination now, with its own first-attempt time, and let the sends drain serially.
+    this.recordCurrentCombination();
+    if (this.inFlight) {
+      return;
+    }
     // An earlier launch's undelivered reports go first, focused or not: they describe activity
     // that already happened in the foreground, and they are the ones closest to ageing out.
     const pending = this.state.pending[0];
     if (pending) {
       this.send(pending);
-      return;
     }
+  }
+
+  /** Queues today's (device, user) combination, once, whether or not it can leave yet. */
+  private recordCurrentCombination(): void {
     if (!this.hasForeground) {
       return;
     }
@@ -220,7 +246,10 @@ export class ActivePing {
     // The application version is part of what was reported: an upgrade the same day is
     // reported for the new version too, the intake keeping a row per version.
     const combination = combinationOf(this.anonymousId, userId, this.config.version ?? '');
-    if (this.state.sent.includes(combination)) {
+    if (
+      this.state.sent.includes(combination) ||
+      this.state.pending.some((candidate) => candidate.combination === combination)
+    ) {
       return;
     }
     const report: ActiveBeaconBody = {
@@ -238,10 +267,9 @@ export class ActivePing {
     };
     // Kept before it is sent, not after: a process that exits a second later has already lost
     // its request, and the next launch is what delivers this one.
-    const fresh: PendingReport = { combination, report, firstAttemptAt: Date.now() };
-    this.state.pending.push(fresh);
+    this.state.pending.push({ combination, report, firstAttemptAt: Date.now() });
+    this.prunePending();
     this.persist();
-    this.send(fresh);
   }
 
   private send(pending: PendingReport): void {
@@ -280,6 +308,11 @@ export class ActivePing {
           this.failedAttempts = 0;
           this.state.pending = this.state.pending.filter((candidate) => candidate !== pending);
           this.persist();
+          // Whatever was queued behind it still goes out; only this one was refused.
+          const next = this.state.pending[0];
+          if (next) {
+            this.send(next);
+          }
         } else {
           this.scheduleRetry();
         }
