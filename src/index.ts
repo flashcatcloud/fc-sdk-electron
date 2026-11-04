@@ -20,6 +20,7 @@ import { BridgeHandler } from './bridge';
 import { Transport } from './transport';
 import { Tracing } from './domain/tracing/Tracing';
 import { SpanProcessor } from './domain/tracing/SpanProcessor';
+import { isElectronSupported } from './tools/electronSupport';
 
 let sessionManager: SessionManager | undefined;
 let eventManager: EventManager | undefined;
@@ -31,8 +32,17 @@ let remoteConfiguration: RemoteConfiguration | undefined;
 
 /**
  * Initialize the Electron SDK
+ *
+ * @returns `false`, having started nothing, when the configuration is invalid or the Electron version
+ * is below 30 (see `MIN_ELECTRON_MAJOR`).
  */
 export async function init(configuration: InitConfiguration): Promise<boolean> {
+  // Before anything touches the disk: on an unsupported Electron nothing could be uploaded, so
+  // batches would only accumulate.
+  if (!isElectronSupported()) {
+    return false;
+  }
+
   const config = buildConfiguration(configuration);
 
   if (!config) {

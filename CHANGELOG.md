@@ -8,6 +8,12 @@ All notable changes to `@flashcatcloud/electron-sdk` are documented here.
 
 - The SDK now reports the day's active device and logged-in user through a dedicated request (`POST /api/v2/rum/active`), sent from the main process when a window gains focus, again when a new user is set through `setUser`, and again on the next local day. It is independent of `sessionSampleRate` and is not an event, so a launch lasting a few seconds still counts toward the day's active devices and logged-in users, which the console answers from these reports merged with view events. A report that could not be delivered is kept next to the anonymous device id and resent on a later launch with its age; the server dates it, never this machine's clock. A renderer behind the bridge never sends its own: the main process owns the device identity.
 
+## [0.4.2]
+
+### ⚠️ Breaking Changes / Notes
+
+- On Electron versions below 30, which the SDK does not support, it now disables itself instead of half-starting: `init` warns and returns `false`, and the instrumentation entry point installs neither the tracer nor the renderer bridge, so the Browser SDK in renderers keeps reporting directly. Previously `init` returned `true` there, yet the main process could upload nothing (its Node has no global `fetch`) while unsent batches accumulated on disk, and the bridge diverted the renderers' events to it, so they were lost too. `init` also returns `false` outside Electron. Supported versions are unaffected.
+
 ## [0.4.1]
 
 ### 🐛 Bug Fixes
