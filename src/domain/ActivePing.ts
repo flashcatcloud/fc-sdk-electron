@@ -106,6 +106,7 @@ export class ActivePing {
   private readonly stateFile = new StateFile(getFilePath(), 'the active report state');
   private state: StoredState = { day: localDay(Date.now()), sent: [], pending: [] };
   private inFlight: AbortController | undefined;
+  private inFlightReport: PendingReport | undefined;
   private retryTimeoutId: ReturnType<typeof setTimeout> | undefined;
   private failedAttempts = 0;
   private hasForeground = false;
@@ -176,6 +177,7 @@ export class ActivePing {
       this.stopped = true;
       this.inFlight?.abort();
       this.inFlight = undefined;
+      this.inFlightReport = undefined;
       clearTimeout(this.retryTimeoutId);
       this.subscriptions.forEach((subscription) => subscription.unsubscribe());
       this.subscriptions = [];
@@ -288,6 +290,7 @@ export class ActivePing {
   private send(pending: PendingReport): void {
     const controller = new AbortController();
     this.inFlight = controller;
+    this.inFlightReport = pending;
     const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
     void this.request(pending, controller.signal)
       .catch((error: unknown): RequestOutcome => {
@@ -301,26 +304,26 @@ export class ActivePing {
           return;
         }
         this.inFlight = undefined;
+        this.inFlightReport = undefined;
         if (this.stopped) {
           return;
         }
         if (outcome === 'accepted') {
           this.failedAttempts = 0;
           this.state.pending = this.state.pending.filter((candidate) => candidate !== pending);
-          // Only a report about today earns the "already sent" shortcut; a stale one delivered
-          // late says nothing about today, whose combination still has to go out.
-          if (isToday(pending.firstAttemptAt) && !this.state.sent.includes(pending.combination)) {
-            this.state.sent.push(pending.combination);
-            this.state.sent = this.state.sent.slice(-MAX_SENT_COMBINATIONS);
-          }
+          this.markSent(pending);
           this.persist();
           // Only what a real trigger already queued goes out next; completing a request —
           // possibly after midnight — is not itself activity on a new day.
           this.drainQueue();
         } else if (outcome === 'rejected') {
-          // The server answered about this report itself; asking again would get the same answer.
+          // The server answered about this report itself; asking again would get the same
+          // answer. Like the Browser SDK, the combination counts as dealt with for today —
+          // otherwise every focus or user change re-asks a refusing intake all day long.
+          // Tomorrow it is asked again, when the refusal may no longer apply.
           this.failedAttempts = 0;
           this.state.pending = this.state.pending.filter((candidate) => candidate !== pending);
+          this.markSent(pending);
           this.persist();
           // Whatever was queued behind it still goes out; only this one was refused.
           this.drainQueue();
@@ -387,11 +390,24 @@ export class ActivePing {
     }
   }
 
+  /** Only a report about today earns the "already dealt with" shortcut; a stale one says nothing about today. */
+  private markSent(pending: PendingReport): void {
+    if (isToday(pending.firstAttemptAt) && !this.state.sent.includes(pending.combination)) {
+      this.state.sent.push(pending.combination);
+      this.state.sent = this.state.sent.slice(-MAX_SENT_COMBINATIONS);
+    }
+  }
+
   private prunePending(): void {
     const now = Date.now();
-    this.state.pending = this.state.pending
-      .filter((pending) => now - pending.firstAttemptAt <= MAX_PENDING_AGE)
-      .slice(-MAX_PENDING_REPORTS);
+    const fresh = this.state.pending.filter((pending) => now - pending.firstAttemptAt <= MAX_PENDING_AGE);
+    let kept = fresh.slice(-MAX_PENDING_REPORTS);
+    // The cap must not throw away the report that is already on the wire: if it is answered
+    // with a failure there would be nothing left to retry.
+    if (this.inFlightReport && fresh.includes(this.inFlightReport) && !kept.includes(this.inFlightReport)) {
+      kept = [this.inFlightReport, ...kept.slice(0, MAX_PENDING_REPORTS - 1)];
+    }
+    this.state.pending = kept;
   }
 
   private persist(): void {

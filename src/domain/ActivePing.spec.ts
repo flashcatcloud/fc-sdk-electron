@@ -42,6 +42,10 @@ function accepted() {
   return new Response(null, { status: 202 });
 }
 
+function refused() {
+  return new Response(null, { status: 400 });
+}
+
 function localDay(time: number) {
   const date = new Date(time);
   const month = `0${date.getMonth() + 1}`.slice(-2);
@@ -304,6 +308,61 @@ describe('ActivePing', () => {
     eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.END_USER_ACTIVITY });
     await vi.advanceTimersByTimeAsync(0);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not ask again on the same day after the intake refuses a report, but asks again the next day', async () => {
+    vi.setSystemTime(new Date('2026-11-02T23:59:00'));
+    fetchMock.mockResolvedValueOnce(refused());
+    focusedWindow.current = {};
+
+    await start();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // The intake has answered about this report itself; re-asking on every focus or user
+    // change for the rest of the day would get the same answer (the Browser SDK's rule).
+    focusWindow();
+    await vi.advanceTimersByTimeAsync(0);
+    eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.USER_CHANGED });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    vi.setSystemTime(new Date('2026-11-03T00:01:00'));
+    eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.END_USER_ACTIVITY });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the in-flight report when newer combinations overflow the queue', async () => {
+    let answer!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          answer = resolve;
+        })
+    );
+    focusedWindow.current = {};
+
+    await start();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Ten more combinations arrive while the first report is still unanswered; the queue
+    // cap must not throw away the report that is already on the wire.
+    for (let i = 1; i <= 10; i += 1) {
+      currentUser = { id: `user-${i}` };
+      eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.USER_CHANGED });
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    answer(new Response(null, { status: 500 }));
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(10 * ONE_SECOND);
+
+    // The failed first report is retried before the queued users go out; the queue then
+    // drains. One of the ten queued users is what the cap gives up instead of the original.
+    expect(payloadOf(1)).toEqual(expect.objectContaining({ usr: { anonymous_id: ANONYMOUS_ID } }));
+    expect(payloadOf(2)).toEqual(expect.objectContaining({ usr: { anonymous_id: ANONYMOUS_ID, id: 'user-1' } }));
+    expect(fetchMock).toHaveBeenCalledTimes(11);
   });
 
   it('retries a failed report under the same event id', async () => {
