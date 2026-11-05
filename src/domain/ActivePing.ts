@@ -2,7 +2,7 @@ import { app, BrowserWindow } from 'electron';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { ONE_DAY, ONE_SECOND, type Subscription } from '@flashcatcloud/browser-core';
+import { ONE_DAY, ONE_MINUTE, ONE_SECOND, type Subscription } from '@flashcatcloud/browser-core';
 import type { Configuration } from '../config';
 import {
   EventKind,
@@ -29,8 +29,12 @@ export const REQUEST_TIMEOUT = 10 * ONE_SECOND;
  * login, the next launch). The same budget the native SDKs' beacons run on.
  */
 export const RETRY_DELAYS = [2 * ONE_SECOND, 8 * ONE_SECOND];
-/** A report that still has not left after this long is dropped rather than delivered stale. */
-const MAX_PENDING_AGE = 3 * ONE_DAY;
+/**
+ * A report that still has not left after this long is dropped rather than delivered stale. The
+ * intake refuses an `age_ms` above 72 hours; this stays a minute short of that, so a report
+ * judged fresh here is still within it when the request leaves.
+ */
+const MAX_PENDING_AGE = 3 * ONE_DAY - ONE_MINUTE;
 /** Bounds on what one installation can be made to store, whatever the application does with `setUser`. */
 const MAX_SENT_COMBINATIONS = 50;
 const MAX_PENDING_REPORTS = 10;
@@ -109,7 +113,8 @@ export class ActivePing {
   private inFlightReport: PendingReport | undefined;
   private retryTimeoutId: ReturnType<typeof setTimeout> | undefined;
   private failedAttempts = 0;
-  private hasForeground = false;
+  /** The last local day on which a window focus or real user activity proved the foreground. */
+  private foregroundDay: string | undefined;
   private subscriptions: Subscription[] = [];
   private stopped = false;
 
@@ -145,11 +150,14 @@ export class ActivePing {
       eventManager.registerHandler<EndUserActivityEvent>({
         canHandle: (event): event is EndUserActivityEvent =>
           event.kind === EventKind.LIFECYCLE && event.lifecycle === LifecycleKind.END_USER_ACTIVITY,
-        // Presence events are frequent; the date comparison is the whole cost unless the
-        // day has actually rolled over under a window that stayed open across midnight,
-        // in which case the new day's report is owed before this user quits.
+        // Presence events are frequent; the date comparison is the whole cost unless this
+        // is the first activity of a new day — a window that stayed open across midnight
+        // owes the new day's report before this user quits, and the activity itself is
+        // what proves the foreground for that day.
         handle: () => {
-          if (localDay(Date.now()) !== this.state.day) {
+          const today = localDay(Date.now());
+          if (this.foregroundDay !== today) {
+            this.foregroundDay = today;
             this.attempt();
           }
         },
@@ -165,7 +173,9 @@ export class ActivePing {
     app.on('quit', this.onQuit);
     // An application that created and focused its window before calling `init` gets no focus
     // event after this point; the window it already has is the foreground it is waiting for.
-    this.hasForeground = BrowserWindow.getFocusedWindow() !== null;
+    if (BrowserWindow.getFocusedWindow() !== null) {
+      this.foregroundDay = localDay(Date.now());
+    }
     this.attempt();
   }
 
@@ -189,7 +199,7 @@ export class ActivePing {
   private readonly onQuit = () => this.stop();
 
   private readonly onForeground = () => {
-    this.hasForeground = true;
+    this.foregroundDay = localDay(Date.now());
     this.attempt();
   };
 
@@ -240,6 +250,9 @@ export class ActivePing {
     if (this.stopped || this.inFlight) {
       return;
     }
+    // Retries and the queue behind a request reach here without `attempt()`, possibly long
+    // after the last check: what has aged out since is dropped, not sent to be refused.
+    this.prunePending();
     // An earlier launch's undelivered reports go first, focused or not: they describe activity
     // that already happened in the foreground, and they are the ones closest to ageing out.
     const pending = this.state.pending[0];
@@ -250,7 +263,11 @@ export class ActivePing {
 
   /** Queues today's (device, user) combination, once, whether or not it can leave yet. */
   private recordCurrentCombination(): void {
-    if (!this.hasForeground) {
+    // Only a day with foreground proof of its own counts. A focus gained yesterday says
+    // nothing about today: an application sitting in the tray can change its user
+    // programmatically (a background token refresh reaches the SDK as a user change)
+    // without anyone having used it today.
+    if (this.foregroundDay !== this.state.day) {
       return;
     }
     const userId = this.getUser()?.id ?? '';
@@ -342,6 +359,9 @@ export class ActivePing {
     // otherwise be greeted by the whole fleet at once.
     const delay = RETRY_DELAYS[this.failedAttempts] * (0.8 + 0.4 * Math.random());
     this.failedAttempts += 1;
+    // A trigger that intervened and failed again re-arms the retry; the timer it replaces
+    // must not also fire, or the queue head goes out twice on two different clocks.
+    clearTimeout(this.retryTimeoutId);
     this.retryTimeoutId = setTimeout(() => {
       this.retryTimeoutId = undefined;
       // A retry re-sends what is already queued; it must not record a new day by itself.
@@ -400,7 +420,7 @@ export class ActivePing {
 
   private prunePending(): void {
     const now = Date.now();
-    const fresh = this.state.pending.filter((pending) => now - pending.firstAttemptAt <= MAX_PENDING_AGE);
+    const fresh = this.state.pending.filter((pending) => now - pending.firstAttemptAt < MAX_PENDING_AGE);
     let kept = fresh.slice(-MAX_PENDING_REPORTS);
     // The cap must not throw away the report that is already on the wire: if it is answered
     // with a failure there would be nothing left to retry.
@@ -436,9 +456,12 @@ function combinationOf(deviceKey: string, userId: string, version: string) {
 }
 
 /**
- * The platform facts the beacon carries, named the way they land on view rows (where the
- * intake derives them from the renderer's User-Agent): an active row filtered by operating
- * system should match the same value either writer stored.
+ * The platform facts the beacon carries. The OS name is spelled the way it lands on view rows
+ * (where the intake derives it from the renderer's User-Agent), so filtering active rows by
+ * operating system matches either writer. The version deliberately does not match: Chromium
+ * freezes the version in its User-Agent (macOS always reads `10.15.7`, Windows only `10`), so
+ * view rows carry that placeholder while this reports the real one (e.g. `15.3.0`,
+ * `10.0.22631`). Device counts are unaffected; they are distinct over device ids.
  */
 function platformOS(): { name: string; version: string } {
   const getSystemVersion = (process as NodeJS.Process & { getSystemVersion?: () => string }).getSystemVersion;
