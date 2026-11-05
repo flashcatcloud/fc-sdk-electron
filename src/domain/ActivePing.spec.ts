@@ -28,7 +28,7 @@ vi.mock('electron', () => ({
 vi.mock('../tools/display', () => ({ displayError: vi.fn(), displayWarn: vi.fn() }));
 
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
-import { ONE_HOUR, ONE_SECOND } from '@flashcatcloud/browser-core';
+import { ONE_DAY, ONE_HOUR, ONE_MINUTE, ONE_SECOND } from '@flashcatcloud/browser-core';
 import type { Configuration } from '../config';
 import { EventKind, EventManager, LifecycleKind } from '../event';
 import { ACTIVE_PING_FILE_NAME, ActivePing } from './ActivePing';
@@ -389,6 +389,27 @@ describe('ActivePing', () => {
     expect(payloadOf()).toEqual(
       expect.objectContaining({ usr: { anonymous_id: ANONYMOUS_ID }, age_ms: ONE_HOUR, sdk_version: '0.0.0-test' })
     );
+  });
+
+  it('drops a report that ages past the intake bound while it waits for a retry', async () => {
+    // Fresh when first sent, but past the bound by the time the retry fires.
+    mfs.readFile.mockResolvedValue(storedFile(Date.now() - 3 * ONE_DAY + ONE_MINUTE + ONE_SECOND));
+    fetchMock.mockResolvedValue(new Response(null, { status: 500 }));
+
+    await start();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(20 * ONE_SECOND);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('never sends an age_ms the intake would refuse', async () => {
+    mfs.readFile.mockResolvedValue(storedFile(Date.now() - 3 * ONE_DAY + ONE_SECOND));
+
+    await start();
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('keeps the report on disk before it is accepted, and clears it after', async () => {
