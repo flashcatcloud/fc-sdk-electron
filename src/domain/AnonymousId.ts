@@ -34,10 +34,16 @@ function getAnonymousIdFilePath(): string {
   return path.join(app.getPath('userData'), ANONYMOUS_ID_FILE_NAME);
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 async function readAnonymousId(filePath: string): Promise<string | undefined> {
   try {
-    const content = await fs.readFile(filePath, 'utf-8');
-    return content.trim() || undefined;
+    const content = (await fs.readFile(filePath, 'utf-8')).trim();
+    // The intake only accepts a UUID. A stored value in any other shape — a half-written
+    // file, one written by something else — would be refused on every report this install
+    // ever sends, so it is replaced rather than read back: that costs the install a new
+    // device identity once, where keeping it would cost all of them.
+    return UUID_PATTERN.test(content) ? content : undefined;
   } catch {
     return undefined;
   }

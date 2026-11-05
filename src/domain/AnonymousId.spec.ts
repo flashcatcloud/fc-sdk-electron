@@ -67,6 +67,19 @@ describe('anonymousId', () => {
     expect(mfs.writeFile).not.toHaveBeenCalled();
   });
 
+  it('should replace a stored id that is not a UUID', async () => {
+    // A half-written file, or one written by something else, would make the intake refuse
+    // every report this install ever sends. Regenerating costs it a new device identity
+    // once; keeping the value would cost it all of them.
+    const disk = withPersistentDisk('not-a-uuid');
+
+    const anonymousId = await initAnonymousId();
+
+    expect(anonymousId).toMatch(UUID_PATTERN);
+    expect(anonymousId).not.toBe('not-a-uuid');
+    expect(disk.read()).toBe(anonymousId);
+  });
+
   it('should ignore a stored id that is blank', async () => {
     withPersistentDisk('  \n');
 

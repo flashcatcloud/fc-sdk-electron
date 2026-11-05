@@ -365,6 +365,49 @@ describe('ActivePing', () => {
     expect(fetchMock).toHaveBeenCalledTimes(11);
   });
 
+  it('does not report a new day for a programmatic user change while the app sits in the background', async () => {
+    vi.setSystemTime(new Date('2026-11-02T23:59:00'));
+    focusedWindow.current = {};
+    await start();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // The window was last focused yesterday. Today the application only refreshes its
+    // session in the background, which reaches the SDK as a user change: that is not
+    // activity today, and must not be reported as any.
+    vi.setSystemTime(new Date('2026-11-03T00:01:00'));
+    currentUser = { id: 'user-42' };
+    eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.USER_CHANGED });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Real activity today still reports, carrying the new user.
+    eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.END_USER_ACTIVITY });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(payloadOf(1)).toEqual(expect.objectContaining({ usr: { anonymous_id: ANONYMOUS_ID, id: 'user-42' } }));
+  });
+
+  it('keeps a single retry timer when a trigger intervenes between failures', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    fetchMock.mockResolvedValue(new Response(null, { status: 500 }));
+    focusedWindow.current = {};
+
+    await start();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(ONE_SECOND);
+    focusWindow();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // The first failure's timer would fire in this window if re-arming left it behind.
+    await vi.advanceTimersByTimeAsync(2 * ONE_SECOND);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(8 * ONE_SECOND);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
   it('retries a failed report under the same event id', async () => {
     fetchMock.mockResolvedValueOnce(new Response(null, { status: 500 })).mockResolvedValue(accepted());
     await start();

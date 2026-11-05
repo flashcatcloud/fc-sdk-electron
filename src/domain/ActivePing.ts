@@ -113,7 +113,8 @@ export class ActivePing {
   private inFlightReport: PendingReport | undefined;
   private retryTimeoutId: ReturnType<typeof setTimeout> | undefined;
   private failedAttempts = 0;
-  private hasForeground = false;
+  /** The last local day on which a window focus or real user activity proved the foreground. */
+  private foregroundDay: string | undefined;
   private subscriptions: Subscription[] = [];
   private stopped = false;
 
@@ -149,11 +150,14 @@ export class ActivePing {
       eventManager.registerHandler<EndUserActivityEvent>({
         canHandle: (event): event is EndUserActivityEvent =>
           event.kind === EventKind.LIFECYCLE && event.lifecycle === LifecycleKind.END_USER_ACTIVITY,
-        // Presence events are frequent; the date comparison is the whole cost unless the
-        // day has actually rolled over under a window that stayed open across midnight,
-        // in which case the new day's report is owed before this user quits.
+        // Presence events are frequent; the date comparison is the whole cost unless this
+        // is the first activity of a new day — a window that stayed open across midnight
+        // owes the new day's report before this user quits, and the activity itself is
+        // what proves the foreground for that day.
         handle: () => {
-          if (localDay(Date.now()) !== this.state.day) {
+          const today = localDay(Date.now());
+          if (this.foregroundDay !== today) {
+            this.foregroundDay = today;
             this.attempt();
           }
         },
@@ -169,7 +173,9 @@ export class ActivePing {
     app.on('quit', this.onQuit);
     // An application that created and focused its window before calling `init` gets no focus
     // event after this point; the window it already has is the foreground it is waiting for.
-    this.hasForeground = BrowserWindow.getFocusedWindow() !== null;
+    if (BrowserWindow.getFocusedWindow() !== null) {
+      this.foregroundDay = localDay(Date.now());
+    }
     this.attempt();
   }
 
@@ -193,7 +199,7 @@ export class ActivePing {
   private readonly onQuit = () => this.stop();
 
   private readonly onForeground = () => {
-    this.hasForeground = true;
+    this.foregroundDay = localDay(Date.now());
     this.attempt();
   };
 
@@ -257,7 +263,11 @@ export class ActivePing {
 
   /** Queues today's (device, user) combination, once, whether or not it can leave yet. */
   private recordCurrentCombination(): void {
-    if (!this.hasForeground) {
+    // Only a day with foreground proof of its own counts. A focus gained yesterday says
+    // nothing about today: an application sitting in the tray can change its user
+    // programmatically (a background token refresh reaches the SDK as a user change)
+    // without anyone having used it today.
+    if (this.foregroundDay !== this.state.day) {
       return;
     }
     const userId = this.getUser()?.id ?? '';
@@ -349,6 +359,9 @@ export class ActivePing {
     // otherwise be greeted by the whole fleet at once.
     const delay = RETRY_DELAYS[this.failedAttempts] * (0.8 + 0.4 * Math.random());
     this.failedAttempts += 1;
+    // A trigger that intervened and failed again re-arms the retry; the timer it replaces
+    // must not also fire, or the queue head goes out twice on two different clocks.
+    clearTimeout(this.retryTimeoutId);
     this.retryTimeoutId = setTimeout(() => {
       this.retryTimeoutId = undefined;
       // A retry re-sends what is already queued; it must not record a new day by itself.
