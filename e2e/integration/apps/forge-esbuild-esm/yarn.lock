@@ -710,13 +710,13 @@ __metadata:
   linkType: hard
 
 "@flashcatcloud/electron-sdk@file:../../integration-sdk.tgz::locator=forge-esbuild-esm%40workspace%3A.":
-  version: 0.1.0
-  resolution: "@flashcatcloud/electron-sdk@file:../../integration-sdk.tgz#../../integration-sdk.tgz::hash=13c2a9&locator=forge-esbuild-esm%40workspace%3A."
+  version: 0.5.0
+  resolution: "@flashcatcloud/electron-sdk@file:../../integration-sdk.tgz#../../integration-sdk.tgz::hash=6ec5b6&locator=forge-esbuild-esm%40workspace%3A."
   dependencies:
     dd-trace: "npm:5.103.0"
   peerDependencies:
-    electron: ">=39"
-  checksum: 10c0/c76c2ba1d702f6ff7c10c067c1859b311220eedefd4df2f4688ac1602df1ea6c66c030614a0dc1bf0317889507d422d3f864188b835831c73a2ab3913b6d07be
+    electron: ">=30"
+  checksum: 10c0/f0e7c0ef9f34ddf8438783c04507bfa97462d41b2298abaf7c0350346e7ad5451822650912366d93c0dbcc184b24b261dbc8e31f22825e7e822e3c4bb792d83e
   languageName: node
   linkType: hard
 
