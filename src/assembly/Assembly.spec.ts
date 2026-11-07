@@ -86,6 +86,15 @@ describe('Assembly', () => {
     expect(serverEvents).toHaveLength(0);
   });
 
+  it('passes the session a main-process raw event was drawn into to hooks', () => {
+    const session = { id: 'drawn', trackingType: '2' as const, sampleRate: 100 };
+    hooks.registerRum((params) => ({ session: { id: params.session?.id } }));
+
+    notifyRawRumEvent({ session });
+
+    expect((serverEvents[0].data as RumEvent).session.id).toBe('drawn');
+  });
+
   it('passes startTime from raw event to hooks', () => {
     hooks.registerRum((params) => ({ date: params.startTime }));
 

@@ -3,6 +3,7 @@ import type { RecursivePartial } from '../tools/coreCompat';
 import type { RumEvent } from '../domain/rum';
 import type { TelemetryEvent } from '../domain/telemetry';
 import { RawSpanData } from '../domain/tracing/rawTracingData.types';
+import type { SessionRecord } from '../domain/session';
 
 export type RumEventType = RumEvent['type'];
 
@@ -14,6 +15,11 @@ export interface RumAssembleParams {
    * is gone from the history comes under a view of its own rather than not at all.
    */
   viewId?: string;
+  /**
+   * The session the raw event was drawn into, when it does not belong to the history: a crash
+   * reported on the next launch that happened after its launch's session had ended.
+   */
+  session?: SessionRecord;
 }
 
 export interface TelemetryAssembleParams {

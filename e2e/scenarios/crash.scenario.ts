@@ -70,3 +70,43 @@ test('emits a crash error event after a native crash', async ({ intake }) => {
     await cleanupUserDataDir(userDataDir);
   }
 });
+
+test('reports a crash that happened after the session had ended in a session of its own', async ({ intake }) => {
+  test.setTimeout(90_000);
+
+  const userDataDir = await createUserDataDir();
+
+  // Phase 1: end the session — as inactivity would, with nothing renewing it — then crash.
+  const { electronApp: firstElectronApp, mainPage: firstMainPage } = await launchAppManually(intake, userDataDir);
+  await firstMainPage.flushTransport();
+  const endedSessionId = ((await intake.getEventsByType('view'))[0].body as RumViewEvent).session.id;
+  await firstMainPage.stopSessionWithoutInput();
+  await firstMainPage.flushTransport();
+
+  const crashedPid = firstElectronApp.process().pid;
+  firstMainPage.crashWithoutInput();
+  await waitForCrashDump(userDataDir);
+  await ensureProcessGone(crashedPid);
+  intake.clear();
+
+  // Phase 2: relaunch; the crash comes in a session drawn for it, with a view to build it from.
+  const { electronApp: secondElectronApp, mainPage: secondMainPage } = await launchAppManually(intake, userDataDir);
+  try {
+    await secondMainPage.flushTransport();
+    const errorEvents = await intake.getEventsByType('error', { timeout: 15_000 });
+    expect(errorEvents).toHaveLength(1);
+    const crash = errorEvents[0].body as RumErrorEvent;
+    expect(crash.error.is_crash).toBe(true);
+    expect(crash.session.id).not.toBe(endedSessionId);
+
+    const views = (await intake.getEventsByType('view')).map((event) => event.body as RumViewEvent);
+    const crashView = views.find((view) => view.view.id === crash.view.id);
+    expect(crashView).toMatchObject({ session: { id: crash.session.id }, view: { error: { count: 1 } } });
+    // The relaunch has its own session; the crash's is not it.
+    expect(views.some((view) => view.session.id !== crash.session.id)).toBe(true);
+    expect(intake.getProtocolViolations()).toEqual([]);
+  } finally {
+    await secondElectronApp.close();
+    await cleanupUserDataDir(userDataDir);
+  }
+});

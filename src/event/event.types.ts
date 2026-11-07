@@ -3,6 +3,7 @@ import { RawTelemetryData, TelemetryEvent } from '../domain/telemetry';
 import { RawRumData, RumEvent } from '../domain/rum';
 import type { TimeStamp } from '@flashcatcloud/browser-core';
 import { RawTraceData } from '../domain/tracing/rawTracingData.types';
+import type { SessionRecord } from '../domain/session';
 
 export type RawEvent = RawRumEvent | RawTelemetryEvent;
 
@@ -12,6 +13,8 @@ export interface RawRumEvent {
   format: typeof EventFormat.RUM;
   data: RawRumData;
   startTime?: TimeStamp;
+  /** The session it belongs to, when not the one the history holds at `startTime`. Main process only. */
+  session?: SessionRecord;
 }
 
 export interface RawTelemetryEvent {

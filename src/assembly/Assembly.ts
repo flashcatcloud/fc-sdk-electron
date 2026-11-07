@@ -144,6 +144,7 @@ export class Assembly {
         eventType: event.data.type,
         startTime,
         viewId: (event.data as { view?: { id?: string } }).view?.id,
+        session: event.session,
       });
       if (hookResult !== DISCARDED) {
         return {
