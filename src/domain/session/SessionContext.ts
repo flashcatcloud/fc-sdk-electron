@@ -71,7 +71,9 @@ export class SessionContext {
     hooks: FormatHooks
   ) {
     hooks.registerRum((params) => {
-      const record = this.find(params.startTime);
+      // A crash that happened after its launch's session had ended comes with a session drawn for
+      // it, which the history has no entry for.
+      const record = params.session ?? this.find(params.startTime);
       if (record === undefined || record.trackingType === TrackingType.NOT_TRACKED) return DISCARDED;
       // A withheld session that ended without an error had everything it held thrown away. An event
       // of it assembled afterwards — a request that completed late, the final view update — would

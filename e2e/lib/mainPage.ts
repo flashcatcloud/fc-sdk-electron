@@ -29,6 +29,8 @@ interface ElectronAppWindow {
     generateManualErrorOnWillQuit: () => Promise<void>;
     generateManualErrorAndAppExit: () => Promise<void>;
     generateManualErrorOnProcessExit: () => Promise<void>;
+    stopSession: () => Promise<void>;
+    crash: () => Promise<void>;
   };
 }
 
@@ -208,6 +210,21 @@ export class MainPage {
       .catch(() => {
         // app will crash
       });
+  }
+
+  /**
+   * `stopSession` and `crash` without a click: the click is user input, which renews an ended
+   * session. Use these to crash while the session stays ended.
+   */
+  async stopSessionWithoutInput() {
+    await this.page.evaluate(() => (globalThis as unknown as ElectronAppWindow).electronAPI.stopSession());
+  }
+
+  /** Fire and forget: the process ends before the call could answer. */
+  crashWithoutInput() {
+    void this.page
+      .evaluate(() => (globalThis as unknown as ElectronAppWindow).electronAPI.crash())
+      .catch(() => undefined);
   }
 
   async openBridgeFileWindow(electronApp: ElectronApplication) {

@@ -634,6 +634,46 @@ describe('sessionManager', () => {
       expect(sessionManager.getSession().trackingType).toBe(TrackingType.TRACKED);
     });
 
+    describe('drawSession', () => {
+      it('draws under the sampling in force now, as a renewal would', async () => {
+        mockNoSessionFile();
+        let sampling: SamplingConfiguration = { sessionSampleRate: 100, sessionOnError: false };
+        sessionManager = await SessionManager.start(eventManager, hooks, () => sampling);
+        vi.spyOn(Math, 'random').mockReturnValue(0.8);
+
+        sampling = { sessionSampleRate: 50, sessionOnError: true, rcVersion: 4 };
+        const drawn = sessionManager.drawSession();
+
+        expect(drawn).toEqual({
+          id: expect.any(String) as string,
+          trackingType: TrackingType.TRACKED_ON_ERROR,
+          sampleRate: 50,
+          rcVersion: 4,
+        });
+        expect(drawn.id).not.toBe(sessionManager.getSession().id);
+      });
+
+      it('leaves the current session, its file and the history alone', async () => {
+        mockNoSessionFile();
+        sessionManager = await SessionManager.start(eventManager, hooks, () => SAMPLING);
+        const current = sessionManager.getSession();
+        sessionManager.expire();
+        await vi.advanceTimersByTimeAsync(0);
+        const writes = mfs.writeFile.mock.calls.length;
+        lifecycleEvents = [];
+
+        const drawn = sessionManager.drawSession();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(sessionManager.getSession()).toEqual({ ...current, status: 'expired' });
+        expect(mfs.writeFile.mock.calls.length).toBe(writes);
+        expect(lifecycleEvents).toEqual([]);
+        expect(sessionManager.findSession(Date.now() as TimeStamp)).not.toEqual(drawn);
+        vi.advanceTimersByTime(SESSION_TIME_OUT_DELAY);
+        expect(lifecycleEvents).toEqual([]);
+      });
+    });
+
     describe('sampling read from a provider (remote configuration)', () => {
       it('reads the sampling at each draw, so a change applies to the next session and not to this one', async () => {
         mockNoSessionFile();

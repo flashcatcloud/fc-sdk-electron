@@ -287,6 +287,43 @@ describe('SessionContext', () => {
       });
     });
 
+    describe('a session drawn for an event the history has no session for (a crash after its session ended)', () => {
+      async function initWithEndedSession() {
+        const { hooks, context } = await init();
+        context.add({ id: 'ended', trackingType: TrackingType.TRACKED, sampleRate: 100 });
+        vi.advanceTimersByTime(10);
+        context.close();
+        return hooks;
+      }
+
+      it('attributes the event to the drawn session, at the rate it was drawn at', async () => {
+        const hooks = await initWithEndedSession();
+        const session = { id: 'drawn', trackingType: TrackingType.TRACKED, sampleRate: 40, rcVersion: 2 };
+
+        expect(hooks.triggerRum({ eventType: 'error', startTime: 20 as TimeStamp, session })).toMatchObject({
+          session: { id: 'drawn' },
+          _dd: { configuration: { session_sample_rate: 40, rc_version: 2 } },
+        });
+      });
+
+      it('reports a released on-error session with its markers', async () => {
+        const hooks = await initWithEndedSession();
+        const session = { id: 'drawn', trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 0, hasError: true };
+
+        expect(hooks.triggerRum({ eventType: 'view', startTime: 20 as TimeStamp, session })).toMatchObject({
+          session: { id: 'drawn', sampled_for_error: true },
+          _dd: { configuration: { session_sample_rate: 0 } },
+        });
+      });
+
+      it('discards the event when the draw did not keep the session', async () => {
+        const hooks = await initWithEndedSession();
+        const session = { id: 'drawn', trackingType: TrackingType.NOT_TRACKED, sampleRate: 0 };
+
+        expect(hooks.triggerRum({ eventType: 'error', startTime: 20 as TimeStamp, session })).toBe(DISCARDED);
+      });
+    });
+
     it('discards the stragglers of a withheld session that ended without an error', async () => {
       const { hooks, context } = await init();
       context.add({ id: 'session-abc', trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 100 });
