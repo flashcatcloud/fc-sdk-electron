@@ -13,6 +13,8 @@ export interface RawRumEvent {
   format: typeof EventFormat.RUM;
   data: RawRumData;
   startTime?: TimeStamp;
+  /** Main-process only. Set only on rebuilt crash views to resolve identity at crash time. */
+  userContextTime?: TimeStamp;
   /** The session it belongs to, when not the one the history holds at `startTime`. Main process only. */
   session?: SessionRecord;
 }

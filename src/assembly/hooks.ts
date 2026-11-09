@@ -10,6 +10,8 @@ export type RumEventType = RumEvent['type'];
 export interface RumAssembleParams {
   eventType: RumEventType;
   startTime: TimeStamp;
+  /** Main-process only. Set only on rebuilt crash views to resolve identity at crash time. */
+  userContextTime?: TimeStamp;
   /**
    * The view the raw event names itself, if any: a crash reported on the next launch whose view
    * is gone from the history comes under a view of its own rather than not at all.
