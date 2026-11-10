@@ -37,10 +37,7 @@ export function registerCommonContext(
     // device as two people, since `usr.id` would flip from the anonymous id to the real one the
     // moment the user logs in. `NULLIF(usr_id, '')` is also why `clearUser` removes the key
     // instead of blanking it — an empty string and an absent field are not the same row.
-    usr: {
-      ...resolveEventUser(getUser, params.eventType, params.startTime, params.userTime),
-      anonymous_id: anonymousId,
-    },
+    usr: { ...resolveEventUser(getUser, params.eventType, params.startTime), anonymous_id: anonymousId },
     ddtags: `sdk_version:${__SDK_VERSION__}`,
     _dd: { format_version: 2 },
   }));

@@ -865,8 +865,6 @@ describe('CrashCollection', () => {
       expect(calls).toEqual(['setSessionHasError', 'view', 'error']);
       expect(rawRumEvents[0]).toMatchObject({
         startTime: VIEW_START,
-        // The view describes the crash, so it takes the identity of the crash, not of this launch.
-        userTime: CRASH_TIME,
         data: {
           type: 'view',
           date: VIEW_START,
@@ -982,7 +980,6 @@ describe('CrashCollection', () => {
       expect(view).toMatchObject({
         startTime: CRASH_TIME,
         session: drawn,
-        userTime: CRASH_TIME,
         data: {
           type: 'view',
           date: CRASH_TIME,

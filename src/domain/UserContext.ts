@@ -146,22 +146,12 @@ export class UserContext {
  * synthetic view per session, spanning the whole session, so resolving it at its start time would
  * mean the identity never reaches the session at all — `setUser` cannot run before `init`, so the
  * view always starts logged-out. The same applies to a renderer page view that spans a login.
- *
- * **A view rebuilt after the fact resolves at the moment it names** (`userTime`). A native crash is
- * reported on the next launch together with the view it happened in, and that view is the last —
- * sometimes the only — view its session receives. Resolved at emission it would carry whoever is
- * logged in on the next launch, and hand the crashed session to them while the crash itself stays
- * with the user it happened to.
  */
 export function resolveEventUser(
   getUser: (startTime: TimeStamp) => User | undefined,
   eventType: string | undefined,
-  startTime: TimeStamp,
-  userTime?: TimeStamp
+  startTime: TimeStamp
 ): User | undefined {
-  if (userTime !== undefined) {
-    return getUser(userTime);
-  }
   return getUser(eventType === 'view' ? timeStampNow() : startTime);
 }
 
