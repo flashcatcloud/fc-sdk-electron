@@ -1,6 +1,7 @@
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { RumErrorEvent, RumViewEvent } from '@flashcatcloud/electron-sdk';
+import type { ElectronApplication } from '@playwright/test';
 import {
   test,
   expect,
@@ -12,6 +13,7 @@ import {
 } from '../lib/helpers';
 import type { Intake } from '../lib/intake';
 import type { MainPage } from '../lib/mainPage';
+import { CRASH_USER, waitForHistoryEntry } from '../lib/crashIdentity';
 
 /** "Only error sessions": nothing is drawn by the plain rate, every session is kept on error. */
 const ON_ERROR_ONLY = { sessionSampleRate: 0, sessionOnError: true };
@@ -535,6 +537,86 @@ for (const { title, config, reported, viewHistory } of [
     });
   });
 }
+
+test.describe('sessionOnError, crash-time user identity', () => {
+  test.use({ sdkConfig: ON_ERROR_ONLY });
+
+  test('keeps Alice on a rebuilt historical view that began before login', async ({ intake, sdkConfig }) => {
+    test.setTimeout(90_000);
+    const userDataDir = await createUserDataDir();
+    let runningApp: ElectronApplication | undefined;
+    try {
+      const first = await launchAppManually(intake, userDataDir, 'await', sdkConfig);
+      runningApp = first.electronApp;
+      const crashedSessionId = await first.mainPage.getBridgeSessionId();
+      const anonymousId = (await readFile(join(userDataDir, '_dd_anonymous_id'), 'utf8')).trim();
+      expect(anonymousId).toBeTruthy();
+      const oldView = await waitForHistoryEntry<string>(
+        userDataDir,
+        '_dd_view_history',
+        (entry) => entry.endTime === null
+      );
+      await first.mainPage.setUser(CRASH_USER);
+      const user = await waitForHistoryEntry<{ id: string }>(
+        userDataDir,
+        '_dd_user_history',
+        (entry) => entry.value.id === CRASH_USER.id && entry.endTime === null
+      );
+      expect(user.startTime).toBeGreaterThan(oldView.startTime);
+      await waitForHistoryEntry<{ id: string; trackingType: string }>(
+        userDataDir,
+        '_dd_session_history',
+        (entry) => entry.value.id === crashedSessionId && entry.value.trackingType === '4' && entry.endTime === null
+      );
+      await first.mainPage.flushTransport();
+      expect(rumEvents(intake)).toEqual([]);
+      const crashedPid = first.electronApp.process().pid;
+      first.mainPage.crashWithoutInput();
+      await waitForCrashDump(userDataDir);
+      await ensureProcessGone(crashedPid);
+      runningApp = undefined;
+      intake.clear();
+
+      const second = await launchAppManually(intake, userDataDir, 'await', sdkConfig);
+      runningApp = second.electronApp;
+      expect(await second.mainPage.getUser()).toBeFalsy();
+      // Crash reports release the buffer immediately; flush until the processed crash reaches the intake.
+      await expect
+        .poll(
+          async () => {
+            await second.mainPage.flushTransport();
+            return intake.getAllEvents().filter((event) => (event.body as RumErrorEvent).error?.is_crash).length;
+          },
+          { timeout: 15_000 }
+        )
+        .toBe(1);
+
+      const crash = (await intake.getEventsByType('error'))[0].body as RumErrorEvent;
+      const views = (await intake.getEventsByType('view')).map((event) => event.body as RumViewEvent);
+      const historicalView = views.find((view) => view.view.id === crash.view.id)!;
+      const liveView = views.find((view) => view.view.id !== oldView.value)!;
+      expect(crash.view.id).toBe(oldView.value);
+      expect(crash.session.id).toBe(crashedSessionId);
+      expect(crash.usr).toEqual({ ...CRASH_USER, anonymous_id: anonymousId });
+      expect(historicalView, 'The crash should reference a rebuilt historical view').toBeDefined();
+      expect(historicalView.usr).toEqual(crash.usr);
+      expect(historicalView.session.id).toBe(crash.session.id);
+      expect(historicalView.session.sampled_for_error).toBe(true);
+      expect(historicalView.date).toBe(oldView.startTime);
+      expect(historicalView.date).toBeLessThan(user.startTime);
+      expect(historicalView.date).toBeLessThan(crash.date);
+      expect(liveView, 'The restarted session should upload its anonymous live view').toBeDefined();
+      expect(liveView.usr).toEqual({ anonymous_id: anonymousId });
+      expect(intake.getProtocolViolations()).toEqual([]);
+    } finally {
+      try {
+        await runningApp?.close();
+      } finally {
+        await cleanupUserDataDir(userDataDir);
+      }
+    }
+  });
+});
 
 /** Same hash as the SDK's, to report which delay the immediate release skipped. */
 function computeReleaseDelay(sessionId: string) {
