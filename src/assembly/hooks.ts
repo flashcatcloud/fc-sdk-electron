@@ -20,6 +20,8 @@ export interface RumAssembleParams {
    * reported on the next launch that happened after its launch's session had ended.
    */
   session?: SessionRecord;
+  /** The moment the event's identity is resolved at, when the raw event names one. See `RawRumEvent.userTime`. */
+  userTime?: TimeStamp;
 }
 
 export interface TelemetryAssembleParams {

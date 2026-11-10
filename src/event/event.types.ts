@@ -15,6 +15,12 @@ export interface RawRumEvent {
   startTime?: TimeStamp;
   /** The session it belongs to, when not the one the history holds at `startTime`. Main process only. */
   session?: SessionRecord;
+  /**
+   * The moment a view's identity is resolved at, when it is not the moment of emission: a view
+   * rebuilt on the next launch to go with a crash describes the crash, not the launch reading it.
+   * Main process only — see `resolveEventUser`.
+   */
+  userTime?: TimeStamp;
 }
 
 export interface RawTelemetryEvent {

@@ -140,6 +140,7 @@ export class CrashCollection {
         format: EventFormat.RUM,
         data: buildMainViewEvent(view, crashTime),
         startTime: view.startTime,
+        userTime: crashTime,
       });
     }
     return viewId;
@@ -169,6 +170,7 @@ export class CrashCollection {
       data: buildMainViewEvent(view, crashTime),
       startTime: crashTime,
       session: drawnSession,
+      userTime: crashTime,
     });
     return { viewId: view.id, drawnSession };
   }
