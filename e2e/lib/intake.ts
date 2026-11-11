@@ -45,6 +45,7 @@ export interface ProtocolViolation {
 
 const RUM_TRACK_PATH = '/api/v2/rum';
 const CONFIG_PATH = '/api/v2/rum/config';
+const ACTIVE_PATH = '/api/v2/rum/active';
 
 /** How the fake config endpoint answers. */
 export type RemoteConfigBehaviour =
@@ -207,6 +208,7 @@ export class Intake {
   private rumEvents: ReceivedEvent[] = [];
   private violations: ProtocolViolation[] = [];
   private configRequests: ConfigRequest[] = [];
+  private activeReports: unknown[] = [];
   private remoteConfig: RemoteConfigBehaviour | undefined;
   private port = 0;
 
@@ -286,6 +288,16 @@ export class Intake {
 
         req.on('end', () => {
           const headers = lowerCaseHeaders(req);
+
+          // The daily active beacon is not a RUM upload: it is independent of sampling, JSON rather
+          // than NDJSON, and answered by its own endpoint. Kept apart so that it neither counts as
+          // an upload nor breaches the RUM track's contract.
+          if (forwardedUrl(req).pathname === ACTIVE_PATH) {
+            this.activeReports.push(JSON.parse(body));
+            res.writeHead(202, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ status: 'accepted' }));
+            return;
+          }
 
           this.checkRequest(req, headers);
           this.storeBody(body, headers, Object.fromEntries(forwardedUrl(req).searchParams));
@@ -427,6 +439,10 @@ export class Intake {
   }
 
   /** Every request that breached the intake wire contract, in arrival order. */
+  getActiveReports(): unknown[] {
+    return this.activeReports;
+  }
+
   getProtocolViolations(): ProtocolViolation[] {
     return [...this.violations];
   }
