@@ -4,7 +4,7 @@ All notable changes to `@flashcatcloud/electron-sdk` are documented here.
 
 ## [Unreleased]
 
-### ⚠️ Breaking Changes / Notes
+### ✨ Features
 
 - Remote configuration: setting the session sample rate to `0` in the console now stops collection right away, instead of from the next session; raising it from `0` resumes collection right away. Other changes, such as 100% to 50%, still apply from the next session. Sessions kept by `sessionOnError` keep running while the switch stays on. This matches the iOS, Android and HarmonyOS SDKs.
 
