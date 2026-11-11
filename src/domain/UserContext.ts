@@ -139,13 +139,15 @@ export class UserContext {
  * is what lets a native crash parsed on the next startup be attributed to whoever was logged in
  * when it happened, rather than to whoever is logged in when it is finally read off disk.
  *
- * **View events resolve at the moment they are emitted**, because a view is an interval rather
+ * **Live view events resolve at the moment they are emitted**, because a view is an interval rather
  * than an instant: it is re-reported as it grows (`_dd.document_version`), and the backend derives
  * the session's identity from the **last** view row it receives
  * (`buildSessionViewUpdates` in fc-rum reads `lastView.UserID`). The main process emits exactly one
  * synthetic view per session, spanning the whole session, so resolving it at its start time would
  * mean the identity never reaches the session at all — `setUser` cannot run before `init`, so the
  * view always starts logged-out. The same applies to a renderer page view that spans a login.
+ * Views rebuilt for a historical crash provide an explicit identity time during assembly instead,
+ * so they resolve to the user at the crash, even when their view began before that user logged in.
  */
 export function resolveEventUser(
   getUser: (startTime: TimeStamp) => User | undefined,

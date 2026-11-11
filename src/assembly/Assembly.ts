@@ -143,7 +143,9 @@ export class Assembly {
       const hookResult = this.hooks.triggerRum({
         eventType: event.data.type,
         startTime,
+        userContextTime: event.userContextTime,
         viewId: (event.data as { view?: { id?: string } }).view?.id,
+        session: event.session,
       });
       if (hookResult !== DISCARDED) {
         return {

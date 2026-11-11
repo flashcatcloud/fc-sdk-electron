@@ -353,7 +353,7 @@ __metadata:
   dependencies:
     dd-trace: "npm:5.103.0"
   peerDependencies:
-    electron: ">=39"
+    electron: ">=30"
   languageName: node
   linkType: soft
 

@@ -5,7 +5,7 @@ import { app, crashReporter } from 'electron';
 import { EventFormat, EventKind, EventManager, EventSource } from '../../../event';
 import type { CrashReport } from '../../../wasm';
 import type { RawRumError, RawRumView } from '../rawRumData.types';
-import { type SessionManager, type SessionRecord, withholdsEvents } from '../../session';
+import { type SessionManager, type SessionRecord, TrackingType, withholdsEvents } from '../../session';
 import type { MainView } from '../view';
 import type { RumErrorEvent } from '../rumEvent.types';
 import { displayError, displayInfo } from '../../../tools/display';
@@ -23,7 +23,10 @@ import { toIntakeTimeStamp } from '../../../tools/intakeTimeStamp';
 export class CrashCollection {
   private constructor(
     private readonly eventManager: EventManager,
-    private readonly sessionManager: Pick<SessionManager, 'findSession' | 'getSession' | 'setSessionHasError'>,
+    private readonly sessionManager: Pick<
+      SessionManager,
+      'findSession' | 'drawSession' | 'getSession' | 'setSessionHasError'
+    >,
     private readonly findView: (startTime: TimeStamp) => MainView | undefined,
     /** Resolves once everything handed to the transport so far is in a batch file. */
     private readonly writtenToDisk: () => Promise<void>
@@ -31,7 +34,7 @@ export class CrashCollection {
 
   static start(
     eventManager: EventManager,
-    sessionManager: Pick<SessionManager, 'findSession' | 'getSession' | 'setSessionHasError'>,
+    sessionManager: Pick<SessionManager, 'findSession' | 'drawSession' | 'getSession' | 'setSessionHasError'>,
     findView: (startTime: TimeStamp) => MainView | undefined,
     writtenToDisk: () => Promise<void>
   ): CrashCollection {
@@ -71,16 +74,16 @@ export class CrashCollection {
         const crashReport = await processMinidump(bytes);
 
         const session = this.sessionManager.findSession(crashTime);
-        const view = this.findView(crashTime);
-        this.releaseWithheldSession(session, view, crashTime);
+        const { viewId, drawnSession } = session
+          ? { viewId: this.releaseWithheldSession(session, crashTime), drawnSession: undefined }
+          : this.startSessionForCrash(crashTime);
         this.eventManager.notify({
           kind: EventKind.RAW,
           source: EventSource.MAIN,
           format: EventFormat.RUM,
-          // Under the view it happened in — or, when that view is gone from the history, under a
-          // view of its own: a session must not lose its crash for want of a container.
-          data: buildCrashErrorEvent(crashReport, crashTime, view?.id ?? generateUUID()),
+          data: buildCrashErrorEvent(crashReport, crashTime, viewId),
           startTime: crashTime,
+          session: drawnSession,
         });
         try {
           await this.writtenToDisk();
@@ -111,14 +114,15 @@ export class CrashCollection {
    * This is all the history such a crash gets: keeping the withheld buffer on disk instead would
    * cost a session that never errors constant writes. When the view itself is gone from the
    * history, the session is still released and the crash goes alone.
+   *
+   * Returns the view the crash goes under: the one it happened in — or, when that view is gone from
+   * the history, one of its own: a session must not lose its crash for want of a container.
    */
-  private releaseWithheldSession(
-    session: SessionRecord | undefined,
-    view: MainView | undefined,
-    crashTime: TimeStamp
-  ): void {
-    if (!session || !withholdsEvents(session)) {
-      return;
+  private releaseWithheldSession(session: SessionRecord, crashTime: TimeStamp): string {
+    const view = this.findView(crashTime);
+    const viewId = view?.id ?? generateUUID();
+    if (!withholdsEvents(session)) {
+      return viewId;
     }
     const current = this.sessionManager.getSession();
     if (!(current.status === 'active' && current.id === session.id)) {
@@ -129,16 +133,46 @@ export class CrashCollection {
       // a crash of this launch that the view had reached the batch when it had not.
       this.sessionManager.setSessionHasError(session.id, crashTime);
     }
-    if (!view) {
-      return;
+    if (view) {
+      this.eventManager.notify({
+        kind: EventKind.RAW,
+        source: EventSource.MAIN,
+        format: EventFormat.RUM,
+        data: buildMainViewEvent(view, crashTime),
+        startTime: view.startTime,
+        userContextTime: crashTime,
+      });
     }
+    return viewId;
+  }
+
+  /**
+   * A crash with no session in force at its time happened while the application was still running
+   * but its session had ended — expired for inactivity, say, with the application idle in the tray —
+   * and before any activity renewed it. The crash is itself the activity that would have renewed it,
+   * so it is reported as the first thing of a session started at the crash: drawn as a renewal would
+   * draw it, under the sampling in force now, with a view of its own that the backend builds the
+   * session from. It is never the ended session's, whose draw and timeline it is not part of.
+   *
+   * A session kept by `sessionOnError` comes released, since the crash is its error and there is
+   * nothing held to wait for; one the draw did not keep is discarded at assembly, crash included.
+   * The session lives in these two events only: the current session, its file and the history are
+   * not touched.
+   */
+  private startSessionForCrash(crashTime: TimeStamp): { viewId: string; drawnSession: SessionRecord } {
+    const drawn = this.sessionManager.drawSession();
+    const drawnSession = drawn.trackingType === TrackingType.TRACKED_ON_ERROR ? { ...drawn, hasError: true } : drawn;
+    const view: MainView = { id: generateUUID(), startTime: crashTime };
     this.eventManager.notify({
       kind: EventKind.RAW,
       source: EventSource.MAIN,
       format: EventFormat.RUM,
       data: buildMainViewEvent(view, crashTime),
-      startTime: view.startTime,
+      startTime: crashTime,
+      userContextTime: crashTime,
+      session: drawnSession,
     });
+    return { viewId: view.id, drawnSession };
   }
 }
 

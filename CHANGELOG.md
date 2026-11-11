@@ -6,6 +6,10 @@ All notable changes to `@flashcatcloud/electron-sdk` are documented here.
 
 ### 🐛 Bug Fixes
 
+- Views rebuilt for a native crash now use the user identity recorded at the crash time, matching the crash error. When no historical identity can be recovered, they keep the anonymous device id without attaching the current launch's user.
+
+- A native crash that happened after the session had ended — expired after 15 minutes without user input, typically with the application idle in the tray, or after its 4-hour limit before any new activity — is now reported. It matched no session when the next launch processed its minidump, so it was discarded and the dump deleted. It is now reported in a session of its own, started at the crash the way the activity it amounts to would have started one: drawn under the sampling in force (`sessionSampleRate`, `sessionOnError`, or the stored remote configuration), with a view of its own. A session kept by `sessionOnError` reports it as its error, with `session.sampled_for_error` and a `session_sample_rate` of `0`; a session the draw does not keep reports nothing. The crash is never attached to the session that had ended.
+
 - Undelivered daily active reports are now kept a minute short of the intake's 72-hour age bound and pruned before every send, including retries. A report could previously age past the bound while waiting for a retry and then be sent only to be refused.
 
 - The day's active report now needs foreground proof from that same day: a window focus or user activity. A focus gained on a previous day no longer counts, so an application idle in the tray that changes its user programmatically does not report the day as active. The first user activity of a day is itself proof, so a window left open across midnight still reports the new day once it is used.
