@@ -28,7 +28,7 @@ vi.mock('electron', () => ({
 vi.mock('../tools/display', () => ({ displayError: vi.fn(), displayWarn: vi.fn() }));
 
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
-import { ONE_HOUR, ONE_SECOND } from '@flashcatcloud/browser-core';
+import { ONE_DAY, ONE_HOUR, ONE_MINUTE, ONE_SECOND } from '@flashcatcloud/browser-core';
 import type { Configuration } from '../config';
 import { EventKind, EventManager, LifecycleKind } from '../event';
 import { ACTIVE_PING_FILE_NAME, ActivePing } from './ActivePing';
@@ -365,6 +365,49 @@ describe('ActivePing', () => {
     expect(fetchMock).toHaveBeenCalledTimes(11);
   });
 
+  it('does not report a new day for a programmatic user change while the app sits in the background', async () => {
+    vi.setSystemTime(new Date('2026-11-02T23:59:00'));
+    focusedWindow.current = {};
+    await start();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // The window was last focused yesterday. Today the application only refreshes its
+    // session in the background, which reaches the SDK as a user change: that is not
+    // activity today, and must not be reported as any.
+    vi.setSystemTime(new Date('2026-11-03T00:01:00'));
+    currentUser = { id: 'user-42' };
+    eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.USER_CHANGED });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Real activity today still reports, carrying the new user.
+    eventManager.notify({ kind: EventKind.LIFECYCLE, lifecycle: LifecycleKind.END_USER_ACTIVITY });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(payloadOf(1)).toEqual(expect.objectContaining({ usr: { anonymous_id: ANONYMOUS_ID, id: 'user-42' } }));
+  });
+
+  it('keeps a single retry timer when a trigger intervenes between failures', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    fetchMock.mockResolvedValue(new Response(null, { status: 500 }));
+    focusedWindow.current = {};
+
+    await start();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(ONE_SECOND);
+    focusWindow();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // The first failure's timer would fire in this window if re-arming left it behind.
+    await vi.advanceTimersByTimeAsync(2 * ONE_SECOND);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(8 * ONE_SECOND);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
   it('retries a failed report under the same event id', async () => {
     fetchMock.mockResolvedValueOnce(new Response(null, { status: 500 })).mockResolvedValue(accepted());
     await start();
@@ -389,6 +432,27 @@ describe('ActivePing', () => {
     expect(payloadOf()).toEqual(
       expect.objectContaining({ usr: { anonymous_id: ANONYMOUS_ID }, age_ms: ONE_HOUR, sdk_version: '0.0.0-test' })
     );
+  });
+
+  it('drops a report that ages past the intake bound while it waits for a retry', async () => {
+    // Fresh when first sent, but past the bound by the time the retry fires.
+    mfs.readFile.mockResolvedValue(storedFile(Date.now() - 3 * ONE_DAY + ONE_MINUTE + ONE_SECOND));
+    fetchMock.mockResolvedValue(new Response(null, { status: 500 }));
+
+    await start();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(20 * ONE_SECOND);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('never sends an age_ms the intake would refuse', async () => {
+    mfs.readFile.mockResolvedValue(storedFile(Date.now() - 3 * ONE_DAY + ONE_SECOND));
+
+    await start();
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('keeps the report on disk before it is accepted, and clears it after', async () => {
