@@ -493,9 +493,8 @@ await init({
   applies only to the same intake, application and `env`; an application upgrade keeps it, so the
   first session after one is drawn on the previous release's settings until a new answer is stored.
 - **Resumed sessions.** A valid session resumed from the previous launch keeps its original draw,
-  subject to immediate activation: when what was kept asks to apply immediately, the session is
-  judged by it at startup, as below, unless it was drawn under a newer version than the one kept —
-  an older configuration never overrides a newer draw.
+  except where what was kept decides it, as below: it is judged at startup, unless it was drawn
+  under a newer version than the one kept — an older configuration never overrides a newer draw.
 - **SDK upgrades.** An upgrade keeps the values but asks for the full configuration again rather
   than revalidating the one the previous version read, and judges the running session again if this
   version reads it differently.
@@ -503,10 +502,10 @@ await init({
   version 0: whatever else the answer carries, the init values apply and no version is reported.
 - **Trust.** Anyone holding the client token can read these values, so put nothing secret in them;
   and whoever can answer the configured `proxy` or intake can also set them, the sampling included.
-- **When a change applies.** A session's draw is locked for its whole life, so by default
-  (`next_session`) a change applies from the next session on. When the console asks for a change to
-  apply immediately, the running session is ended — and the next user activity draws a new one —
-  only where the new values decide it:
+- **When a change applies.** A session's draw is locked for its whole life, so a change applies
+  from the next session on — except a change crossing rate `0`, which ends the running session as
+  soon as the configuration arrives, as on the other FlashCat SDKs; the next user activity draws a
+  new one. Only where the new values decide it:
   - a collected session ends when the rate becomes `0` (the emergency stop), unless it is a session
     kept by `sessionOnError` and the switch stays on — rate `0` next to the switch is that switch's
     ordinary setting;

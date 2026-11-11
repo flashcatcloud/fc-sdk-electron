@@ -13,6 +13,9 @@ import type { MainPage } from '../lib/mainPage';
  *
  * Every scenario comes with a negative control: the same steps under a configuration that differs
  * only in what the scenario claims makes the difference.
+ *
+ * Every answer asks for the next session, as the console always does: a change crossing rate 0
+ * applies to the running session all the same, and no other change does.
  */
 
 /** Comfortably past the release jitter of an on-error session, which is at most 3 s. */
@@ -39,7 +42,6 @@ interface SessionEvent {
 /** A response the way the real endpoint writes it. */
 function configuration(
   version: number,
-  activation: 'immediate' | 'next_session',
   rum: { sessionSampleRate?: number; sessionOnError?: boolean },
   ttl = 600,
   refreshOnForeground = false,
@@ -52,7 +54,7 @@ function configuration(
       version,
       ttl,
       enabled: true,
-      activation,
+      activation: 'next_session',
       refresh_on_foreground: refreshOnForeground,
       rum,
       custom: { scenario: 'e2e', marker },
@@ -111,7 +113,7 @@ test.describe('remote configuration', () => {
   test.describe('the request', () => {
     test.use({
       sdkConfig: { remoteConfigurationEnabled: true },
-      remoteConfig: configuration(1, 'next_session', {}),
+      remoteConfig: configuration(1, {}),
     });
 
     test('asks once at init and again at each new session, saying who it is and what it runs', async ({
@@ -138,7 +140,7 @@ test.describe('remote configuration', () => {
   });
 
   test.describe('without remoteConfigurationEnabled (control)', () => {
-    test.use({ remoteConfig: configuration(1, 'immediate', { sessionSampleRate: 0 }) });
+    test.use({ remoteConfig: configuration(1, { sessionSampleRate: 0 }) });
 
     test('asks nothing, and a rate of 0 published for it changes nothing', async ({ intake, mainPage }) => {
       await new Promise((resolve) => setTimeout(resolve, ABSENCE_WAIT));
@@ -148,11 +150,11 @@ test.describe('remote configuration', () => {
     });
   });
 
-  test.describe('rate 0 with sessionOnError, immediate (§7.1)', () => {
+  test.describe('rate 0 with sessionOnError (§7.1)', () => {
     test.use({
       // "Only error sessions" at init too: the session the configuration finds is an on-error one.
       sdkConfig: { sessionSampleRate: 0, sessionOnError: true, remoteConfigurationEnabled: true },
-      remoteConfig: configuration(1, 'immediate', { sessionSampleRate: 0, sessionOnError: true }),
+      remoteConfig: configuration(1, { sessionSampleRate: 0, sessionOnError: true }),
     });
 
     test('leaves the on-error session running, and its error releases what it held', async ({ intake, mainPage }) => {
@@ -185,10 +187,10 @@ test.describe('remote configuration', () => {
     });
   });
 
-  test.describe('rate 0 with sessionOnError turned off, immediate (control for §7.1)', () => {
+  test.describe('rate 0 with sessionOnError turned off (control for §7.1)', () => {
     test.use({
       sdkConfig: { sessionSampleRate: 0, sessionOnError: true, remoteConfigurationEnabled: true },
-      remoteConfig: configuration(1, 'immediate', { sessionSampleRate: 0, sessionOnError: false }),
+      remoteConfig: configuration(1, { sessionSampleRate: 0, sessionOnError: false }),
     });
 
     test('ends the on-error session, and an error then releases nothing', async ({ intake, mainPage }) => {
@@ -201,10 +203,10 @@ test.describe('remote configuration', () => {
     });
   });
 
-  test.describe('rate 0, immediate: the emergency stop', () => {
+  test.describe('rate 0: the emergency stop', () => {
     test.use({
       sdkConfig: { remoteConfigurationEnabled: true },
-      remoteConfig: configuration(2, 'immediate', { sessionSampleRate: 0 }),
+      remoteConfig: configuration(2, { sessionSampleRate: 0 }),
     });
 
     test('ends the drawn session, and the next one is not collected', async ({ intake, mainPage, testServer }) => {
@@ -227,13 +229,13 @@ test.describe('remote configuration', () => {
     });
   });
 
-  test.describe('rate 0, next session (control for the emergency stop)', () => {
+  test.describe('rate 50, not crossing 0 (control for the emergency stop)', () => {
     test.use({
       sdkConfig: { remoteConfigurationEnabled: true },
-      remoteConfig: configuration(2, 'next_session', { sessionSampleRate: 0 }),
+      remoteConfig: configuration(2, { sessionSampleRate: 50 }),
     });
 
-    test('leaves the drawn session collecting', async ({ intake, mainPage, testServer }) => {
+    test('leaves the drawn session collecting, as drawn', async ({ intake, mainPage, testServer }) => {
       await waitForApplied(mainPage, 'v2');
       const sessionId = await mainPage.getBridgeSessionId();
       expect(sessionId).not.toBe('');
@@ -265,7 +267,7 @@ test.describe('remote configuration', () => {
 
     /** Publishes an emergency stop, then lets `waitMs` pass, then the user comes back. */
     async function stopThenFocus(intake: Intake, electronApp: ElectronApplication, waitMs: number) {
-      intake.setRemoteConfig(configuration(2, 'immediate', { sessionSampleRate: 0 }, 1, true));
+      intake.setRemoteConfig(configuration(2, { sessionSampleRate: 0 }, 1, true));
       await new Promise((resolve) => setTimeout(resolve, waitMs));
       await focusApp(electronApp);
     }
@@ -287,7 +289,7 @@ test.describe('remote configuration', () => {
       { title: 'asks nothing before the ttl has passed (control)', allowed: true, waitMs: 1_000, refreshed: false },
     ]) {
       test.describe(title, () => {
-        test.use({ remoteConfig: configuration(1, 'next_session', {}, 1, allowed) });
+        test.use({ remoteConfig: configuration(1, {}, 1, allowed) });
 
         test('on focus', async ({ intake, mainPage, electronApp }) => {
           test.setTimeout(120_000);
@@ -322,7 +324,7 @@ test.describe('remote configuration', () => {
 
     /** An emergency stop, published with the kill switch in the given position. */
     function stop(enabled: boolean) {
-      const { body } = configuration(5, 'immediate', { sessionSampleRate: 0 }, 1, true);
+      const { body } = configuration(5, { sessionSampleRate: 0 }, 1, true);
       return { body: { ...body, enabled } };
     }
 
@@ -363,9 +365,11 @@ test.describe('remote configuration', () => {
   });
 
   test.describe('next session (deferred)', () => {
+    // A change that does not cross 0: the version is what tells the two sessions' draws apart, as a
+    // draw at 100 is collected either way.
     test.use({
       sdkConfig: { remoteConfigurationEnabled: true },
-      remoteConfig: configuration(3, 'next_session', { sessionSampleRate: 0, sessionOnError: true }),
+      remoteConfig: configuration(3, { sessionSampleRate: 100 }),
     });
 
     test('keeps the current session as drawn, and draws the next one under the new values', async ({
@@ -381,7 +385,6 @@ test.describe('remote configuration', () => {
       expect(before.some((event) => event.type === 'resource')).toBe(true);
       for (const event of before) {
         expect(event.session.id).toBe(current);
-        expect(event._dd?.configuration?.session_sample_rate).toBe(100);
         expect(event._dd?.configuration?.rc_version).toBeUndefined();
       }
 
@@ -391,17 +394,11 @@ test.describe('remote configuration', () => {
       expect(next).not.toBe('');
       expect(next).not.toBe(current);
       await mainPage.mainFetch(testServer.urlFor(200));
-      await settle(mainPage);
-      // An on-error session: nothing until it errors.
-      expect(rumEvents(intake, next)).toEqual([]);
-
-      await mainPage.generateManualError();
-      await settle(mainPage);
+      await settle(mainPage, 0);
       const after = rumEvents(intake, next);
-      expect(after.some((event) => event.type === 'error')).toBe(true);
+      expect(after.some((event) => event.type === 'resource')).toBe(true);
       for (const event of after) {
-        expect(event.session.id).toBe(next);
-        expect(event._dd?.configuration?.session_sample_rate).toBe(0);
+        expect(event._dd?.configuration?.session_sample_rate).toBe(100);
         expect(event._dd?.configuration?.rc_version).toBe(3);
       }
       expect(intake.getProtocolViolations()).toEqual([]);
@@ -434,10 +431,10 @@ test.describe('remote configuration', () => {
     });
   });
 
-  test.describe('sessionOnError turned on for a session drawn at rate 0, immediate', () => {
+  test.describe('sessionOnError turned on for a session drawn at rate 0', () => {
     test.use({
       sdkConfig: { sessionSampleRate: 0, remoteConfigurationEnabled: true },
-      remoteConfig: configuration(4, 'immediate', { sessionOnError: true }),
+      remoteConfig: configuration(4, { sessionOnError: true }),
     });
 
     test('ends the session so the next activity draws again, as an on-error session', async ({ intake, mainPage }) => {
@@ -463,10 +460,10 @@ test.describe('remote configuration', () => {
     });
   });
 
-  test.describe('sessionOnError turned on for a session drawn at rate 0, next session (control)', () => {
+  test.describe('sessionOnError left off for a session drawn at rate 0 (control)', () => {
     test.use({
       sdkConfig: { sessionSampleRate: 0, remoteConfigurationEnabled: true },
-      remoteConfig: configuration(4, 'next_session', { sessionOnError: true }),
+      remoteConfig: configuration(4, { sessionSampleRate: 0, sessionOnError: false }),
     });
 
     test('keeps the session it has, which collects nothing', async ({ intake, mainPage }) => {
@@ -490,7 +487,7 @@ test.describe('remote configuration kept for the next launch', () => {
 
   /** Launch one: receives the configuration, keeps it, ends its session so the next launch draws anew. */
   async function receiveAndKeep(intake: Intake, userDataDir: string) {
-    intake.setRemoteConfig(configuration(5, 'next_session', { sessionSampleRate: 0, sessionOnError: true }));
+    intake.setRemoteConfig(configuration(5, { sessionSampleRate: 0, sessionOnError: true }));
     const first = await launchAppManually(intake, userDataDir, 'await', ENABLED);
     try {
       await intake.waitForConfigRequests(1);
@@ -596,25 +593,17 @@ test.describe('remote configuration and a launch that ended before it was obeyed
     await writeFile(filePath, JSON.stringify({ ...kept, ...edit }));
   }
 
-  for (const { title, activation, ends } of [
-    {
-      title: 'ends a resumed session drawn before an immediate stop it kept, offline',
-      activation: 'immediate',
-      ends: true,
-    },
-    {
-      title: 'leaves it when what it kept applies to the next session (control)',
-      activation: 'next_session',
-      ends: false,
-    },
+  for (const { title, rate, ends } of [
+    { title: 'ends a resumed session drawn before a stop it kept, offline', rate: 0, ends: true },
+    { title: 'leaves it when what it kept does not cross 0 (control)', rate: 50, ends: false },
   ]) {
     test(title, async ({ intake }) => {
       const userDataDir = await createUserDataDir();
       try {
-        const resumed = await firstLaunch(intake, userDataDir, configuration(1, 'next_session', {}));
+        const resumed = await firstLaunch(intake, userDataDir, configuration(1, {}));
         expect(resumed).not.toBe('');
         // The stop arrived and was kept, but the session file outlived it.
-        await editKept(userDataDir, { version: 2, values: { sessionSampleRate: 0 }, activation });
+        await editKept(userDataDir, { version: 2, values: { sessionSampleRate: rate } });
         intake.setRemoteConfig({ reset: true });
 
         const second = await launchAppManually(intake, userDataDir, 'await', ENABLED);
@@ -631,20 +620,20 @@ test.describe('remote configuration and a launch that ended before it was obeyed
 
   for (const { title, served, redrawn } of [
     {
-      title: 'redraws a session when the same version, read by this SDK, turns the switch on immediately',
-      served: configuration(7, 'immediate', { sessionSampleRate: 0, sessionOnError: true }, 600, false, 'second'),
+      title: 'redraws a session when the same version, read by this SDK, turns the switch on',
+      served: configuration(7, { sessionSampleRate: 0, sessionOnError: true }, 600, false, 'second'),
       redrawn: true,
     },
     {
       title: 'leaves it when the same version reads the same (control)',
-      served: configuration(7, 'immediate', { sessionSampleRate: 0 }, 600, false, 'second'),
+      served: configuration(7, { sessionSampleRate: 0 }, 600, false, 'second'),
       redrawn: false,
     },
   ]) {
     test(title, async ({ intake }) => {
       const userDataDir = await createUserDataDir();
       try {
-        await firstLaunch(intake, userDataDir, configuration(7, 'next_session', { sessionSampleRate: 0 }));
+        await firstLaunch(intake, userDataDir, configuration(7, { sessionSampleRate: 0 }));
         // As an SDK that did not read the switch would have kept version 7; and a fresh session to draw.
         await editKept(userDataDir, { sdkVersion: 'older' });
         await rm(join(userDataDir, '_dd_s'), { force: true });

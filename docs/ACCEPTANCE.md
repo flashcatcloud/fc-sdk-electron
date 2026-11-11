@@ -221,9 +221,11 @@ statistics. Record the application's configuration before you start.
       `sdk` returns no values
 - [ ] A session drawn under a published version is stored with `rc_version` equal to that version
 - [ ] The next request carries `applied_version` and `If-None-Match`, and the backend answers `304`
-- [ ] An `immediate` stop (rate `0`, switch off) ends the running session; nothing more is stored
-- [ ] An `immediate` rate `0` with the switch on leaves an on-error session running, and its error
-      releases what it held
+- [ ] A stop (rate `0`, switch off), published as the console publishes it, ends the running
+      session as soon as it is fetched; nothing more is stored. A rate of `50` (negative control)
+      leaves it collecting
+- [ ] Rate `0` with the switch on leaves an on-error session running, and its error releases what
+      it held
 - [ ] Restart with the configuration endpoint unreachable: the first session draws with the cached
       configuration (`rc_version` of the cached version); with the cache deleted (negative control),
       it draws with the init values

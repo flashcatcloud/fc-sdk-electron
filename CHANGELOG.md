@@ -2,6 +2,12 @@
 
 All notable changes to `@flashcatcloud/electron-sdk` are documented here.
 
+## [Unreleased]
+
+### ✨ Features
+
+- Remote configuration: an emergency stop (sample rate set to `0` in the console) now takes effect on the running session right away.
+
 ## [0.5.2]
 
 ### 🐛 Bug Fixes

@@ -47,14 +47,6 @@ export const DEFAULT_TTL = 600 * ONE_SECOND;
 /** The shortest `ttl` honoured, whatever the server sends: focus can come back many times a minute. */
 export const MIN_TTL = 60 * ONE_SECOND;
 
-/** What the console asks a running client to do about the session it already has. */
-export const Activation = {
-  /** Leave it as it is: the new values apply from the next session. The server's default. */
-  NEXT_SESSION: 'next_session',
-  /** End it where the new values are decisive for it, see `SessionManager.applySamplingChange`. */
-  IMMEDIATE: 'immediate',
-} as const;
-
 /** The knobs this SDK reads. One the console did not set is absent, and the init value applies. */
 interface RemoteValues {
   sessionSampleRate?: number;
@@ -72,11 +64,6 @@ interface Delivered {
   /** The application's own pass-through bag, handed to it verbatim by `getRemoteConfig()`. */
   custom?: Record<string, unknown>;
   /**
-   * What it asked of a session already running, kept so that a launch resuming a session the
-   * previous launch should have ended still ends it — see {@link RemoteConfiguration.start}.
-   */
-  activation: string;
-  /**
    * When to ask again, as the server described it — stored with the values because a 304 or a
    * failure carries neither, and a client that settled on 304s must not forget its permission.
    * `ttl` is in seconds, absent when the server gave none.
@@ -89,12 +76,14 @@ interface Delivered {
   refreshOnForeground: boolean;
 }
 
-/** What owns the sessions: the one that draws them, and is told when a change applies at once. */
+/** What owns the sessions: the one that draws them, and is told when the sampling changes. */
 type SessionOwner = Pick<SessionManager, 'getSession' | 'applySamplingChange'>;
 
-/** A file written before these were kept has none: the next session, and no foreground refresh. */
-interface StoredConfiguration extends Omit<Delivered, 'activation' | 'refreshOnForeground'> {
-  activation?: string;
+/**
+ * A file written before `refreshOnForeground` was kept has none: no foreground refresh. One written
+ * by an SDK that still read `activation` carries it too; it is ignored.
+ */
+interface StoredConfiguration extends Omit<Delivered, 'refreshOnForeground'> {
   refreshOnForeground?: boolean;
   format: typeof FILE_FORMAT;
   /**
@@ -116,9 +105,12 @@ type RequestOutcome = 'done' | 'retry';
  * The console's settings for this application, kept fresh and kept on disk.
  *
  * Sessions read the sampling from {@link getSampling} at each draw and never in between, so a
- * configuration arriving mid-session changes the next session, not this one. When the console asks
- * for a change to apply at once (`activation: immediate`), the owner of the sessions is told and
- * decides whether the running session has to end — see `SessionManager.applySamplingChange`.
+ * configuration arriving mid-session changes the next session, not this one — except where it is
+ * decisive for the running session: the rate reaching 0 (the emergency stop) or leaving it. The owner
+ * of the sessions is told of every new configuration and decides whether the running session has to
+ * end — see `SessionManager.applySamplingChange`. The response's `activation` is not read: the
+ * console always asks for the next session, and a change crossing 0 applies at once whatever it
+ * asks, as on the other FlashCat SDKs.
  *
  * It asks at init and whenever a new session starts, as the other FlashCat SDKs do; there is no
  * timer between sessions. When the operator allows it (`refresh_on_foreground`), it also asks when
@@ -196,10 +188,10 @@ export class RemoteConfiguration {
   }
 
   /**
-   * Judges the session the launch starts with by the configuration the previous launch kept, when
-   * it asked to apply at once. That launch may have ended a session in memory and ended itself
-   * before the session file was deleted; a session drawn under that very version, read differently
-   * by an SDK from before an upgrade, is the same case. Same-version configurations are judged again
+   * Judges the session the launch starts with by the configuration the previous launch kept. That
+   * launch may have ended a session in memory and ended itself before the session file was
+   * deleted; a session drawn under that very version, read differently by an SDK from before an
+   * upgrade, is the same case. Same-version configurations are judged again
    * — the judgement ends nothing a draw under them would keep. A session drawn under a newer version
    * is left alone: the configuration and the session live in different files, the newer one's write
    * may be what was lost, and an older configuration must not override a newer draw. Called before
@@ -212,8 +204,8 @@ export class RemoteConfiguration {
   }
 
   /**
-   * Starts keeping the configuration fresh, and tells `sessions` when a configuration that applies
-   * at once has changed what a draw would read.
+   * Starts keeping the configuration fresh, and tells `sessions` when a configuration has changed
+   * what a draw would read.
    */
   start(eventManager: EventManager, sessions: SessionOwner): void {
     if (!this.config.remoteConfigurationEnabled) {
@@ -321,14 +313,13 @@ export class RemoteConfiguration {
     if (stored === undefined || stored.identity !== this.identity) {
       return;
     }
-    const { version, values, custom, activation, ttl, refreshOnForeground } = stored;
+    const { version, values, custom, ttl, refreshOnForeground } = stored;
     // Version 0 is no configuration, whatever a file says it holds — as it is from the network.
     const published = version > 0;
     this.delivered = {
       version,
       values: published ? values : {},
       ...(published && custom ? { custom } : {}),
-      activation: activation ?? Activation.NEXT_SESSION,
       ...(ttl === undefined ? {} : { ttl }),
       refreshOnForeground: refreshOnForeground ?? false,
     };
@@ -512,18 +503,15 @@ function ttlOf({ ttl }: Delivered): number {
 }
 
 /**
- * Ends the running session where `configuration` decides it, when it asks to apply at once — unless
- * the session was drawn under a newer version. Versions are published in order, but answers do not
+ * Ends the running session where `configuration` decides it — unless the session was drawn under a
+ * newer version. Versions are published in order, but answers do not
  * arrive in order: a backend node can serve an older snapshot for a while after a newer one is
  * live, and a newer configuration's write to disk can be the one a launch lost. An older
  * configuration must never override a newer draw; the same version is judged again, which ends
  * nothing a draw under it would keep, and covers a draw an older SDK read differently.
  */
 function judge(sessions: SessionOwner, configuration: Delivered): void {
-  if (
-    configuration.activation === Activation.IMMEDIATE &&
-    (sessions.getSession().rcVersion ?? 0) <= configuration.version
-  ) {
+  if ((sessions.getSession().rcVersion ?? 0) <= configuration.version) {
     sessions.applySamplingChange();
   }
 }
@@ -579,7 +567,7 @@ function parseResponse(text: string): Delivered | { unsupportedSchema: number } 
   if (body.schema_version !== SUPPORTED_SCHEMA_VERSION) {
     return typeof body.schema_version === 'number' ? { unsupportedSchema: body.schema_version } : undefined;
   }
-  const { version, enabled, rum, custom, activation, ttl } = body;
+  const { version, enabled, rum, custom, ttl } = body;
   if (!isConfigurationVersion(version) || typeof enabled !== 'boolean') {
     return undefined;
   }
@@ -607,7 +595,6 @@ function parseResponse(text: string): Delivered | { unsupportedSchema: number } 
     version,
     values,
     ...(published && isBag(custom) ? { custom } : {}),
-    activation: typeof activation === 'string' ? activation : Activation.NEXT_SESSION,
     ...(isPositiveInteger(ttl) ? { ttl } : {}),
     refreshOnForeground: body.refresh_on_foreground === true,
   };
@@ -622,11 +609,8 @@ function parseStoredConfiguration(value: unknown): StoredConfiguration | undefin
   if (!isBag(value) || value.format !== FILE_FORMAT) {
     return undefined;
   }
-  const { sdkVersion, identity, version, values, custom, etag, activation } = value;
+  const { sdkVersion, identity, version, values, custom, etag } = value;
   if (typeof sdkVersion !== 'string' || typeof identity !== 'string' || !isConfigurationVersion(version)) {
-    return undefined;
-  }
-  if (activation !== undefined && typeof activation !== 'string') {
     return undefined;
   }
   if (value.ttl !== undefined && !isPositiveInteger(value.ttl)) {

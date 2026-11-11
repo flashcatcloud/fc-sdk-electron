@@ -79,7 +79,7 @@ describe('RemoteConfiguration', () => {
   let eventManager: EventManager;
   let config: Configuration;
   let remote: RemoteConfiguration | undefined;
-  let onImmediateChange: Mock<() => void>;
+  let onSamplingChange: Mock<() => void>;
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -89,7 +89,7 @@ describe('RemoteConfiguration', () => {
     mfs.writeFile.mockResolvedValue(undefined);
     mfs.stat.mockResolvedValue({ size: 1024 });
     eventManager = new EventManager();
-    onImmediateChange = vi.fn();
+    onSamplingChange = vi.fn();
     config = createTestConfiguration({
       proxy: 'http://proxy.test',
       clientToken: 'pub-token',
@@ -120,7 +120,7 @@ describe('RemoteConfiguration', () => {
   async function start(): Promise<RemoteConfiguration> {
     remote = await RemoteConfiguration.init(config);
     session ??= { rcVersion: remote.getSampling().rcVersion };
-    remote.start(eventManager, { getSession: () => session as Session, applySamplingChange: onImmediateChange });
+    remote.start(eventManager, { getSession: () => session as Session, applySamplingChange: onSamplingChange });
     await vi.advanceTimersByTimeAsync(0);
     return remote;
   }
@@ -198,7 +198,7 @@ describe('RemoteConfiguration', () => {
       fetchMock.mockReturnValue(new Promise(() => undefined));
       remote = await RemoteConfiguration.init(config);
 
-      remote.start(eventManager, { getSession: () => ({}) as Session, applySamplingChange: onImmediateChange });
+      remote.start(eventManager, { getSession: () => ({}) as Session, applySamplingChange: onSamplingChange });
 
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect(remote.getSampling()).toEqual({ sessionSampleRate: 100, sessionOnError: false });
@@ -477,7 +477,6 @@ describe('RemoteConfiguration', () => {
           version: 3,
           values: { sessionSampleRate: 25, sessionOnError: true },
           custom: { flag: 1 },
-          activation: 'next_session',
           ttl: 600,
           refreshOnForeground: false,
           etag: '"tag-3"',
@@ -770,44 +769,40 @@ describe('RemoteConfiguration', () => {
     });
   });
 
-  describe('activation', () => {
-    it('tells the session owner about a new version that applies at once, once it is in force', async () => {
-      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ activation: 'immediate' }))));
+  describe('telling the session owner', () => {
+    it('tells it about a new version once it is in force', async () => {
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody())));
       let samplingWhenTold: unknown;
-      onImmediateChange.mockImplementation(() => (samplingWhenTold = remote!.getSampling()));
+      onSamplingChange.mockImplementation(() => (samplingWhenTold = remote!.getSampling()));
 
       await start();
 
-      expect(onImmediateChange).toHaveBeenCalledTimes(1);
+      expect(onSamplingChange).toHaveBeenCalledTimes(1);
       expect(samplingWhenTold).toEqual({ sessionSampleRate: 25, sessionOnError: true, rcVersion: 3 });
     });
 
-    it('does not tell it about a change for the next session', async () => {
-      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ activation: 'next_session' }))));
+    // The console always asks for the next session; whether the running session ends is decided by
+    // the values alone, as on the other FlashCat SDKs.
+    it.each(['next_session', 'immediate', undefined])(
+      'tells it whatever activation the answer carries (%s)',
+      async (activation) => {
+        fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ activation }))));
 
-      const configuration = await start();
+        await start();
 
-      expect(configuration.getSampling().sessionSampleRate).toBe(25);
-      expect(onImmediateChange).not.toHaveBeenCalled();
-    });
-
-    it('reads an absent or unknown activation as the next session', async () => {
-      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ activation: undefined }))));
-
-      await start();
-
-      expect(onImmediateChange).not.toHaveBeenCalled();
-    });
+        expect(onSamplingChange).toHaveBeenCalledTimes(1);
+      }
+    );
 
     it('does not tell it again about the version it already holds, unchanged', async () => {
       mfs.readFile.mockResolvedValue(
         storedFile({ version: 3, sdkVersion: 'older', values: { sessionSampleRate: 25, sessionOnError: true } })
       );
-      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ activation: 'immediate' }))));
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody())));
 
       await start();
 
-      expect(onImmediateChange).not.toHaveBeenCalled();
+      expect(onSamplingChange).not.toHaveBeenCalled();
     });
 
     it('tells it about the version it already holds when this SDK reads different values in it', async () => {
@@ -815,34 +810,32 @@ describe('RemoteConfiguration', () => {
       mfs.readFile.mockResolvedValue(
         storedFile({ version: 3, sdkVersion: 'older', values: { sessionSampleRate: 25 } })
       );
-      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ activation: 'immediate' }))));
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody())));
       let samplingWhenTold: unknown;
-      onImmediateChange.mockImplementation(() => (samplingWhenTold = remote!.getSampling()));
+      onSamplingChange.mockImplementation(() => (samplingWhenTold = remote!.getSampling()));
 
       await start();
 
-      expect(onImmediateChange).toHaveBeenCalledTimes(1);
+      expect(onSamplingChange).toHaveBeenCalledTimes(1);
       expect(samplingWhenTold).toEqual({ sessionSampleRate: 25, sessionOnError: true, rcVersion: 3 });
-    });
-
-    it('does not tell it about the version it already holds with different values for the next session', async () => {
-      mfs.readFile.mockResolvedValue(
-        storedFile({ version: 3, sdkVersion: 'older', values: { sessionSampleRate: 25 } })
-      );
-      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ activation: 'next_session' }))));
-
-      await start();
-
-      expect(onImmediateChange).not.toHaveBeenCalled();
     });
 
     it('tells it about a higher version', async () => {
       mfs.readFile.mockResolvedValue(storedFile({ version: 2 }));
-      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody({ activation: 'immediate' }))));
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody())));
 
       await start();
 
-      expect(onImmediateChange).toHaveBeenCalledTimes(1);
+      expect(onSamplingChange).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not tell it about a lower version, an older answer arriving late (control)', async () => {
+      mfs.readFile.mockResolvedValue(storedFile({ version: 4 }));
+      fetchMock.mockImplementation(() => Promise.resolve(ok(configurationBody())));
+
+      await start();
+
+      expect(onSamplingChange).not.toHaveBeenCalled();
     });
   });
 
@@ -1038,18 +1031,17 @@ describe('RemoteConfiguration', () => {
       expect(fetchMock).toHaveBeenCalledTimes(5);
     });
 
-    it('delivers an immediate stop to the running session', async () => {
+    it('delivers an emergency stop to the running session', async () => {
       fetchMock.mockResolvedValueOnce(ok(configurationBody({ ttl: 60, refresh_on_foreground: true })));
       await start();
-      fetchMock.mockResolvedValueOnce(
-        ok(configurationBody({ version: 4, activation: 'immediate', rum: { sessionSampleRate: 0 } }), '"tag-4"')
-      );
+      onSamplingChange.mockClear();
+      fetchMock.mockResolvedValueOnce(ok(configurationBody({ version: 4, rum: { sessionSampleRate: 0 } }), '"tag-4"'));
       await vi.advanceTimersByTimeAsync(60_000);
 
       focus();
       await vi.advanceTimersByTimeAsync(0);
 
-      expect(onImmediateChange).toHaveBeenCalledTimes(1);
+      expect(onSamplingChange).toHaveBeenCalledTimes(1);
       expect(remote!.getSampling()).toEqual({ sessionSampleRate: 0, sessionOnError: false, rcVersion: 4 });
     });
 
@@ -1122,15 +1114,13 @@ describe('RemoteConfiguration', () => {
       mfs.readFile.mockResolvedValue(storedFile({ version: 8, values: { sessionSampleRate: 100 } }));
       mfs.writeFile.mockReturnValue(new Promise(() => undefined));
       fetchMock.mockImplementation(() =>
-        Promise.resolve(
-          ok(configurationBody({ version: 9, activation: 'immediate', rum: { sessionSampleRate: 0 } }), '"tag-9"')
-        )
+        Promise.resolve(ok(configurationBody({ version: 9, rum: { sessionSampleRate: 0 } }), '"tag-9"'))
       );
       await start();
 
       mayExit();
 
-      expect(syncWrites()).toEqual([expect.objectContaining({ version: 9, activation: 'immediate', etag: '"tag-9"' })]);
+      expect(syncWrites()).toEqual([expect.objectContaining({ version: 9, etag: '"tag-9"' })]);
       expect(renameSync).toHaveBeenLastCalledWith(expect.stringMatching(/\.tmp$/), FILE_PATH);
 
       // Next launch, offline: it reads what the exit wrote.
@@ -1144,9 +1134,7 @@ describe('RemoteConfiguration', () => {
     it('writes an accepted configuration whose write has not landed when the application quits, even past every exit notice', async () => {
       // `app.exit()` skips the quit events but reaches `quit`; a fetch can also land after `will-quit`.
       mfs.writeFile.mockReturnValue(new Promise(() => undefined));
-      fetchMock.mockResolvedValueOnce(
-        ok(configurationBody({ version: 9, activation: 'immediate', rum: { sessionSampleRate: 0 } }), '"tag-9"')
-      );
+      fetchMock.mockResolvedValueOnce(ok(configurationBody({ version: 9, rum: { sessionSampleRate: 0 } }), '"tag-9"'));
       await start();
 
       appListeners.get('quit')!();
@@ -1239,7 +1227,7 @@ describe('RemoteConfiguration', () => {
     });
   });
 
-  describe('a session resumed from before an immediate configuration the previous launch kept', () => {
+  describe('a session resumed from before a configuration the previous launch kept', () => {
     const SESSION_PATH = '/mock/user/data/_dd_s';
     let manager: SessionManager | undefined;
 
@@ -1271,36 +1259,30 @@ describe('RemoteConfiguration', () => {
       return manager;
     }
 
-    const STOP = { version: 9, values: { sessionSampleRate: 0 }, activation: 'immediate' };
+    const STOP = { version: 9, values: { sessionSampleRate: 0 } };
 
     describe('then a network answer, which may come from a backend node holding an older snapshot', () => {
       it.each([
-        { version: 8, activation: 'immediate', ends: false, why: 'older than what is kept: refused as late' },
-        { version: 10, activation: 'immediate', ends: false, why: 'older than the session draw' },
-        { version: 10, activation: 'next_session', ends: false, why: 'for the next session' },
-        { version: 11, activation: 'immediate', ends: true, why: 'the very version the session was drawn under' },
-        { version: 12, activation: 'immediate', ends: true, why: 'newer than the session draw' },
-      ])(
-        'a stop at v$version ($activation) $why: ends the v11 session = $ends',
-        async ({ version, activation, ends }) => {
-          // Kept: v9 at rate 100; the session was drawn under v11, whose write was lost.
-          const sessions = await restart(
-            { trackingType: TrackingType.TRACKED, sampleRate: 100, rcVersion: 11 },
-            { ...STOP, values: { sessionSampleRate: 100 } }
-          );
-          expect(sessions.getSession().status).toBe('active');
-          fetchMock.mockReset();
-          fetchMock.mockResolvedValueOnce(
-            ok(configurationBody({ version, activation, rum: { sessionSampleRate: 0 } }))
-          );
+        { version: 8, ends: false, why: 'older than what is kept: refused as late' },
+        { version: 10, ends: false, why: 'older than the session draw' },
+        { version: 11, ends: true, why: 'the very version the session was drawn under' },
+        { version: 12, ends: true, why: 'newer than the session draw' },
+      ])('a stop at v$version $why: ends the v11 session = $ends', async ({ version, ends }) => {
+        // Kept: v9 at rate 100; the session was drawn under v11, whose write was lost.
+        const sessions = await restart(
+          { trackingType: TrackingType.TRACKED, sampleRate: 100, rcVersion: 11 },
+          { ...STOP, values: { sessionSampleRate: 100 } }
+        );
+        expect(sessions.getSession().status).toBe('active');
+        fetchMock.mockReset();
+        fetchMock.mockResolvedValueOnce(ok(configurationBody({ version, rum: { sessionSampleRate: 0 } })));
 
-          remote!.start(eventManager, sessions);
-          await vi.advanceTimersByTimeAsync(0);
+        remote!.start(eventManager, sessions);
+        await vi.advanceTimersByTimeAsync(0);
 
-          expect(fetchMock).toHaveBeenCalledTimes(1);
-          expect(sessions.getSession().status).toBe(ends ? 'expired' : 'active');
-        }
-      );
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(sessions.getSession().status).toBe(ends ? 'expired' : 'active');
+      });
     });
 
     it.each([
@@ -1313,10 +1295,10 @@ describe('RemoteConfiguration', () => {
       expect(fetchMock).not.toHaveBeenCalled();
     });
 
-    it('leaves it when the kept configuration applies to the next session', async () => {
+    it('leaves it when the kept configuration does not cross 0 (control)', async () => {
       const sessions = await restart(
         { trackingType: TrackingType.TRACKED, sampleRate: 100, rcVersion: 8 },
-        { ...STOP, activation: 'next_session' }
+        { ...STOP, values: { sessionSampleRate: 50 } }
       );
 
       expect(sessions.getSession().status).toBe('active');
@@ -1341,15 +1323,6 @@ describe('RemoteConfiguration', () => {
     it('leaves a session drawn under a newer version than what was kept: the kept one is the older', async () => {
       // The newer configuration's write was lost; the session drawn under it was saved.
       const sessions = await restart({ trackingType: TrackingType.TRACKED, sampleRate: 100, rcVersion: 10 }, STOP);
-
-      expect(sessions.getSession().status).toBe('active');
-    });
-
-    it('leaves a same-version session alone when what was kept applies to the next session', async () => {
-      const sessions = await restart(
-        { trackingType: TrackingType.NOT_TRACKED, sampleRate: 0, rcVersion: 9 },
-        { ...STOP, values: { sessionSampleRate: 0, sessionOnError: true }, activation: 'next_session' }
-      );
 
       expect(sessions.getSession().status).toBe('active');
     });

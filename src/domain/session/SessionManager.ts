@@ -54,8 +54,8 @@ export interface SamplingConfiguration extends Pick<Configuration, 'sessionSampl
  * - on activity, if the Session is expired, create a new Session
  * - when a Session is created, draw whether it is collected (see {@link TrackingType}) under the
  *   sampling in force then; a resumed Session keeps the decision it was created with
- * - when the remote configuration asks for a change to apply at once, end the Session only where
- *   the new sampling is decisive for it (see {@link SessionManager.applySamplingChange})
+ * - when the remote configuration changes the sampling, end the Session only where the new
+ *   sampling is decisive for it (see {@link SessionManager.applySamplingChange})
  */
 export class SessionManager {
   /** The current session as it is saved: the one copy of its id, draw and error mark. */
@@ -95,9 +95,9 @@ export class SessionManager {
 
   /**
    * Ends the running session where the sampling now in force is decisive for it, so that the next
-   * activity draws a new one under it. Called when a remote configuration that asks to apply at
-   * once (`activation: immediate`) has changed the sampling; anything else waits for the next
-   * session, because a session's draw is locked for its whole life.
+   * activity draws a new one under it. Called when a remote configuration has changed the sampling;
+   * any change that is not decisive waits for the next session, because a session's draw is locked
+   * for its whole life.
    *
    * Only two cases are decisive:
    * - A session that was not collected and was drawn at rate 0 lost no lottery: nothing was ever
