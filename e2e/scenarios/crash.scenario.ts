@@ -58,6 +58,11 @@ test('emits a crash error event after a native crash', async ({ intake }) => {
     expect(error.error.threads).toBeDefined();
     expect(error.error.binary_images).toBeDefined();
     expect(error.error.meta).toBeDefined();
+    // The crash is keyed to where the process faulted. A signal handler that ran after the fault
+    // (dd-trace's crashtracker re-raises from its own frame) must not become the site, or every
+    // main-process crash of one exception type would share one fingerprint and one issue.
+    expect(error.error.fingerprint).toBeDefined();
+    expect(error.error.fingerprint).not.toContain('crashtracker');
 
     // The exception type is the processor's name for the fault, e.g.
     // `EXC_BAD_ACCESS / KERN_INVALID_ADDRESS` on macOS or `SIGSEGV` on Linux. `unknown 0x… / 0x…`

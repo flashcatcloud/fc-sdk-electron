@@ -2,6 +2,12 @@
 
 All notable changes to `@flashcatcloud/electron-sdk` are documented here.
 
+## [Unreleased]
+
+### 🐛 Bug Fixes
+
+- Main-process native crashes are grouped by where they happened again. dd-trace's own crash tracker, on by default, caught each crash and re-raised it from its signal handler, so the handler became the crash site: every main-process crash of one exception type got the same fingerprint and landed in a single issue. It also sent its own crash report to a local Datadog agent (`127.0.0.1:8126`). The SDK now turns it off by default, as it already did for dd-trace's telemetry; native crashes are still reported by the SDK from the minidump. An application that sets `DD_CRASHTRACKING_ENABLED` itself keeps its choice.
+
 ## [0.5.1]
 
 ### 🐛 Bug Fixes
