@@ -135,6 +135,16 @@ export class SessionManager {
   }
 
   /**
+   * A session drawn under the sampling in force, exactly as a renewal would draw it, but never
+   * started: the current session, `SESSION_FILE_NAME` and the history are left alone, and no timer
+   * runs for it. For a native crash that happened after its launch's session had ended, see
+   * `CrashCollection`.
+   */
+  drawSession(): SessionRecord {
+    return drawSessionRecord(this.getSampling());
+  }
+
+  /**
    * Record that a withheld session reported an error at `errorTime`, which releases what it held. A
    * no-op for any other session: writing the mark there would only cost disk writes.
    *
@@ -212,15 +222,7 @@ export class SessionManager {
    */
   private async createNewSession(renewal: boolean): Promise<void> {
     const now = Date.now();
-    const sampling = this.getSampling();
-    const state: SessionState = {
-      id: generateUUID(),
-      trackingType: drawTrackingType(sampling),
-      sampleRate: sampling.sessionSampleRate,
-      ...(sampling.rcVersion === undefined ? {} : { rcVersion: sampling.rcVersion }),
-      created: now,
-      lastActivity: now,
-    };
+    const state: SessionState = { ...drawSessionRecord(this.getSampling()), created: now, lastActivity: now };
 
     this.setCurrent(state);
     await this.saveCurrentState();
@@ -331,6 +333,15 @@ export class SessionManager {
       this.sessionTimeoutId = undefined;
     }
   }
+}
+
+function drawSessionRecord(sampling: SamplingConfiguration): SessionRecord {
+  return {
+    id: generateUUID(),
+    trackingType: drawTrackingType(sampling),
+    sampleRate: sampling.sessionSampleRate,
+    ...(sampling.rcVersion === undefined ? {} : { rcVersion: sampling.rcVersion }),
+  };
 }
 
 /**

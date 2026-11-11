@@ -1,4 +1,4 @@
-import { mockFs } from '../../../mocks.specUtil';
+import { createTestConfiguration, mockFs } from '../../../mocks.specUtil';
 
 let resolveWhenReady: () => void;
 
@@ -26,6 +26,7 @@ vi.mock('../../../tools/display', () => ({
 vi.mock('../../telemetry', () => ({
   addError: vi.fn(),
   monitor: vi.fn((fn: () => unknown) => fn),
+  setTimeout: vi.fn(),
 }));
 
 vi.mock('../../../wasm', () => ({
@@ -36,14 +37,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { crashReporter } from 'electron';
 import { type TimeStamp } from '@flashcatcloud/browser-core';
 import { CrashCollection } from './CrashCollection';
-import type { MainView } from '../view';
-import { EventManager, EventKind, EventFormat, type RawRumEvent } from '../../../event';
+import { ViewContext, type MainView } from '../view';
+import { EventManager, EventKind, EventFormat, type RawRumEvent, type ServerRumEvent } from '../../../event';
 import { processMinidump } from '../../../wasm';
 import type { CrashReport } from '../../../wasm';
-import type { RawRumError } from '../rawRumData.types';
+import type { RawRumError, RawRumView } from '../rawRumData.types';
 import { displayError } from '../../../tools/display';
 import { addError } from '../../telemetry';
-import { type SessionManager, type SessionRecord, TrackingType } from '../../session';
+import { SessionManager, type SessionRecord, TrackingType } from '../../session';
+import { UserContext, USER_HISTORY_FILE_NAME, type User } from '../../UserContext';
+import { Assembly, createFormatHooks, registerCommonContext } from '../../../assembly';
+import type { RumEvent } from '../rumEvent.types';
 
 vi.mock('node:fs/promises');
 const mfs = mockFs();
@@ -102,12 +106,16 @@ const TRACKED_SESSION_MANAGER = {
     sampleRate: 0,
     status: 'active' as const,
   }),
+  drawSession: vi.fn(),
   setSessionHasError: vi.fn(),
 };
 
 function startCollection(
   eventManager: EventManager,
-  sessionManager: Pick<SessionManager, 'findSession' | 'getSession' | 'setSessionHasError'> = TRACKED_SESSION_MANAGER
+  sessionManager: Pick<
+    SessionManager,
+    'findSession' | 'drawSession' | 'getSession' | 'setSessionHasError'
+  > = TRACKED_SESSION_MANAGER
 ) {
   return CrashCollection.start(
     eventManager,
@@ -119,7 +127,7 @@ function startCollection(
 
 async function startAndFlush(
   eventManager: EventManager,
-  sessionManager?: Pick<SessionManager, 'findSession' | 'getSession' | 'setSessionHasError'>
+  sessionManager?: Pick<SessionManager, 'findSession' | 'drawSession' | 'getSession' | 'setSessionHasError'>
 ) {
   startCollection(eventManager, sessionManager);
   resolveWhenReady();
@@ -824,13 +832,14 @@ describe('CrashCollection', () => {
     function sessionManagerFor(session: SessionRecord | undefined, current: SessionRecord = NEXT_SESSION) {
       return {
         findSession: () => session,
+        drawSession: vi.fn(),
         getSession: () => ({ ...current, status: 'active' as const }),
         setSessionHasError: vi.fn(() => calls.push('setSessionHasError')),
       };
     }
 
     async function processCrash(
-      sessionManager: Pick<SessionManager, 'findSession' | 'getSession' | 'setSessionHasError'>,
+      sessionManager: Pick<SessionManager, 'findSession' | 'drawSession' | 'getSession' | 'setSessionHasError'>,
       findView: () => MainView | undefined = () => ({ id: 'crashed-view', startTime: VIEW_START }),
       writtenToDisk: () => Promise<void> = () => Promise.resolve()
     ) {
@@ -924,14 +933,187 @@ describe('CrashCollection', () => {
         { id: 'released', trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 0, hasError: true },
       ],
       ['a session the draw did not keep', { id: 'not-kept', trackingType: TrackingType.NOT_TRACKED, sampleRate: 0 }],
-      ['no session at all', undefined],
     ])('reports the crash alone for %s', async (_, session) => {
-      const sessionManager = sessionManagerFor(session as SessionRecord | undefined);
+      const sessionManager = sessionManagerFor(session);
 
       await processCrash(sessionManager);
 
       expect(sessionManager.setSessionHasError).not.toHaveBeenCalled();
+      expect(sessionManager.drawSession).not.toHaveBeenCalled();
       expect(calls).toEqual(['error']);
+      expect(rawRumEvents[0].session).toBeUndefined();
     });
   });
+
+  describe('a crash after the session of its launch had ended', () => {
+    const CRASH_TIME = 1000 as TimeStamp;
+    const CURRENT: SessionRecord = { id: 'current', trackingType: TrackingType.TRACKED, sampleRate: 100 };
+
+    function sessionManagerDrawing(drawn: SessionRecord) {
+      return {
+        findSession: () => undefined,
+        drawSession: vi.fn(() => drawn),
+        getSession: () => ({ ...CURRENT, status: 'active' as const }),
+        setSessionHasError: vi.fn(),
+      };
+    }
+
+    async function processCrash(sessionManager: ReturnType<typeof sessionManagerDrawing>) {
+      mockDmpFile('crash.dmp', CRASH_TIME);
+      vi.mocked(processMinidump).mockResolvedValue(createMinidumpResult());
+      // A view of the ended session still in the history must not be the crash's.
+      CrashCollection.start(
+        eventManager,
+        sessionManager,
+        () => ({ id: 'ended-session-view', startTime: 400 as TimeStamp }),
+        () => Promise.resolve()
+      );
+      resolveWhenReady();
+      await vi.advanceTimersToNextTimerAsync();
+    }
+
+    it('reports it in a session drawn for it, under a view of its own that starts at the crash', async () => {
+      const drawn: SessionRecord = { id: 'drawn', trackingType: TrackingType.TRACKED, sampleRate: 40, rcVersion: 2 };
+      const sessionManager = sessionManagerDrawing(drawn);
+
+      await processCrash(sessionManager);
+
+      expect(sessionManager.drawSession).toHaveBeenCalledTimes(1);
+      expect(rawRumEvents).toHaveLength(2);
+      const [view, crash] = rawRumEvents;
+      expect(view).toMatchObject({
+        startTime: CRASH_TIME,
+        session: drawn,
+        data: {
+          type: 'view',
+          date: CRASH_TIME,
+          view: { is_active: false, error: { count: 1 }, time_spent: 0 },
+          _dd: { document_version: 1 },
+        },
+      });
+      const viewId = (view.data as RawRumView).view.id;
+      expect(viewId).not.toBe('ended-session-view');
+      expect(crash).toMatchObject({ startTime: CRASH_TIME, session: drawn });
+      expect((crash.data as RawRumError).error.is_crash).toBe(true);
+      expect((crash.data as RawRumError).view?.id).toBe(viewId);
+      expect(sessionManager.setSessionHasError).not.toHaveBeenCalled();
+    });
+
+    it('reports a session drawn for sessionOnError as released, since the crash is its error', async () => {
+      const sessionManager = sessionManagerDrawing({
+        id: 'drawn',
+        trackingType: TrackingType.TRACKED_ON_ERROR,
+        sampleRate: 0,
+      });
+
+      await processCrash(sessionManager);
+
+      const released = { id: 'drawn', trackingType: TrackingType.TRACKED_ON_ERROR, sampleRate: 0, hasError: true };
+      expect(rawRumEvents.map((event) => [event.data.type, event.session])).toEqual([
+        ['view', released],
+        ['error', released],
+      ]);
+      // The mark is the drawn session's own: there is no history entry or state to write it to.
+      expect(sessionManager.setSessionHasError).not.toHaveBeenCalled();
+    });
+
+    it('still deletes the dump when the draw did not keep the session', async () => {
+      const drawn: SessionRecord = { id: 'drawn', trackingType: TrackingType.NOT_TRACKED, sampleRate: 0 };
+      mfs.unlink.mockResolvedValue(undefined);
+
+      await processCrash(sessionManagerDrawing(drawn));
+
+      // Assembly discards both: a session that is not collected reports nothing.
+      expect(rawRumEvents.map((event) => event.session)).toEqual([drawn, drawn]);
+      expect(mfs.unlink).toHaveBeenCalledWith('/mock/crash/dumps/crash.dmp');
+    });
+  });
+
+  describe.each(['a crash-only session', 'a historical on-error session'] as const)(
+    'assembled user identity for %s',
+    (recovery) => {
+      const CRASH_TIME = 1000 as TimeStamp;
+      const VIEW_START = 400 as TimeStamp;
+      const ALICE: User = { id: 'alice', name: 'Alice', email: 'alice@example.com' };
+      const BOB: User = { id: 'bob', name: 'Bob', email: 'bob@example.com' };
+      const ANONYMOUS_ID = 'device-anonymous-id';
+      const historicalSession = recovery === 'a historical on-error session';
+      const session: SessionRecord = {
+        id: 'crashed-session',
+        trackingType: TrackingType.TRACKED_ON_ERROR,
+        sampleRate: 0,
+      };
+
+      it.each<{
+        title: string;
+        pastUser: User | undefined;
+        currentUser: User | undefined;
+        missingHistory?: boolean;
+      }>([
+        { title: 'Alice to anonymous', pastUser: ALICE, currentUser: undefined },
+        { title: 'Alice to Bob', pastUser: ALICE, currentUser: BOB },
+        { title: 'anonymous to Bob', pastUser: undefined, currentUser: BOB },
+        { title: 'Alice without email to Bob', pastUser: { id: 'alice' }, currentUser: BOB },
+        { title: 'missing user history to Bob', pastUser: undefined, currentUser: BOB, missingHistory: true },
+      ])('keeps the crash-time identity on both events: $title', async ({ pastUser, currentUser, missingHistory }) => {
+        vi.setSystemTime(2000);
+        mockDmpFile('crash.dmp', CRASH_TIME);
+        vi.mocked(processMinidump).mockResolvedValue(createMinidumpResult());
+        mfs.readFile.mockImplementation((filePath: string) => {
+          if (filePath.endsWith('.dmp')) return Promise.resolve(new Uint8Array([1]));
+          if (filePath.endsWith(USER_HISTORY_FILE_NAME)) {
+            if (missingHistory) return Promise.reject(new Error('ENOENT'));
+            // The user logs in after the old view began. An ended entry models a logout before the crash.
+            return Promise.resolve(
+              JSON.stringify([{ startTime: 500, endTime: pastUser ? null : 900, value: pastUser ?? ALICE }])
+            );
+          }
+          if (filePath.endsWith('_dd_session_history')) {
+            return Promise.resolve(
+              JSON.stringify(historicalSession ? [{ startTime: 0, endTime: 1100, value: { ...session } }] : [])
+            );
+          }
+          if (filePath.endsWith('_dd_view_history')) {
+            return Promise.resolve(
+              JSON.stringify(historicalSession ? [{ startTime: VIEW_START, endTime: 1100, value: 'crashed-view' }] : [])
+            );
+          }
+          return Promise.reject(new Error(`Unexpected file: ${filePath}`));
+        });
+
+        const users = await UserContext.init(eventManager);
+        if (currentUser) users.set(currentUser);
+        const hooks = createFormatHooks();
+        registerCommonContext(createTestConfiguration(), hooks, ANONYMOUS_ID, (at) => users.find(at));
+        const sessions = await SessionManager.start(eventManager, hooks, () => ({
+          sessionSampleRate: 100,
+          sessionOnError: false,
+        }));
+        const views = await ViewContext.init(hooks);
+        new Assembly(eventManager, hooks);
+        const events: RumEvent[] = [];
+        eventManager.registerHandler<ServerRumEvent>({
+          canHandle: (event): event is ServerRumEvent => event.kind === EventKind.SERVER,
+          handle: (event) => events.push(event.data),
+        });
+        CrashCollection.start(
+          eventManager,
+          sessions,
+          (at) => views.findView(at),
+          () => Promise.resolve()
+        );
+        resolveWhenReady();
+        await vi.advanceTimersToNextTimerAsync();
+
+        expect(events.map((event) => event.type)).toEqual(['view', 'error']);
+        for (const event of events) {
+          expect(event.usr).toEqual({ ...pastUser, anonymous_id: ANONYMOUS_ID });
+        }
+        expect(events[0].date).toBe(historicalSession ? VIEW_START : CRASH_TIME);
+        expect(events[1].date).toBe(CRASH_TIME);
+        expect(events[0].session.id).toBe(events[1].session.id);
+        expect(events[0].view.id).toBe(events[1].view.id);
+      });
+    }
+  );
 });

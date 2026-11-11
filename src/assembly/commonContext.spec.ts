@@ -241,6 +241,34 @@ describe('registerCommonContext', () => {
       expect(lastRumEvent().usr?.id).toBe(ALICE.id);
     });
 
+    it('should use an explicit historical user time of zero without mixing in the current user', () => {
+      const historicalUser: User = { id: 'alice' };
+      const getUser = vi.fn((time: number) => (time === 0 ? historicalUser : { id: 'bob', email: 'bob@example.com' }));
+      const historicalHooks = createFormatHooks();
+      const historicalEventManager = new EventManager();
+      const events: ServerEvent[] = [];
+      registerCommonContext(createTestConfiguration(), historicalHooks, ANONYMOUS_ID, getUser);
+      new Assembly(historicalEventManager, historicalHooks);
+      historicalEventManager.registerHandler<ServerEvent>({
+        canHandle: (event): event is ServerEvent => event.kind === EventKind.SERVER,
+        handle: (event) => events.push(event),
+      });
+
+      historicalEventManager.notify({
+        kind: EventKind.RAW,
+        source: EventSource.MAIN,
+        format: EventFormat.RUM,
+        data: { type: 'view', view: { id: 'historical-view' } },
+        startTime: 1234,
+        userContextTime: 0,
+      } as RawRumEvent);
+
+      expect(events).toHaveLength(1);
+      expect((events[0].data as RumEvent).usr).toEqual({ ...historicalUser, anonymous_id: ANONYMOUS_ID });
+      expect(getUser).toHaveBeenCalledExactlyOnceWith(0);
+      expect(events[0].data).not.toHaveProperty('userContextTime');
+    });
+
     it('should still resolve a point-in-time event at its own timestamp, so a late crash keeps its user', () => {
       const crashMoment = 1000;
       const asked: number[] = [];
