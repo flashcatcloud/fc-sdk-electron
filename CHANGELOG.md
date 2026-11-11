@@ -6,7 +6,7 @@ All notable changes to `@flashcatcloud/electron-sdk` are documented here.
 
 ### ⚠️ Breaking Changes / Notes
 
-- A remote configuration whose sampling rate crosses `0` now applies to the running session as soon as it is fetched, whatever activation it was published with, as on the iOS, Android and HarmonyOS SDKs. Setting the rate to `0` (the emergency stop) ends a collected session at once, unless it is kept by `sessionOnError` and the switch stays on; raising it from `0`, or turning `sessionOnError` on, ends a session drawn at rate `0` so that the next activity draws again. Until now the running session was judged only for a configuration published with `activation: immediate`, and the console publishes `next_session`, so such a change waited for the next session. Any other change still applies from the next session, and a session drawn under a newer configuration version is never ended by an older one. The same holds at startup for a session resumed under a kept configuration. The response's `activation` is no longer read.
+- Remote configuration: setting the session sample rate to `0` in the console now stops collection right away, instead of from the next session; raising it from `0` resumes collection right away. Other changes, such as 100% to 50%, still apply from the next session. Sessions kept by `sessionOnError` keep running while the switch stays on. This matches the iOS, Android and HarmonyOS SDKs.
 
 ## [0.5.2]
 
