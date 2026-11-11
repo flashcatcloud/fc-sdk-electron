@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { disableTracerTelemetryByDefault } from './tracerTelemetry';
+import { disableTracerCrashtrackingByDefault, disableTracerTelemetryByDefault } from './tracerTelemetry';
 
 describe('disableTracerTelemetryByDefault', () => {
   it('disables dd-trace instrumentation telemetry when the host application did not choose', () => {
@@ -35,5 +35,23 @@ describe('disableTracerTelemetryByDefault', () => {
     // Guards the default parameter: calling with no argument must not throw.
     expect(() => disableTracerTelemetryByDefault({ DD_TRACE_TELEMETRY_ENABLED: 'true' })).not.toThrow();
     expect(() => disableTracerTelemetryByDefault()).not.toThrow();
+  });
+});
+
+describe('disableTracerCrashtrackingByDefault', () => {
+  it('disables the dd-trace crash tracker when the host application did not choose', () => {
+    const env: NodeJS.ProcessEnv = {};
+
+    disableTracerCrashtrackingByDefault(env);
+
+    expect(env.DD_CRASHTRACKING_ENABLED).toBe('false');
+  });
+
+  it.each(['true', 'false'])('preserves an explicit DD_CRASHTRACKING_ENABLED=%s', (value) => {
+    const env: NodeJS.ProcessEnv = { DD_CRASHTRACKING_ENABLED: value };
+
+    disableTracerCrashtrackingByDefault(env);
+
+    expect(env.DD_CRASHTRACKING_ENABLED).toBe(value);
   });
 });

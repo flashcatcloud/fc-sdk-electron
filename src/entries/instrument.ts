@@ -15,7 +15,10 @@
  * - Webpack: DatadogWebpackPlugin from '@flashcatcloud/electron-sdk/webpack-plugin'
  */
 import { createRequire } from 'node:module';
-import { disableTracerTelemetryByDefault } from '../domain/tracing/tracerTelemetry';
+import {
+  disableTracerCrashtrackingByDefault,
+  disableTracerTelemetryByDefault,
+} from '../domain/tracing/tracerTelemetry';
 import { installBridgePreload } from '../preload/preloadInjection';
 import { isElectronSupported } from '../tools/electronSupport';
 
@@ -27,6 +30,7 @@ const _require = typeof __filename !== 'undefined' ? require : createRequire(imp
 if (isElectronSupported()) {
   // Must run before dd-trace is required — see the function's documentation.
   disableTracerTelemetryByDefault();
+  disableTracerCrashtrackingByDefault();
 
   try {
     const tracer = (_require('dd-trace') as { default: typeof import('dd-trace').default }).default;
