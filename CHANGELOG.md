@@ -2,6 +2,18 @@
 
 All notable changes to `@flashcatcloud/electron-sdk` are documented here.
 
+## [Unreleased]
+
+### 🐛 Bug Fixes
+
+- Undelivered daily active reports are now kept a minute short of the intake's 72-hour age bound and pruned before every send, including retries. A report could previously age past the bound while waiting for a retry and then be sent only to be refused.
+
+- The day's active report now needs foreground proof from that same day: a window focus or user activity. A focus gained on a previous day no longer counts, so an application idle in the tray that changes its user programmatically does not report the day as active. The first user activity of a day is itself proof, so a window left open across midnight still reports the new day once it is used.
+
+- A stored anonymous device id that is not a UUID, such as a half-written file, is replaced instead of being read back. The intake refuses any other shape, so every daily active report from that install would otherwise have been refused.
+
+- A failed retry of the daily active report no longer leaves a second retry timer armed, which could send the same report twice.
+
 ## [0.5.0]
 
 ### ✨ Features
