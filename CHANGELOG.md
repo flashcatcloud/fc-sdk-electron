@@ -2,7 +2,7 @@
 
 All notable changes to `@flashcatcloud/electron-sdk` are documented here.
 
-## [Unreleased]
+## [0.5.3]
 
 ### 🐛 Bug Fixes
 
